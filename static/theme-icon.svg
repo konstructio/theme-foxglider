@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Foxglider catalog icon: the delta-wing fox glider mark, centered on a
+       square tile with breathing room so it reads at 36px on a dark tile. -->
+  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#E24329"/><stop offset=".55" stop-color="#FC6D26"/><stop offset="1" stop-color="#FCA326"/>
+  </linearGradient></defs>
+  <g transform="translate(2 9)">
+    <path fill="url(#g)" d="M2 28 L13 8 L21 21 L30 19 L39 21 L47 8 L58 28 L30 41 Z"/>
+    <path fill="#12161d" opacity=".25" d="M30 19 L39 21 L30 41 Z"/>
+    <circle cx="24.5" cy="26.5" r="2.1" fill="#05df72"/>
+  </g>
+</svg>
