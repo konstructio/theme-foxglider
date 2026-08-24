@@ -1,0 +1,15 @@
+# Ready-to-apply Theme CR registering theme-metaphor in the metaphor org.
+# Requires cluster access to the `metaphor` namespace.
+#   kubectl apply -f docs/register-theme.yaml
+#   kubectl -n metaphor get themes.konstruct.civo.com metaphor -w
+apiVersion: konstruct.civo.com/v1alpha1
+kind: Theme
+metadata:
+  name: metaphor
+  namespace: metaphor
+spec:
+  display_name: Metaphor
+  repo_url: https://git.civo.com/civo/metaphor/theme-metaphor
+  repo_name: civo/metaphor/theme-metaphor
+  branch: main
+  # zone_ref optional — the theme-controller auto-resolves the `themes` zone.
