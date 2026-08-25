@@ -21,7 +21,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "1.0.1"
+const themeVersion = "1.0.2"
 
 const ttlEco = 45 * time.Second
 
@@ -282,7 +282,10 @@ func (a *api) latestPipe(ctx context.Context, proj string) *pipelineJSON {
 // call, not the sum — so a sluggish GitLab can't push it past the ingress
 // timeout. Each fetch degrades to empty on error, so partial data still renders.
 func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	// Detached from the request: a slow GitLab shouldn't get cancelled the moment
+	// the browser/ingress times out — let it finish and warm the cache so the
+	// next 20s poll returns instantly.
+	ctx := context.Background()
 	t := a.topo
 
 	var (

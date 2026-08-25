@@ -142,7 +142,7 @@ type groupJSON struct {
 }
 
 func (a *api) overview(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := context.Background() // detached: slow GitLab warms the cache instead of cancelling
 	projects, err := a.cachedProjects(ctx)
 	if err != nil {
 		writeErr(w, 503, "GitLab unreachable: "+err.Error())
@@ -190,7 +190,7 @@ func (a *api) projectPipelines(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad project id")
 		return
 	}
-	pls, err := a.cachedPipelines(r.Context(), id)
+	pls, err := a.cachedPipelines(context.Background(), id)
 	if err != nil {
 		writeErr(w, 503, "GitLab unreachable: "+err.Error())
 		return
@@ -221,11 +221,12 @@ func (a *api) pipelineDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	key := fmt.Sprintf("detail:%d:%d", pid, plid)
 	v, err := a.c.do(key, ttlPipelines, func() (any, error) {
-		d, err := a.gl.pipeline(r.Context(), pid, plid)
+		ctx := context.Background()
+		d, err := a.gl.pipeline(ctx, pid, plid)
 		if err != nil {
 			return nil, err
 		}
-		jobs, err := a.gl.jobs(r.Context(), pid, plid)
+		jobs, err := a.gl.jobs(ctx, pid, plid)
 		if err != nil {
 			return nil, err
 		}
@@ -302,7 +303,7 @@ func (a *api) activity(w http.ResponseWriter, r *http.Request) {
 	}
 	cutoff := time.Now().Add(-time.Duration(hours) * time.Hour)
 
-	ctx := r.Context()
+	ctx := context.Background() // detached: slow GitLab warms the cache instead of cancelling
 	projects, err := a.cachedProjects(ctx)
 	if err != nil {
 		writeErr(w, 503, "GitLab unreachable: "+err.Error())

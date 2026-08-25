@@ -16,7 +16,11 @@ type glClient struct {
 }
 
 func newGLClient(base, token string) *glClient {
-	return &glClient{base: base, token: token, hc: &http.Client{Timeout: 15 * time.Second}}
+	// git.civo.com can be very slow to answer; a tight timeout just turns a slow
+	// page into a broken one. Give calls a long leash — the cache means we pay
+	// this cost rarely, and detached fetch contexts let slow calls finish warming
+	// the cache even after the browser/ingress has given up.
+	return &glClient{base: base, token: token, hc: &http.Client{Timeout: 120 * time.Second}}
 }
 
 type glProject struct {
