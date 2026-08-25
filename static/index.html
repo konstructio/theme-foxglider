@@ -67,14 +67,33 @@
   .aitem{display:flex;align-items:center;gap:6px 10px;padding:7px 12px;border-radius:6px;color:var(--ink2);font-size:13px;flex-wrap:wrap}
   .aitem:hover{background:var(--panel2);text-decoration:none}
   .proj{font-size:11px;min-width:min(150px,40vw)} .atitle{color:var(--ink)}
+  .ver{color:var(--civo);border:1px solid var(--line);border-radius:4px;padding:2px 7px;font-size:11px}
+  .eco-summary{display:flex;align-items:center;gap:10px 14px;background:var(--panel);border:1px solid var(--line2);
+    border-radius:8px;padding:12px 16px;margin:18px 0 8px;flex-wrap:wrap}
+  .eco-summary .big{font-size:19px;font-weight:800;color:var(--ink)}
+  .eco{display:flex;gap:14px;align-items:stretch;margin-top:14px;flex-wrap:wrap}
+  .eco-col{flex:1;min-width:230px;display:flex;flex-direction:column;gap:10px}
+  .eco-h{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--gl-amber);font-weight:700;margin-bottom:2px}
+  .eco-arrow{align-self:center;color:var(--mut2);font-size:22px;line-height:1}
+  .ecard{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+  .ecard.macro{border-color:var(--line2);background:linear-gradient(180deg,var(--panel2),var(--panel))}
+  .ec-top{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  .ec-ver{font-size:12px;color:var(--ink2);display:flex;align-items:center;gap:6px}
+  .ec-big{font-size:20px;font-weight:800;color:var(--ink);margin:2px 0 8px;word-break:break-all}
+  .arrowlite{color:var(--mut2)}
+  .vchip{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:11px;color:var(--ink2)}
+  .vchip.mut{color:var(--mut)}
+  @media(max-width:760px){.eco-arrow{display:none}}
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <a class="brand" href="#" id="brand"><svg viewBox="0 0 64 48" width="26" height="20" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#E24329"/><stop offset=".55" stop-color="#FC6D26"/><stop offset="1" stop-color="#FCA326"/></linearGradient></defs><path fill="url(#g)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/><path fill="#12161d" opacity=".25" d="M32 20 L42 22 L32 44 Z"/><circle cx="26" cy="28" r="2.2" fill="#05df72"/></svg>METAPHOR</a>
+    <span id="ver" class="ver mono" title="theme build version"></span>
     <nav class="tabs">
-      <a href="#fleet" class="tab on" data-view="fleet">Fleet</a>
+      <a href="#delivery" class="tab on" data-view="delivery">Delivery</a>
+      <a href="#fleet" class="tab" data-view="fleet">Fleet</a>
       <a href="#activity" class="tab" data-view="activity">Activity</a>
     </nav>
     <span class="spacer"></span>
@@ -86,7 +105,8 @@
   <main id="view"></main>
 </div>
 <script>
-const state = { view: 'fleet', windowH: 24, overview: null, activity: null };
+const state = { view: 'delivery', windowH: 24, overview: null, activity: null, eco: null };
+const METAMARK = '<svg viewBox="0 0 64 48" width="20" height="15" aria-hidden="true" style="flex:none"><defs><linearGradient id="gm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#E24329"/><stop offset=".55" stop-color="#FC6D26"/><stop offset="1" stop-color="#FCA326"/></linearGradient></defs><path fill="url(#gm)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/><circle cx="26" cy="28" r="2.2" fill="#05df72"/></svg>';
 const $ = (s, el=document) => el.querySelector(s);
 
 async function fetchJSON(url) {
@@ -116,6 +136,62 @@ function showDisconnected(err) {
     <img src="metaphor.svg" alt="" width="120" style="opacity:.5;margin-bottom:14px" />
     <h2>Not connected to GitLab</h2>
     <p class="mono mut">${esc(err.error || String(err))}</p></div>`;
+}
+
+const verChip = v => v ? `<span class="vchip mono">${esc(v)}</span>` : `<span class="vchip mono mut">—</span>`;
+function statusChip(pl) {
+  if (!pl) return '<span class="chip" style="--c:var(--mut2)">no pipeline</span>';
+  return `<a class="chip" target="_blank" href="${pl.web_url}" style="--c:${statusColor(pl.status)}">${esc(pl.status)}</a>`;
+}
+function driftChip(d) {
+  const M = { current: ['✓ up to date', 'var(--civo)'],
+    behind: [d.behind > 0 ? `↑ ${d.behind} behind` : 'behind', 'var(--gl-amber)'],
+    ahead: ['ahead', 'var(--gl-orange)'], unknown: ['unknown', 'var(--mut2)'] };
+  const [t, c] = M[d.state] || M.unknown;
+  return `<span class="chip" style="--c:${c}">${t}</span>`;
+}
+
+// renderDelivery draws the metaphor supply chain: microcharts → umbrella →
+// delivered, with per-stage pipeline status and delivery drift.
+function renderDelivery(d) {
+  if (!d || !d.macro) { $('#view').innerHTML = '<div class="empty"><h2>No ecosystem data.</h2></div>'; return; }
+  const m = d.macro, svcs = d.services || [], del = d.delivery || [], primary = del[0];
+  $('#view').innerHTML = `
+    <div class="eco-summary">
+      ${METAMARK}<span class="big">metaphor-macro</span>
+      <span class="vchip mono">${esc(m.published_rc || m.base_version || '—')}</span>
+      ${statusChip(m.pipeline)}
+      <span class="spacer"></span>
+      ${primary ? `<span class="mut">delivered to <span class="mono">${esc(primary.cluster)}</span></span>
+        <span class="vchip mono">${esc(primary.delivered_version || '—')}</span> ${driftChip(primary)}` : ''}
+    </div>
+    <div class="eco">
+      <div class="eco-col">
+        <div class="eco-h">Microcharts</div>
+        ${svcs.map(s => `<div class="ecard">
+          <div class="ec-top"><a class="pname" target="_blank" href="${s.web_url}">${esc(s.name)}</a>${statusChip(s.pipeline)}</div>
+          <div class="ec-ver mono">${verChip(s.base_version)}<span class="arrowlite">→</span>${verChip(s.bundled_version)}</div>
+        </div>`).join('')}
+      </div>
+      <div class="eco-arrow">→</div>
+      <div class="eco-col">
+        <div class="eco-h">Umbrella</div>
+        <div class="ecard macro">
+          <div class="ec-top">${METAMARK}<a class="pname" target="_blank" href="${m.web_url}">${esc(m.name)}</a>${statusChip(m.pipeline)}</div>
+          <div class="ec-big mono">${esc(m.published_rc || m.base_version || '—')}</div>
+          <div class="mut">bundles ${svcs.length} microcharts · base <span class="mono">${esc(m.base_version || '—')}</span></div>
+        </div>
+      </div>
+      <div class="eco-arrow">→</div>
+      <div class="eco-col">
+        <div class="eco-h">Delivered</div>
+        ${del.length ? del.map(e => `<div class="ecard">
+          <div class="ec-top"><a class="pname" target="_blank" href="${e.web_url}">${esc(e.environment)}</a><span class="mut mono">${esc(e.cluster)}</span></div>
+          <div class="ec-big mono">${verChip(e.delivered_version)}</div>
+          ${driftChip(e)}
+        </div>`).join('') : '<div class="ecard mut">no delivery targets</div>'}
+      </div>
+    </div>`;
 }
 
 function renderFleet(data) {
@@ -154,7 +230,10 @@ function renderFleet(data) {
 
 async function refresh() {
   try {
-    if (state.view === 'fleet') {
+    if (state.view === 'delivery') {
+      state.eco = await fetchJSON('/api/ecosystem');
+      renderDelivery(state.eco);
+    } else if (state.view === 'fleet') {
       state.overview = await fetchJSON('/api/overview');
       renderFleet(state.overview);
     } else {
@@ -163,6 +242,11 @@ async function refresh() {
     }
     $('#updated').textContent = 'updated ' + new Date().toLocaleTimeString();
   } catch (e) { showDisconnected(e); }
+}
+
+async function loadMeta() {
+  try { const m = await fetchJSON('/api/meta'); $('#ver').textContent = 'v' + m.version; }
+  catch { $('#ver').textContent = ''; }
 }
 
 let pollTimer;
@@ -291,7 +375,7 @@ function renderActivity(data) {
   }));
   $('#gfilter').addEventListener('change', e => { state.groupFilter = e.target.value; renderActivity(state.activity); });
 }
-refresh(); poll();
+loadMeta(); refresh(); poll();
 </script>
 </body>
 </html>

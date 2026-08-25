@@ -24,12 +24,15 @@ type api struct {
 	gl     *glClient
 	groups []string // namespace prefixes; empty = all
 	c      *cache
+	topo   topology
 }
 
 func newAPI(gl *glClient, groups []string) http.Handler {
-	a := &api{gl: gl, groups: groups, c: newCache()}
+	a := &api{gl: gl, groups: groups, c: newCache(), topo: defaultTopology()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/overview", a.guard(a.overview))
+	mux.HandleFunc("GET /api/ecosystem", a.guard(a.ecosystem))
+	mux.HandleFunc("GET /api/meta", a.meta)
 	mux.HandleFunc("GET /api/projects/{id}/pipelines", a.guard(a.projectPipelines))
 	mux.HandleFunc("GET /api/pipelines/{pid}/{plid}", a.guard(a.pipelineDetail))
 	mux.HandleFunc("GET /api/activity", a.guard(a.activity))

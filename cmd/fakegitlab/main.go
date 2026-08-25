@@ -54,6 +54,12 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v4/projects", jsonH(func(r *http.Request) any { return projects }))
 	mux.HandleFunc("/api/v4/projects/", func(w http.ResponseWriter, r *http.Request) {
+		// Path-addressed projects (civo%2Fmetaphor%2F…) are the delivery
+		// ecosystem's calls; %2F survives only in EscapedPath.
+		if strings.Contains(r.URL.EscapedPath(), "%2F") {
+			ecoFake(w, r)
+			return
+		}
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v4/projects/"), "/")
 		id, _ := strconv.Atoi(parts[0])
 		w.Header().Set("Content-Type", "application/json")
@@ -74,6 +80,39 @@ func main() {
 	})
 	log.Println("fakegitlab on :9911")
 	log.Fatal(http.ListenAndServe(":9911", mux))
+}
+
+// ecoFake serves canned metaphor supply-chain data (Chart.yaml versions, macro
+// deps, tags, delivery targetRevision, per-repo pipelines) so the Delivery tab
+// renders in local dev. Routes on the URL-encoded project/file path.
+func ecoFake(w http.ResponseWriter, r *http.Request) {
+	p := r.URL.EscapedPath()
+	switch {
+	case strings.Contains(p, "metaphor-macro%2FChart.yaml"):
+		fmt.Fprint(w, "apiVersion: v2\nname: metaphor-macro\nversion: 0.2.0\nappVersion: \"0.1.0\"\ndependencies:\n  - name: metaphor\n    version: \"0.11.0-rc.13\"\n  - name: metaphor-dashboard-manager\n    version: \"0.12.0-rc.15\"\n  - name: metaphor-micro-frontend\n    version: \"0.1.0-rc.7\"\n")
+	case strings.Contains(p, "charts%2Fmetaphor%2FChart.yaml"):
+		fmt.Fprint(w, "name: metaphor\nversion: 0.11.0\n")
+	case strings.Contains(p, "metaphor-dashboard-manager%2FChart.yaml"):
+		fmt.Fprint(w, "name: metaphor-dashboard-manager\nversion: 0.12.0\n")
+	case strings.Contains(p, "metaphor-micro-frontend%2FChart.yaml"):
+		fmt.Fprint(w, "name: metaphor-micro-frontend\nversion: 0.1.0\n")
+	case strings.Contains(p, "metaphor-macro.yaml"): // delivery Application
+		fmt.Fprint(w, "spec:\n  source:\n    targetRevision: 0.2.0-rc.2\n")
+	case strings.HasSuffix(p, "/repository/tags"):
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"name":"metaphor-v0.2.0-rc.4"},{"name":"metaphor-v0.2.0-rc.3"},{"name":"metaphor-v0.2.0-rc.2"}]`)
+	case strings.HasSuffix(p, "/pipelines"):
+		w.Header().Set("Content-Type", "application/json")
+		st := "success"
+		if strings.Contains(p, "micro-frontend") {
+			st = "running"
+		}
+		now := time.Now().UTC()
+		fmt.Fprintf(w, `[{"id":900,"status":%q,"ref":"main","sha":"feedfacecafe0000","web_url":"https://git.civo.com/x/-/pipelines/900","created_at":%q,"updated_at":%q}]`,
+			st, now.Add(-20*time.Minute).Format(time.RFC3339), now.Add(-18*time.Minute).Format(time.RFC3339))
+	default:
+		w.WriteHeader(404)
+	}
 }
 
 func jsonH(f func(*http.Request) any) http.HandlerFunc {

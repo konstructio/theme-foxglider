@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -143,4 +144,64 @@ func (c *glClient) events(ctx context.Context, projectID, limit int) ([]glEvent,
 	q := url.Values{"per_page": {fmt.Sprint(limit)}}
 	_, err := c.get(ctx, fmt.Sprintf("/projects/%d/events", projectID), q, &out)
 	return out, err
+}
+
+// --- delivery-ecosystem access (projects addressed by URL-encoded path) ---
+
+type glTag struct {
+	Name string `json:"name"`
+}
+
+// getRaw fetches one non-JSON endpoint and returns the body as a string.
+func (c *glClient) getRaw(ctx context.Context, path string, q url.Values) (string, error) {
+	u := c.base + "/api/v4" + path
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+	res, err := c.hc.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return "", fmt.Errorf("gitlab %s: %s", path, res.Status)
+	}
+	b, err := io.ReadAll(res.Body)
+	if err != nil {
+		return "", fmt.Errorf("gitlab %s: read: %w", path, err)
+	}
+	return string(b), nil
+}
+
+// fileRaw returns the raw contents of a repo file on the given ref.
+func (c *glClient) fileRaw(ctx context.Context, projectPath, filePath, ref string) (string, error) {
+	p := fmt.Sprintf("/projects/%s/repository/files/%s/raw", url.QueryEscape(projectPath), url.QueryEscape(filePath))
+	return c.getRaw(ctx, p, url.Values{"ref": {ref}})
+}
+
+// tags lists the newest tags for a project addressed by path.
+func (c *glClient) tags(ctx context.Context, projectPath string, limit int) ([]glTag, error) {
+	var out []glTag
+	p := fmt.Sprintf("/projects/%s/repository/tags", url.QueryEscape(projectPath))
+	_, err := c.get(ctx, p, url.Values{"per_page": {fmt.Sprint(limit)}, "order_by": {"updated"}}, &out)
+	return out, err
+}
+
+// latestPipeline returns the newest pipeline for a project addressed by path
+// (zero value, no error, when the project has never run one).
+func (c *glClient) latestPipeline(ctx context.Context, projectPath string) (glPipeline, error) {
+	var out []glPipeline
+	p := fmt.Sprintf("/projects/%s/pipelines", url.QueryEscape(projectPath))
+	if _, err := c.get(ctx, p, url.Values{"per_page": {"1"}}, &out); err != nil {
+		return glPipeline{}, err
+	}
+	if len(out) == 0 {
+		return glPipeline{}, nil
+	}
+	return out[0], nil
 }
