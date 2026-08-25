@@ -99,6 +99,14 @@
   .sq:hover{opacity:1;outline:1px solid var(--ink2)}
   .sq.run{animation:pulse 1.4s ease-in-out infinite}
   @media(max-width:760px){.eco-arrow{display:none}}
+  .sig{display:flex;align-items:center;justify-content:center;gap:9px;margin-top:44px;padding-top:16px;
+    border-top:1px solid var(--line);color:var(--mut);font-size:12px;flex-wrap:wrap}
+  .sig-mark{opacity:.85;flex:none}
+  .sig-name{letter-spacing:.04em}
+  #sig-ver{color:var(--civo);border:1px solid var(--line);border-radius:4px;padding:1px 7px;font-size:11px}
+  .sig-sep{color:var(--mut2)}
+  #sig-url{color:var(--mut);max-width:min(60vw,520px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #sig-url:hover{color:var(--civo)}
 </style>
 </head>
 <body>
@@ -118,6 +126,13 @@
     <span id="updated" class="mono mut"></span>
   </header>
   <main id="view"></main>
+  <footer class="sig">
+    <svg class="sig-mark" viewBox="0 0 64 48" width="16" height="12" aria-hidden="true"><path fill="var(--civo)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/></svg>
+    <span class="sig-name">metaphor delivery theme</span>
+    <span id="sig-ver" class="mono">—</span>
+    <span class="sig-sep">·</span>
+    <a id="sig-url" class="mono" target="_blank" rel="noopener" title="this theme instance"></a>
+  </footer>
 </div>
 <script>
 const state = { view: 'delivery', windowH: 24, overview: null, activity: null, eco: null };
@@ -310,8 +325,18 @@ async function refresh() {
 }
 
 async function loadMeta() {
-  try { const m = await fetchJSON('/api/meta'); $('#ver').textContent = 'v' + m.version; }
-  catch { $('#ver').textContent = ''; }
+  try {
+    const m = await fetchJSON('/api/meta');
+    const v = 'v' + m.version;
+    $('#ver').textContent = v;
+    $('#sig-ver').textContent = v;
+  } catch {
+    $('#ver').textContent = '';
+    $('#sig-ver').textContent = '';
+  }
+  // URL of the running instance — what the viewer is actually looking at.
+  const a = $('#sig-url');
+  if (a) { a.textContent = location.host + (location.pathname === '/' ? '' : location.pathname); a.href = location.href; }
 }
 
 let pollTimer;
