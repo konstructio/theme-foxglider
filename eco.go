@@ -14,14 +14,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "1.0.2"
+const themeVersion = "1.0.3"
 
 const ttlEco = 45 * time.Second
 
@@ -294,24 +293,56 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 		svcRaw                 = make([]string, len(t.Services))
 		svcPipe                = make([]*pipelineJSON, len(t.Services))
 		delRaw                 = make([]string, len(t.Delivery))
-		wg                     sync.WaitGroup
 	)
 
-	fire := func(fn func()) { wg.Add(1); go func() { defer wg.Done(); fn() }() }
-
-	fire(func() { macroRaw = a.rawFile(ctx, t.MacroProj, t.MacroFile) })
-	fire(func() { publishedTag = newestTag(a.cachedTags(ctx, t.MacroProj), t.MacroTag) })
-	fire(func() { macroPipe = a.latestPipe(ctx, t.MacroProj) })
+	// Every fetch reports on a buffered channel (buffered so a late fetch never
+	// blocks/leaks). We collect until everything's in OR a short deadline hits —
+	// so a crawling GitLab yields a fast partial 200 instead of a 504. Fetches
+	// that miss the deadline keep running on the detached ctx and warm the cache
+	// for the next poll, so the view fills in rather than showing "not connected".
+	type slot struct {
+		kind string
+		i    int
+		v    any
+	}
+	total := 3 + len(t.Services)*2 + len(t.Delivery)
+	ch := make(chan slot, total)
+	go func() { ch <- slot{"macroRaw", 0, a.rawFile(ctx, t.MacroProj, t.MacroFile)} }()
+	go func() { ch <- slot{"tag", 0, newestTag(a.cachedTags(ctx, t.MacroProj), t.MacroTag)} }()
+	go func() { ch <- slot{"macroPipe", 0, a.latestPipe(ctx, t.MacroProj)} }()
 	for i, s := range t.Services {
 		i, s := i, s
-		fire(func() { svcRaw[i] = a.rawFile(ctx, s.Project, s.Chart) })
-		fire(func() { svcPipe[i] = a.latestPipe(ctx, s.Project) })
+		go func() { ch <- slot{"svcRaw", i, a.rawFile(ctx, s.Project, s.Chart)} }()
+		go func() { ch <- slot{"svcPipe", i, a.latestPipe(ctx, s.Project)} }()
 	}
 	for i, d := range t.Delivery {
 		i, d := i, d
-		fire(func() { delRaw[i] = a.rawFile(ctx, d.Project, d.App) })
+		go func() { ch <- slot{"delRaw", i, a.rawFile(ctx, d.Project, d.App)} }()
 	}
-	wg.Wait()
+
+	deadline := time.After(9 * time.Second)
+collect:
+	for got := 0; got < total; got++ {
+		select {
+		case s := <-ch:
+			switch s.kind {
+			case "macroRaw":
+				macroRaw = s.v.(string)
+			case "tag":
+				publishedTag = s.v.(string)
+			case "macroPipe":
+				macroPipe = s.v.(*pipelineJSON)
+			case "svcRaw":
+				svcRaw[s.i] = s.v.(string)
+			case "svcPipe":
+				svcPipe[s.i] = s.v.(*pipelineJSON)
+			case "delRaw":
+				delRaw[s.i] = s.v.(string)
+			}
+		case <-deadline:
+			break collect
+		}
+	}
 
 	deps := macroDeps(macroRaw)
 	publishedRC := strings.TrimPrefix(publishedTag, t.MacroTag)
