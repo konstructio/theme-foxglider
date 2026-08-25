@@ -18,9 +18,18 @@ import (
 var assets embed.FS
 
 func newMux(api http.Handler) http.Handler {
-	static, err := fs.Sub(assets, "static")
-	if err != nil {
-		log.Fatal(err)
+	// THEME_STATIC_DIR serves the static assets from disk (dev): edits to
+	// index.html show on a plain browser refresh, no rebuild. Unset = embedded.
+	var static fs.FS
+	if dir := os.Getenv("THEME_STATIC_DIR"); dir != "" {
+		static = os.DirFS(dir)
+		log.Printf("dev: serving static from disk dir %q", dir)
+	} else {
+		sub, err := fs.Sub(assets, "static")
+		if err != nil {
+			log.Fatal(err)
+		}
+		static = sub
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api)

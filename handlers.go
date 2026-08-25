@@ -32,6 +32,7 @@ func newAPI(gl *glClient, groups []string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/overview", a.guard(a.overview))
 	mux.HandleFunc("GET /api/ecosystem", a.guard(a.ecosystem))
+	mux.HandleFunc("GET /api/pipeline-progress", a.guard(a.pipelineProgress))
 	mux.HandleFunc("GET /api/meta", a.meta)
 	mux.HandleFunc("GET /api/projects/{id}/pipelines", a.guard(a.projectPipelines))
 	mux.HandleFunc("GET /api/pipelines/{pid}/{plid}", a.guard(a.pipelineDetail))
@@ -104,15 +105,18 @@ func (a *api) cachedPipelines(ctx context.Context, projectID int) ([]glPipeline,
 }
 
 type pipelineJSON struct {
-	ID        int       `json:"id"`
-	Status    string    `json:"status"`
-	Ref       string    `json:"ref"`
-	SHA       string    `json:"sha"`
-	ShortSHA  string    `json:"short_sha"`
-	WebURL    string    `json:"web_url"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	DurationS float64   `json:"duration_s"`
+	ID           int        `json:"id"`
+	Status       string     `json:"status"`
+	Ref          string     `json:"ref"`
+	SHA          string     `json:"sha"`
+	ShortSHA     string     `json:"short_sha"`
+	WebURL       string     `json:"web_url"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	DurationS    float64    `json:"duration_s"`
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	AuthorName   string     `json:"author_name,omitempty"`
+	AuthorAvatar string     `json:"author_avatar,omitempty"`
 }
 
 func toPipelineJSON(p glPipeline) pipelineJSON {

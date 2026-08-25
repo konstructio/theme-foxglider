@@ -188,6 +188,15 @@ func (c *glClient) fileRaw(ctx context.Context, projectPath, filePath, ref strin
 	return c.getRaw(ctx, p, url.Values{"ref": {ref}})
 }
 
+// jobsByPath lists a pipeline's jobs for a project addressed by path — used by
+// the live stage-progress on running microcharts.
+func (c *glClient) jobsByPath(ctx context.Context, projectPath string, pipelineID int) ([]glJob, error) {
+	var out []glJob
+	p := fmt.Sprintf("/projects/%s/pipelines/%d/jobs", url.QueryEscape(projectPath), pipelineID)
+	_, err := c.get(ctx, p, url.Values{"per_page": {"100"}, "include_retried": {"false"}}, &out)
+	return out, err
+}
+
 // tags lists the newest tags for a project addressed by path.
 func (c *glClient) tags(ctx context.Context, projectPath string, limit int) ([]glTag, error) {
 	var out []glTag
@@ -196,16 +205,31 @@ func (c *glClient) tags(ctx context.Context, projectPath string, limit int) ([]g
 	return out, err
 }
 
-// latestPipeline returns the newest pipeline for a project addressed by path
-// (zero value, no error, when the project has never run one).
-func (c *glClient) latestPipeline(ctx context.Context, projectPath string) (glPipeline, error) {
-	var out []glPipeline
-	p := fmt.Sprintf("/projects/%s/pipelines", url.QueryEscape(projectPath))
-	if _, err := c.get(ctx, p, url.Values{"per_page": {"1"}}, &out); err != nil {
-		return glPipeline{}, err
-	}
-	if len(out) == 0 {
-		return glPipeline{}, nil
-	}
-	return out[0], nil
+// glLatestPipeline is /pipelines/latest — a single pipeline plus the user who
+// ran it (the person who pushed the change that triggered the build).
+type glLatestPipeline struct {
+	ID         int        `json:"id"`
+	Status     string     `json:"status"`
+	Ref        string     `json:"ref"`
+	SHA        string     `json:"sha"`
+	WebURL     string     `json:"web_url"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+	FinishedAt *time.Time `json:"finished_at"`
+	User       *struct {
+		Name      string `json:"name"`
+		Username  string `json:"username"`
+		AvatarURL string `json:"avatar_url"`
+		WebURL    string `json:"web_url"`
+	} `json:"user"`
+}
+
+// latestPipeline returns the newest pipeline on the default branch for a project
+// addressed by path, including the triggering user (zero value + error when the
+// project has never run one).
+func (c *glClient) latestPipeline(ctx context.Context, projectPath string) (glLatestPipeline, error) {
+	var out glLatestPipeline
+	p := fmt.Sprintf("/projects/%s/pipelines/latest", url.QueryEscape(projectPath))
+	_, err := c.get(ctx, p, nil, &out)
+	return out, err
 }

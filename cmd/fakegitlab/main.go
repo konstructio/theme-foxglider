@@ -27,8 +27,9 @@ var statuses = []string{"success", "success", "failed", "success", "canceled", "
 func main() {
 	now := time.Now().UTC()
 	projects := []map[string]any{
-		proj(1, "konduit", "platform"), proj(2, "foxglider", "platform"),
-		proj(3, "metropolis", "themes"), proj(4, "kontrol-room", "themes"),
+		proj(1, "metaphor", "civo/metaphor"), proj(2, "metaphor-dashboard-manager", "civo/metaphor"),
+		proj(3, "metaphor-micro-frontend", "civo/metaphor"), proj(4, "charts", "civo/metaphor"),
+		proj(5, "metaphor-gitops", "civo/metaphor"), proj(6, "metaphor-operator", "civo/metaphor"),
 	}
 	pipelines := map[int][]pl{}
 	for _, p := range projects {
@@ -82,6 +83,41 @@ func main() {
 	log.Fatal(http.ListenAndServe(":9911", mux))
 }
 
+// ecoProjFromPath decodes the "civo/metaphor/<repo>" project from an
+// encoded /api/v4/projects/<enc>/... path.
+func ecoProjFromPath(p string) string {
+	proj := "civo/metaphor/charts"
+	if i := strings.Index(p, "/projects/"); i >= 0 {
+		seg := p[i+len("/projects/"):]
+		if j := strings.Index(seg, "/"); j >= 0 {
+			seg = seg[:j]
+		}
+		if d := strings.ReplaceAll(seg, "%2F", "/"); d != "" {
+			proj = d
+		}
+	}
+	return proj
+}
+
+// fakeCommitter maps a project to a canned committer + a ui-avatars image so the
+// Delivery cards show distinct faces in dev.
+func fakeCommitter(proj string) (name, avatar string) {
+	// dev-only placeholders; production uses the real GitLab user per pipeline.
+	people := map[string][2]string{
+		"civo/metaphor/metaphor":                   {"John Dietz", "05df72"},
+		"civo/metaphor/metaphor-dashboard-manager": {"Jared Edwards", "fca326"},
+		"civo/metaphor/metaphor-micro-frontend":    {"kbot", "8b5cf6"},
+		"civo/metaphor/charts":                     {"metaphor ci", "00bcd4"},
+	}
+	pr, ok := people[proj]
+	if !ok {
+		pr = [2]string{"John Dietz", "05df72"}
+	}
+	name = pr[0]
+	avatar = "https://ui-avatars.com/api/?background=" + pr[1] + "&color=0b1220&bold=true&size=48&name=" + strings.ReplaceAll(name, " ", "+")
+	return
+}
+
 // ecoFake serves canned metaphor supply-chain data (Chart.yaml versions, macro
 // deps, tags, delivery targetRevision, per-repo pipelines) so the Delivery tab
 // renders in local dev. Routes on the URL-encoded project/file path.
@@ -101,15 +137,33 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(p, "/repository/tags"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `[{"name":"metaphor-v0.2.0-rc.4"},{"name":"metaphor-v0.2.0-rc.3"},{"name":"metaphor-v0.2.0-rc.2"}]`)
+	case strings.HasSuffix(p, "/jobs"):
+		// canned running pipeline: earlier stages done, build running, publish queued
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"name":"lint","stage":"validate","status":"success"},{"name":"test","stage":"validate","status":"success"},{"name":"build","stage":"build","status":"running"},{"name":"publish-chart","stage":"publish","status":"created"},{"name":"publish-image","stage":"publish","status":"created"}]`)
+	case strings.HasSuffix(p, "/pipelines/latest"):
+		w.Header().Set("Content-Type", "application/json")
+		proj := ecoProjFromPath(p)
+		st := "success"
+		if strings.Contains(p, "micro-frontend") {
+			st = "running"
+		}
+		name, avatar := fakeCommitter(proj)
+		now := time.Now().UTC()
+		web := "https://git.civo.com/" + proj + "/-/pipelines"
+		fmt.Fprintf(w, `{"id":900,"status":%q,"ref":"main","sha":"feedfacecafe0000","web_url":%q,"created_at":%q,"updated_at":%q,"user":{"name":%q,"username":"dev","avatar_url":%q,"web_url":"https://git.civo.com/dev"}}`,
+			st, web, now.Add(-20*time.Minute).Format(time.RFC3339), now.Add(-18*time.Minute).Format(time.RFC3339), name, avatar)
 	case strings.HasSuffix(p, "/pipelines"):
 		w.Header().Set("Content-Type", "application/json")
+		proj := ecoProjFromPath(p)
 		st := "success"
 		if strings.Contains(p, "micro-frontend") {
 			st = "running"
 		}
 		now := time.Now().UTC()
-		fmt.Fprintf(w, `[{"id":900,"status":%q,"ref":"main","sha":"feedfacecafe0000","web_url":"https://git.civo.com/x/-/pipelines/900","created_at":%q,"updated_at":%q}]`,
-			st, now.Add(-20*time.Minute).Format(time.RFC3339), now.Add(-18*time.Minute).Format(time.RFC3339))
+		web := "https://git.civo.com/" + proj + "/-/pipelines"
+		fmt.Fprintf(w, `[{"id":900,"status":%q,"ref":"main","sha":"feedfacecafe0000","web_url":%q,"created_at":%q,"updated_at":%q}]`,
+			st, web, now.Add(-20*time.Minute).Format(time.RFC3339), now.Add(-18*time.Minute).Format(time.RFC3339))
 	default:
 		w.WriteHeader(404)
 	}
@@ -125,7 +179,7 @@ func jsonH(f func(*http.Request) any) http.HandlerFunc {
 func proj(id int, name, group string) map[string]any {
 	return map[string]any{"id": id, "name": name,
 		"path_with_namespace": group + "/" + name,
-		"web_url":             "https://gitlab.example.com/" + group + "/" + name,
+		"web_url":             "https://git.civo.com/" + group + "/" + name,
 		"default_branch":      "main", "namespace": map[string]any{"full_path": group}}
 }
 

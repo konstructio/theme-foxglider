@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -20,7 +21,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "1.0.4"
+const themeVersion = "1.1.0"
 
 const ttlEco = 45 * time.Second
 
@@ -268,11 +269,24 @@ func (a *api) latestPipe(ctx context.Context, proj string) *pipelineJSON {
 	if err != nil {
 		return nil
 	}
-	pl := v.(glPipeline)
+	pl := v.(glLatestPipeline)
 	if pl.ID == 0 {
 		return nil
 	}
-	pj := toPipelineJSON(pl)
+	short := pl.SHA
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	pj := pipelineJSON{
+		ID: pl.ID, Status: pl.Status, Ref: pl.Ref, SHA: pl.SHA, ShortSHA: short,
+		WebURL: pl.WebURL, CreatedAt: pl.CreatedAt, UpdatedAt: pl.UpdatedAt,
+		FinishedAt: pl.FinishedAt,
+		DurationS:  pl.UpdatedAt.Sub(pl.CreatedAt).Seconds(),
+	}
+	if pl.User != nil {
+		pj.AuthorName = pl.User.Name
+		pj.AuthorAvatar = pl.User.AvatarURL
+	}
 	return &pj
 }
 
@@ -390,4 +404,78 @@ func (a *api) meta(w http.ResponseWriter, r *http.Request) {
 		"gitlab_host": a.gl.base,
 		"groups":      a.groups,
 	})
+}
+
+// ttlProgress keeps live stage-progress fresh without hammering GitLab: the
+// frontend only polls this for running pipelines, and hits this short cache.
+const ttlProgress = 5 * time.Second
+
+type stageProgress struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// pipelineProgress rolls a running pipeline's jobs up into ordered per-stage
+// statuses for the live mini-progress bar. Cheap: one cached call, only ever
+// polled while a pipeline is actually running.
+func (a *api) pipelineProgress(w http.ResponseWriter, r *http.Request) {
+	proj := r.URL.Query().Get("project")
+	id, _ := strconv.Atoi(r.URL.Query().Get("id"))
+	if proj == "" || id == 0 {
+		writeErr(w, 400, "project and id required")
+		return
+	}
+	v, err := a.c.do(fmt.Sprintf("prog:%s:%d", proj, id), ttlProgress, func() (any, error) {
+		return a.gl.jobsByPath(context.Background(), proj, id)
+	})
+	if err != nil {
+		writeErr(w, 503, "GitLab unreachable: "+err.Error())
+		return
+	}
+	stages := rollupStages(v.([]glJob))
+	writeJSON(w, map[string]any{"stages": stages, "status": overallStatus(stages)})
+}
+
+// rollupStages collapses jobs into ordered per-stage statuses (first-seen order).
+func rollupStages(jobs []glJob) []stageProgress {
+	var order []string
+	byStage := map[string][]string{}
+	for _, j := range jobs {
+		if _, ok := byStage[j.Stage]; !ok {
+			order = append(order, j.Stage)
+		}
+		byStage[j.Stage] = append(byStage[j.Stage], j.Status)
+	}
+	out := make([]stageProgress, 0, len(order))
+	for _, s := range order {
+		out = append(out, stageProgress{Name: s, Status: stageStatus(byStage[s])})
+	}
+	return out
+}
+
+// stageStatus picks the most salient status for a stage: failed beats running
+// beats not-started beats success.
+func stageStatus(ss []string) string {
+	rank := map[string]int{"failed": 5, "running": 4, "pending": 3, "created": 3, "manual": 2, "success": 1}
+	best, bestRank := "success", 0
+	for _, s := range ss {
+		if r := rank[s]; r > bestRank {
+			bestRank, best = r, s
+		}
+	}
+	return best
+}
+
+func overallStatus(stages []stageProgress) string {
+	for _, s := range stages {
+		if s.Status == "failed" {
+			return "failed"
+		}
+	}
+	for _, s := range stages {
+		if s.Status == "running" || s.Status == "pending" || s.Status == "created" {
+			return "running"
+		}
+	}
+	return "success"
 }

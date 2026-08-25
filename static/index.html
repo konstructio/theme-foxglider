@@ -83,6 +83,21 @@
   .arrowlite{color:var(--mut2)}
   .vchip{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:11px;color:var(--ink2)}
   .vchip.mut{color:var(--mut)}
+  .avatar{width:22px;height:22px;border-radius:50%;border:1px solid var(--line2);vertical-align:middle;flex:none;background:var(--panel2)}
+  .stages{display:flex;gap:3px;margin-top:9px}
+  .stg{flex:1;height:5px;border-radius:3px;background:var(--c,var(--mut2));opacity:.92;transition:background .3s}
+  .stg.run{animation:pulse 1.4s ease-in-out infinite}
+  .ec-when{font-size:11px;margin-top:7px;color:var(--mut)}
+  .fleet-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:10px;margin-bottom:6px}
+  .tile{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--c);border-radius:8px;padding:10px 12px}
+  .tile-head{display:flex;align-items:center;gap:7px;margin-bottom:4px}
+  .tdot{width:8px;height:8px;border-radius:50%;flex:none}
+  .tname{color:var(--ink);font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tile-sub{font-size:11px;margin-bottom:8px}
+  .spark{display:flex;gap:2px;flex-wrap:wrap}
+  .sq{width:11px;height:11px;border-radius:2px;opacity:.9;cursor:pointer}
+  .sq:hover{opacity:1;outline:1px solid var(--ink2)}
+  .sq.run{animation:pulse 1.4s ease-in-out infinite}
   @media(max-width:760px){.eco-arrow{display:none}}
 </style>
 </head>
@@ -154,6 +169,39 @@ function statusChip(pl) {
   if (!pl) return '<span class="chip" style="--c:var(--mut2)">no pipeline</span>';
   return `<a class="chip" target="_blank" href="${pl.web_url}" style="--c:${statusColor(pl.status)}">${esc(pl.status)}</a>`;
 }
+// avatarImg shows who pushed the change behind the latest pipeline.
+function avatarImg(pl) {
+  if (!pl || !pl.author_avatar) return '';
+  return `<img class="avatar" src="${pl.author_avatar}" alt="" title="${esc(pl.author_name || '')} — pushed the latest change">`;
+}
+
+// Live stage-progress: only running pipelines are polled, and only while they run.
+const isRunning = pl => !!pl && ['running', 'pending', 'created', 'waiting_for_resource'].includes(pl.status);
+// completedLabel: "completed <ago>" from the finish time; empty while running
+// (the status chip + stage bar already convey "running").
+function completedLabel(pl) {
+  if (!pl || isRunning(pl)) return '';
+  const t = pl.finished_at || pl.updated_at;
+  return t ? '✓ completed ' + relTime(t) : '';
+}
+function stagesSlot(node) {
+  return isRunning(node && node.pipeline)
+    ? `<div class="stages" data-proj="${esc(node.project)}" data-pid="${node.pipeline.id}"></div>` : '';
+}
+let progressGen = 0;
+function startProgressPollers() {
+  const gen = ++progressGen; // supersede pollers from any previous render
+  document.querySelectorAll('.stages[data-pid]').forEach(el => pollProgress(el, gen));
+}
+async function pollProgress(el, gen) {
+  if (gen !== progressGen || !el.isConnected) return;
+  try {
+    const d = await fetchJSON(`/api/pipeline-progress?project=${encodeURIComponent(el.dataset.proj)}&id=${el.dataset.pid}`);
+    el.innerHTML = (d.stages || []).map(st =>
+      `<span class="stg ${st.status === 'running' ? 'run' : ''}" style="--c:${statusColor(st.status)}" title="${esc(st.name)} · ${st.status}"></span>`).join('');
+    if (isRunning({ status: d.status }) && gen === progressGen) setTimeout(() => pollProgress(el, gen), 5000);
+  } catch { if (gen === progressGen) setTimeout(() => pollProgress(el, gen), 8000); }
+}
 function driftChip(d) {
   const M = { current: ['✓ up to date', 'var(--civo)'],
     behind: [d.behind > 0 ? `↑ ${d.behind} behind` : 'behind', 'var(--gl-amber)'],
@@ -180,17 +228,21 @@ function renderDelivery(d) {
       <div class="eco-col">
         <div class="eco-h">Microcharts</div>
         ${svcs.map(s => `<div class="ecard">
-          <div class="ec-top"><a class="pname" target="_blank" href="${s.web_url}">${esc(s.name)}</a>${statusChip(s.pipeline)}</div>
+          <div class="ec-top"><a class="pname" target="_blank" href="${s.web_url}">${esc(s.name)}</a>${statusChip(s.pipeline)}<span class="spacer"></span>${avatarImg(s.pipeline)}</div>
           <div class="ec-ver mono">${verChip(s.base_version)}<span class="arrowlite">→</span>${verChip(s.bundled_version)}</div>
+          <div class="ec-when">${completedLabel(s.pipeline)}</div>
+          ${stagesSlot(s)}
         </div>`).join('')}
       </div>
       <div class="eco-arrow">→</div>
       <div class="eco-col">
         <div class="eco-h">Umbrella</div>
         <div class="ecard macro">
-          <div class="ec-top">${METAMARK}<a class="pname" target="_blank" href="${m.web_url}">${esc(m.name)}</a>${statusChip(m.pipeline)}</div>
+          <div class="ec-top">${METAMARK}<a class="pname" target="_blank" href="${m.web_url}">${esc(m.name)}</a>${statusChip(m.pipeline)}<span class="spacer"></span>${avatarImg(m.pipeline)}</div>
           <div class="ec-big mono">${esc(m.published_rc || m.base_version || '—')}</div>
           <div class="mut">bundles ${svcs.length} microcharts · base <span class="mono">${esc(m.base_version || '—')}</span></div>
+          <div class="ec-when">${completedLabel(m.pipeline)}</div>
+          ${stagesSlot(m)}
         </div>
       </div>
       <div class="eco-arrow">→</div>
@@ -203,40 +255,42 @@ function renderDelivery(d) {
         </div>`).join('') : '<div class="ecard mut">no delivery targets</div>'}
       </div>
     </div>`;
+  startProgressPollers();
 }
 
+// Fleet is a dense health wall: one status-colored tile per project + a compact
+// sparkline of its recent runs (oldest→newest). No time axis to trek across —
+// the read is "what's green/red/running across the fleet" at a glance.
 function renderFleet(data) {
-  const now = Date.now(), win = state.windowH * 3600e3, start = now - win;
   if (!data.groups || !data.groups.length) {
     $('#view').innerHTML = '<div class="empty"><h2>No projects visible to this token.</h2></div>';
     return;
   }
   $('#view').innerHTML = data.groups.map(g => `
     <div class="section-h">${esc(g.path)}<span></span></div>
+    <div class="fleet-grid">
     ${g.projects.map(p => {
       const latest = p.pipelines[0];
-      const inWin = p.pipelines.filter(pl => new Date(pl.created_at) >= start);
-      const older = p.pipelines.length - inWin.length;
-      return `<div class="row">
-        <div class="row-head">
-          <a href="${p.web_url}" target="_blank" class="pname">${esc(p.name)}</a>
-          ${latest ? `<a class="chip" target="_blank" href="${latest.web_url}"
-              style="--c:${statusColor(latest.status)}">${latest.status}</a>
-            <span class="mono mut ref">${esc(latest.ref)} @ ${latest.short_sha}</span>` :
-            `<span class="chip" style="--c:var(--mut2)">no pipelines</span>`}
+      const c = latest ? statusColor(latest.status) : 'var(--mut2)';
+      const recent = p.pipelines.slice(0, 14).reverse(); // oldest→newest, newest on the right
+      const doneP = p.pipelines.find(pl => !isRunning(pl)); // newest finished run
+      return `<div class="tile" style="--c:${c}">
+
+        <div class="tile-head">
+          <span class="tdot" style="background:${c}"></span>
+          <a class="tname" href="${p.web_url}" target="_blank" title="${esc(p.path || p.name)}">${esc(p.name)}</a>
           <span class="spacer"></span>
-          ${older > 0 ? `<a class="mono mut older" target="_blank" href="${p.web_url}/-/pipelines">· ${older} earlier</a>` : ''}
+          ${latest ? `<a class="chip" target="_blank" href="${latest.web_url}" style="--c:${c}">${latest.status}</a>`
+                   : `<span class="chip" style="--c:var(--mut2)">none</span>`}
         </div>
-        <div class="track">${inWin.map(pl => {
-          const l = (new Date(pl.created_at) - start) / win * 100;
-          const w = Math.max(pl.duration_s * 1000 / win * 100, 0.6);
-          return `<a class="seg ${pl.status === 'running' ? 'running' : ''}"
-            data-pid="${p.id}" data-plid="${pl.id}" href="${pl.web_url}" target="_blank"
-            style="left:${l}%;width:${Math.min(w, 100 - l)}%;background:${statusColor(pl.status)}"
-            title="${esc(pl.ref)} · ${pl.short_sha} · ${fmtDur(pl.duration_s)} · ${relTime(pl.created_at)}"></a>`;
-        }).join('')}</div>
+        <div class="tile-sub mono mut">${latest ? `${esc(latest.ref)} · ${latest.short_sha}` : 'no pipelines'}${doneP ? ` · ✓ ${relTime(doneP.updated_at)}` : ''}</div>
+        ${recent.length ? `<div class="spark">${recent.map(pl =>
+          `<span class="sq ${pl.status === 'running' ? 'run' : ''}" data-pid="${p.id}" data-plid="${pl.id}"
+             style="background:${statusColor(pl.status)}"
+             title="${esc(pl.ref)} · ${pl.short_sha} · ${pl.status} · ${fmtDur(pl.duration_s)} · ${relTime(pl.created_at)}"></span>`).join('')}</div>` : ''}
       </div>`;
-    }).join('')}`).join('');
+    }).join('')}
+    </div>`).join('');
 }
 
 async function refresh() {
@@ -275,8 +329,8 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', e => 
 }));
 $('#window').addEventListener('change', e => { state.windowH = +e.target.value; refresh(); });
 document.addEventListener('click', e => {
-  const seg = e.target.closest('.seg');
-  if (seg && !e.metaKey && !e.ctrlKey) {
+  const seg = e.target.closest('.seg, .sq');
+  if (seg && seg.dataset.plid && !e.metaKey && !e.ctrlKey) {
     e.preventDefault();
     openGantt(seg.dataset.pid, seg.dataset.plid);
   }

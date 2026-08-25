@@ -114,8 +114,8 @@ func fakeEcoGitLab(t *testing.T) *httptest.Server {
 			w.Write([]byte("spec:\n  source:\n    targetRevision: 0.2.0-rc.2\n"))
 		case strings.HasSuffix(p, "/repository/tags"):
 			w.Write([]byte(`[{"name":"metaphor-v0.2.0-rc.4"},{"name":"metaphor-v0.2.0-rc.3"}]`))
-		case strings.HasSuffix(p, "/pipelines"):
-			w.Write([]byte(`[{"id":99,"status":"success","ref":"main","sha":"deadbeefcafe","web_url":"http://gl/x/-/pipelines/99","created_at":"2026-08-25T00:00:00Z","updated_at":"2026-08-25T00:02:00Z"}]`))
+		case strings.HasSuffix(p, "/pipelines/latest"):
+			w.Write([]byte(`{"id":99,"status":"success","ref":"main","sha":"deadbeefcafe","web_url":"http://gl/x/-/pipelines/99","created_at":"2026-08-25T00:00:00Z","updated_at":"2026-08-25T00:02:00Z","user":{"name":"John Dietz","username":"jd","avatar_url":"http://gl/avatar/jd.png"}}`))
 		default:
 			w.WriteHeader(404)
 		}
@@ -146,6 +146,9 @@ func TestEcosystem(t *testing.T) {
 	}
 	if eco.Macro.Pipeline == nil || eco.Macro.Pipeline.Status != "success" {
 		t.Fatalf("macro pipeline = %+v", eco.Macro.Pipeline)
+	}
+	if eco.Macro.Pipeline.AuthorName != "John Dietz" || eco.Macro.Pipeline.AuthorAvatar == "" {
+		t.Fatalf("macro pipeline author = %+v", eco.Macro.Pipeline)
 	}
 	if len(eco.Services) != 3 {
 		t.Fatalf("services = %+v", eco.Services)
