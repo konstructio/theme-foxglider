@@ -131,11 +131,22 @@ function relTime(iso) {
 const fmtDur = d => d >= 3600 ? `${d/3600|0}h${(d%3600)/60|0}m` : d >= 60 ? `${d/60|0}m${d%60|0}s` : `${d|0}s`;
 const esc = t => { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; };
 
+// errMsg coerces any thrown value — string, {error:"..."}, {error:{message}},
+// Error, or plain object — into a readable line. Never yields "[object Object]".
+function errMsg(e) {
+  if (e == null) return 'unknown error';
+  if (typeof e === 'string') return e;
+  if (typeof e.error === 'string') return e.error;
+  if (e.error && typeof e.error === 'object') return e.error.message || JSON.stringify(e.error);
+  if (e.status) return `HTTP ${e.status}`;
+  return e.message || JSON.stringify(e);
+}
+
 function showDisconnected(err) {
   $('#view').innerHTML = `<div class="empty">
     <img src="metaphor.svg" alt="" width="120" style="opacity:.5;margin-bottom:14px" />
     <h2>Not connected to GitLab</h2>
-    <p class="mono mut">${esc(err.error || String(err))}</p></div>`;
+    <p class="mono mut">${esc(errMsg(err))}</p></div>`;
 }
 
 const verChip = v => v ? `<span class="vchip mono">${esc(v)}</span>` : `<span class="vchip mono mut">—</span>`;

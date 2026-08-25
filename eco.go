@@ -21,7 +21,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "1.0.0"
+const themeVersion = "1.0.1"
 
 const ttlEco = 45 * time.Second
 
@@ -278,61 +278,66 @@ func (a *api) latestPipe(ctx context.Context, proj string) *pipelineJSON {
 }
 
 // ecosystem renders the metaphor supply chain: services → umbrella → delivered.
+// Every GitLab call fires concurrently — the handler's wall-clock is one slow
+// call, not the sum — so a sluggish GitLab can't push it past the ingress
+// timeout. Each fetch degrades to empty on error, so partial data still renders.
 func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	t := a.topo
 
-	// Macro first — its deps are the source of truth for what's bundled.
-	macroRaw := a.rawFile(ctx, t.MacroProj, t.MacroFile)
-	deps := macroDeps(macroRaw)
-	publishedTag := newestTag(a.cachedTags(ctx, t.MacroProj), t.MacroTag)
-	publishedRC := strings.TrimPrefix(publishedTag, t.MacroTag)
+	var (
+		macroRaw, publishedTag string
+		macroPipe              *pipelineJSON
+		svcRaw                 = make([]string, len(t.Services))
+		svcPipe                = make([]*pipelineJSON, len(t.Services))
+		delRaw                 = make([]string, len(t.Delivery))
+		wg                     sync.WaitGroup
+	)
 
+	fire := func(fn func()) { wg.Add(1); go func() { defer wg.Done(); fn() }() }
+
+	fire(func() { macroRaw = a.rawFile(ctx, t.MacroProj, t.MacroFile) })
+	fire(func() { publishedTag = newestTag(a.cachedTags(ctx, t.MacroProj), t.MacroTag) })
+	fire(func() { macroPipe = a.latestPipe(ctx, t.MacroProj) })
+	for i, s := range t.Services {
+		i, s := i, s
+		fire(func() { svcRaw[i] = a.rawFile(ctx, s.Project, s.Chart) })
+		fire(func() { svcPipe[i] = a.latestPipe(ctx, s.Project) })
+	}
+	for i, d := range t.Delivery {
+		i, d := i, d
+		fire(func() { delRaw[i] = a.rawFile(ctx, d.Project, d.App) })
+	}
+	wg.Wait()
+
+	deps := macroDeps(macroRaw)
+	publishedRC := strings.TrimPrefix(publishedTag, t.MacroTag)
 	macro := macroNode{
 		Name: t.MacroName, Project: t.MacroProj,
 		WebURL:  a.gl.base + "/" + t.MacroProj,
 		BaseVer: chartVersion(macroRaw), PublishedRC: publishedRC, PublishedTag: publishedTag,
-		Pipeline: a.latestPipe(ctx, t.MacroProj),
+		Pipeline: macroPipe,
 	}
-
-	var mu sync.Mutex
-	var wg sync.WaitGroup
 
 	services := make([]svcNode, len(t.Services))
 	for i, s := range t.Services {
-		wg.Add(1)
-		go func(i int, s svcSpec) {
-			defer wg.Done()
-			n := svcNode{
-				Name: s.Name, Project: s.Project,
-				WebURL:  a.gl.base + "/" + s.Project,
-				BaseVer: chartVersion(a.rawFile(ctx, s.Project, s.Chart)),
-				Bundled: deps[s.Name],
-			}
-			n.Pipeline = a.latestPipe(ctx, s.Project)
-			mu.Lock()
-			services[i] = n
-			mu.Unlock()
-		}(i, s)
+		services[i] = svcNode{
+			Name: s.Name, Project: s.Project,
+			WebURL:  a.gl.base + "/" + s.Project,
+			BaseVer: chartVersion(svcRaw[i]), Bundled: deps[s.Name], Pipeline: svcPipe[i],
+		}
 	}
 
 	delivery := make([]deliveryNode, len(t.Delivery))
 	for i, d := range t.Delivery {
-		wg.Add(1)
-		go func(i int, d deliverySpec) {
-			defer wg.Done()
-			delivered := targetRevision(a.rawFile(ctx, d.Project, d.App))
-			state, behind := drift(delivered, publishedRC)
-			mu.Lock()
-			delivery[i] = deliveryNode{
-				Env: d.Env, Cluster: d.Cluster, Delivered: delivered,
-				WebURL: a.gl.base + "/" + d.Project + "/-/blob/main/" + d.App,
-				State:  state, Behind: behind,
-			}
-			mu.Unlock()
-		}(i, d)
+		delivered := targetRevision(delRaw[i])
+		state, behind := drift(delivered, publishedRC)
+		delivery[i] = deliveryNode{
+			Env: d.Env, Cluster: d.Cluster, Delivered: delivered,
+			WebURL: a.gl.base + "/" + d.Project + "/-/blob/main/" + d.App,
+			State:  state, Behind: behind,
+		}
 	}
-	wg.Wait()
 
 	writeJSON(w, map[string]any{
 		"generated_at": time.Now().UTC(),
