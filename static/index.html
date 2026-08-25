@@ -89,7 +89,7 @@
 <body>
 <div class="wrap">
   <header>
-    <a class="brand" href="#" id="brand"><svg viewBox="0 0 64 48" width="26" height="20" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#E24329"/><stop offset=".55" stop-color="#FC6D26"/><stop offset="1" stop-color="#FCA326"/></linearGradient></defs><path fill="url(#g)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/><path fill="#12161d" opacity=".25" d="M32 20 L42 22 L32 44 Z"/><circle cx="26" cy="28" r="2.2" fill="#05df72"/></svg>METAPHOR</a>
+    <a class="brand" href="#" id="brand"><svg viewBox="0 0 64 48" width="26" height="20" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#05df72"/><stop offset=".55" stop-color="#00c950"/><stop offset="1" stop-color="#00a884"/></linearGradient></defs><path fill="url(#g)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/><path fill="#12161d" opacity=".25" d="M32 20 L42 22 L32 44 Z"/><circle cx="26" cy="28" r="2.2" fill="#0b1220"/></svg>METAPHOR</a>
     <span id="ver" class="ver mono" title="theme build version"></span>
     <nav class="tabs">
       <a href="#delivery" class="tab on" data-view="delivery">Delivery</a>
@@ -106,7 +106,7 @@
 </div>
 <script>
 const state = { view: 'delivery', windowH: 24, overview: null, activity: null, eco: null };
-const METAMARK = '<svg viewBox="0 0 64 48" width="20" height="15" aria-hidden="true" style="flex:none"><defs><linearGradient id="gm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#E24329"/><stop offset=".55" stop-color="#FC6D26"/><stop offset="1" stop-color="#FCA326"/></linearGradient></defs><path fill="url(#gm)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/><circle cx="26" cy="28" r="2.2" fill="#05df72"/></svg>';
+const METAMARK = '<svg viewBox="0 0 64 48" width="20" height="15" aria-hidden="true" style="flex:none"><defs><linearGradient id="gm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#05df72"/><stop offset=".55" stop-color="#00c950"/><stop offset="1" stop-color="#00a884"/></linearGradient></defs><path fill="url(#gm)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/><circle cx="26" cy="28" r="2.2" fill="#0b1220"/></svg>';
 const $ = (s, el=document) => el.querySelector(s);
 
 async function fetchJSON(url) {
