@@ -109,6 +109,7 @@
   .act-row{display:flex;align-items:center;gap:12px;margin-top:6px;flex-wrap:wrap}
   .abtn .cd{position:absolute;left:0;bottom:0;height:2px;width:0;background:var(--gl-orange)}
   .abtn.arming{border-color:var(--gl-orange);color:var(--gl-orange)}
+  .abtn.calm,.abtn.calm:hover{border-color:var(--line2);color:var(--ink2)}
   .cd-hint{margin:10px 0 0;font-size:12px}
   .wchip{display:inline-flex;align-items:center;gap:6px;margin:10px 0 0 10px;font-size:11px;color:var(--gl-amber);
     border:1px solid var(--line);border-radius:4px;padding:3px 8px;vertical-align:middle}
@@ -556,6 +557,9 @@ function openActionModal(action, project) {
   const disarm = (msg) => {
     cancelCountdown();
     btn.classList.remove('arming');
+    // the cursor is still on the button — read neutral NOW, not on mouseout
+    btn.classList.add('calm');
+    btn.addEventListener('mouseleave', () => btn.classList.remove('calm'), { once: true });
     const t = btn.querySelector('.cd-txt'); if (t) t.textContent = action === 'deliver' ? 'deliver' : 'release';
     const b = btn.querySelector('.cd'); if (b) b.style.width = '0%';
     if (msg) $('#act-out').textContent = msg;
