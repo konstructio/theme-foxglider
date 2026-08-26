@@ -102,9 +102,9 @@
   .ec-sha>a{color:var(--civo)}
   .copy{background:none;border:1px solid var(--line);border-radius:4px;color:var(--mut);cursor:pointer;font-size:10px;padding:1px 5px;line-height:1.4}
   .copy:hover{color:var(--civo);border-color:var(--civo)}
-  .pipes{display:inline-flex;gap:4px;flex-wrap:wrap;margin-left:2px}
-  .pchip{font-family:var(--mono);font-size:10px;color:var(--c);border:1px solid var(--c);border-radius:3px;padding:1px 6px;opacity:.88}
-  .pchip:hover{opacity:1}
+  .pipebtn{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10px;color:var(--c);
+    border:1px solid var(--c);border-radius:4px;padding:2px 7px;opacity:.9;margin-left:2px}
+  .pipebtn:hover{opacity:1;color:var(--c)}
   .ec-act{display:flex;gap:8px;margin-top:10px}
   .abtn{background:var(--panel2);border:1px solid var(--line2);border-radius:5px;color:var(--ink2);cursor:pointer;font-size:12px;padding:4px 10px;display:inline-flex;align-items:center;gap:6px;position:relative;overflow:hidden}
   .abtn:hover{border-color:var(--civo);color:var(--civo)}
@@ -247,7 +247,7 @@ const isRunning = pl => !!pl && ['running', 'pending', 'created', 'waiting_for_r
 
 // commitLine: the human story on a card — the commit message with its time,
 // then the short SHA (linked + copyable) and the SHA's full pipeline story.
-const shortRef = r => r.length > 22 ? r.slice(0, 20) + '…' : r;
+const ICON_PIPE = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M10 6.5h5.5A2.5 2.5 0 0 1 18 9v5"/></svg>';
 function commitLine(n) {
   const c = n.commit, pl = n.pipeline;
   if (!c) return '';
@@ -257,16 +257,9 @@ function commitLine(n) {
     <div class="ec-sha mono">
       <a target="_blank" href="${c.web_url}" title="view commit">${esc(c.short_sha)}</a>
       <button class="copy" data-sha="${esc(c.sha)}" title="copy full sha">⧉</button>
-      ${shaPipes(n)}
+      ${pl ? `<a class="pipebtn" target="_blank" href="${pl.web_url}" style="--c:${statusColor(pl.status)}"
+        title="pipeline #${pl.id} · ${esc(pl.ref)} · ${pl.status}">${ICON_PIPE} pipeline</a>` : ''}
     </div>`;
-}
-// shaPipes: every pipeline that ran on this commit (branch run, RC tag run…).
-function shaPipes(n) {
-  const ps = n.sha_pipelines || [];
-  if (!ps.length) return '';
-  return `<span class="pipes">${ps.slice(0, 4).map(p =>
-    `<a class="pchip" target="_blank" href="${p.web_url}" style="--c:${statusColor(p.status)}"
-       title="#${p.id} · ${esc(p.ref)} · ${p.status} · ${esc(p.source || '')} · ${relTime(p.updated_at)}">${esc(shortRef(p.ref))}</a>`).join('')}</span>`;
 }
 // copy-to-clipboard with an execCommand fallback (clipboard API can be denied
 // inside the konstruct iframe).
