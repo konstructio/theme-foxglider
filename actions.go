@@ -109,7 +109,13 @@ type runReq struct {
 	Project string `json:"project"`
 	Action  string `json:"action"`
 	Confirm string `json:"confirm"`
+	// Version: deliver-only override — any PUBLISHED version (upgrade or
+	// rollback). Empty means the newest RC tag.
+	Version string `json:"version"`
 }
+
+// reVersionArg keeps typed version overrides to sane semver-ish shapes.
+var reVersionArg = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$`)
 
 func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 	if !x.enabled() {
@@ -152,7 +158,28 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 502, "tags: "+err.Error())
 			return
 		}
-		tag := newestTag(tags, x.topo.MacroTag)
+		var tag string
+		if want := strings.TrimSpace(req.Version); want != "" {
+			// explicit version (upgrade or rollback): it must be a real
+			// published tag — typos never reach the delivery pipeline.
+			if !reVersionArg.MatchString(want) {
+				writeErr(w, 400, "that doesn't look like a version")
+				return
+			}
+			candidate := x.topo.MacroTag + want
+			for _, t := range tags {
+				if t.Name == candidate {
+					tag = candidate
+					break
+				}
+			}
+			if tag == "" {
+				writeErr(w, 400, fmt.Sprintf("no published tag %s — check the version", candidate))
+				return
+			}
+		} else {
+			tag = newestTag(tags, x.topo.MacroTag)
+		}
 		if tag == "" {
 			writeErr(w, 409, "no published RC tag to deliver yet")
 			return

@@ -118,6 +118,18 @@
   .abtn.arming{border-color:var(--gl-orange);color:var(--gl-orange)}
   .abtn.calm,.abtn.calm:hover{border-color:var(--line2);color:var(--ink2)}
   .cd-hint{margin:10px 0 0;font-size:12px}
+  .up-row{display:flex;gap:8px;margin-top:10px}
+  .upin{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);border-radius:5px;color:var(--ink);padding:5px 8px;font-size:12px;font-family:var(--mono)}
+  .upin:focus{outline:none;border-color:var(--civo)}
+  .up-hint{font-size:11px;margin-top:8px;color:var(--gl-amber)}
+  .ecard.env.delivering{border-color:var(--civo);animation:cardglow 1.6s ease-in-out infinite}
+  @keyframes cardglow{50%{box-shadow:0 0 16px -3px var(--civo)}}
+  .eco-arrow{position:relative}
+  .eco-arrow.flow{color:var(--civo)}
+  .eco-arrow.flow .pkt{position:absolute;left:-6px;top:50%;width:6px;height:6px;margin-top:-3px;border-radius:50%;
+    background:var(--civo);animation:pkt 1.1s linear infinite}
+  .eco-arrow.flow .pkt:nth-child(2){animation-delay:.55s}
+  @keyframes pkt{from{transform:translateX(-10px);opacity:0}25%{opacity:1}to{transform:translateX(30px);opacity:0}}
   .wchip{display:inline-flex;align-items:center;gap:6px;margin:10px 0 0 10px;font-size:11px;color:var(--gl-amber);
     border:1px solid var(--line);border-radius:4px;padding:3px 8px;vertical-align:middle}
   .wchip.ok{color:var(--civo);border-color:var(--civo)}
@@ -370,6 +382,28 @@ setInterval(() => {
     if (meta.length === 2) { meta[0].textContent = b.label; meta[1].textContent = `${b.pct | 0}%${b.right.slice(b.right.indexOf(' ·'))}`; }
   });
 }, 1000);
+// envCard is the desired-state card: what the gitops file asks the cluster to
+// run, an upgrade CTA when a newer chart is published (editable — any
+// published version works, so rollback is the same gesture), and the
+// delivering glow + chip while a change flows in.
+function envCard(e, m) {
+  const latest = m.published_rc || '';
+  const w = state.watch;
+  const delivering = w && w.mode === 'deliver' && !w.done && Date.now() < w.until;
+  const canAct = state.act && state.act.enabled && latest;
+  const upgradable = latest && e.delivered_version !== latest;
+  return `<div class="ecard env${delivering ? ' delivering' : ''}">
+    <div class="ec-top"><a class="pname" target="_blank" href="${e.web_url}" title="${esc(e.environment)}">${esc(e.environment)}</a><span class="mut mono">${esc(e.cluster)}</span></div>
+    <div class="mut" style="font-size:11px">desired</div>
+    <div class="ec-big mono">${verChip(e.delivered_version)}</div>
+    ${e.state === 'current' ? driftChip(e) : upgradable ? `<div class="up-hint">upgrade available → ${esc(latest)}</div>` : driftChip(e)}
+    ${canAct ? `<div class="up-row">
+        <input class="upin" value="${esc(latest)}" spellcheck="false" title="any published version — type an older one to roll back">
+        <button class="abtn warn upbtn" data-act="deliver" data-proj="${esc(m.project)}">${ICON_SHIP} upgrade</button>
+      </div>` : ''}
+    ${watchChip({ project: '__delivery__' })}
+  </div>`;
+}
 function driftChip(d) {
   const M = { current: ['✓ up to date', 'var(--civo)'],
     behind: [d.behind > 0 ? `↑ ${d.behind} behind` : 'behind', 'var(--gl-amber)'],
@@ -389,7 +423,7 @@ function renderDelivery(d) {
       <span class="vchip mono">${esc(m.published_rc || m.base_version || '—')}</span>
       ${statusChip(m.pipeline)}
       <span class="spacer"></span>
-      ${primary ? `<span class="mut">delivered to <span class="mono">${esc(primary.cluster)}</span></span>
+      ${primary ? `<span class="mut"><span class="mono">${esc(primary.cluster)}</span> desired</span>
         <span class="vchip mono">${esc(primary.delivered_version || '—')}</span> ${driftChip(primary)}` : ''}
     </div>
     <div class="eco">
@@ -415,14 +449,10 @@ function renderDelivery(d) {
           ${actBtns(m.project, true)}${watchChip(m)}
         </div>
       </div>
-      <div class="eco-arrow">→</div>
+      <div class="eco-arrow${state.watch && state.watch.mode === 'deliver' && !state.watch.done && Date.now() < state.watch.until ? ' flow' : ''}">${state.watch && state.watch.mode === 'deliver' && !state.watch.done ? '<span class="pkt"></span><span class="pkt"></span>' : ''}→</div>
       <div class="eco-col">
-        <div class="eco-h">Delivered</div>
-        ${del.length ? del.map(e => `<div class="ecard">
-          <div class="ec-top"><a class="pname" target="_blank" href="${e.web_url}">${esc(e.environment)}</a><span class="mut mono">${esc(e.cluster)}</span></div>
-          <div class="ec-big mono">${verChip(e.delivered_version)}</div>
-          ${driftChip(e)}
-        </div>`).join('') : '<div class="ecard mut">no delivery targets</div>'}
+        <div class="eco-h">Desired state</div>
+        ${del.length ? del.map(e => envCard(e, m)).join('') : '<div class="ecard mut">no delivery targets</div>'}
       </div>
     </div>`;
   startProgressPollers();
@@ -557,8 +587,8 @@ function watchChip(n) {
     const delivered = (state.eco?.delivery || [])[0]?.delivered_version;
     if (delivered === w.target && !w.done) { w.done = true; w.until = Date.now() + 15000; }
     return w.done
-      ? `<span class="wchip ok">✓ ${esc(w.target)} delivered to dev-33</span>`
-      : `<span class="wchip"><span class="wspin"></span>delivering ${esc(w.target)} to dev-33…</span>`;
+      ? `<span class="wchip ok">✓ desired is now ${esc(w.target)}</span>`
+      : `<span class="wchip"><span class="wspin"></span>delivering ${esc(w.target)}…</span>`;
   }
   const pl = n.pipeline;
   const arrived = pl && (pl.id !== w.sinceId || (isRunning(pl) && !['running','pending'].includes(w.sinceStatus)));
@@ -575,18 +605,20 @@ function actBtns(project, isMacro) {
   return `<div class="ec-act">
     <button class="abtn" data-act="trigger" data-proj="${esc(project)}" title="trigger the delivery pipeline on a fresh sha">${ICON_SCOPE} trigger</button>
     <button class="abtn warn" data-act="release" data-proj="${esc(project)}" title="cut a clean release from the latest RC">${ICON_ROCKET} release</button>
-    ${isMacro ? `<button class="abtn warn" data-act="deliver" data-proj="${esc(project)}" title="deliver the latest published RC to dev-33">${ICON_SHIP} deliver</button>` : ''}
   </div>`;
 }
 document.addEventListener('click', e => {
   const b = e.target.closest('.abtn'); if (!b || !b.dataset.act) return;
-  openActionModal(b.dataset.act, b.dataset.proj);
+  const ver = b.classList.contains('upbtn')
+    ? (b.closest('.up-row')?.querySelector('.upin')?.value || '').trim()
+    : '';
+  openActionModal(b.dataset.act, b.dataset.proj, ver);
 });
-function openActionModal(action, project) {
+function openActionModal(action, project, version) {
   const short = project.split('/').pop();
   const needsConfirm = action === 'release' || action === 'deliver';
   const verb = action === 'deliver' ? 'delivering' : 'releasing';
-  const rc = (state.eco && state.eco.macro && (state.eco.macro.published_rc || '')) || '';
+  const rc = version || (state.eco && state.eco.macro && (state.eco.macro.published_rc || '')) || '';
   // Attribution is communicated by the konstruct shell — nothing to pick,
   // nothing to impersonate. The modal just states who it runs as.
   const actor = state.konstructUser || (state.act && state.act.actor) || 'konstruct';
@@ -617,7 +649,7 @@ function openActionModal(action, project) {
       const hdrs = { 'Content-Type': 'application/json' };
       if (state.konstructUser) hdrs['X-Konstruct-Actor'] = state.konstructUser;
       const res = await fetch('/api/actions/run', { method: 'POST', headers: hdrs,
-        body: JSON.stringify({ project, action, confirm }) });
+        body: JSON.stringify({ project, action, confirm, version: action === 'deliver' ? (version || '') : undefined }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw body;
       $('#act-out').innerHTML = `✓ started — <a target="_blank" href="${body.job_url}">job</a> · <a target="_blank" href="${body.pipeline_url}">pipeline</a>`;
@@ -626,7 +658,7 @@ function openActionModal(action, project) {
       // same commit is still a new run.
       const node = [ ...(state.eco?.services || []), state.eco?.macro ].find(n => n && n.project === project);
       if (action === 'deliver') {
-        state.watch = { mode: 'deliver', project, target: body.version, at: Date.now(), until: Date.now() + 420000, done: false };
+        state.watch = { mode: 'deliver', project: '__delivery__', target: body.version, at: Date.now(), until: Date.now() + 420000, done: false };
       } else {
         state.watch = { project, sinceId: node?.pipeline?.id ?? 0, sinceStatus: node?.pipeline?.status ?? '', at: Date.now(), until: Date.now() + 180000, done: false };
       }
