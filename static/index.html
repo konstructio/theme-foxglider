@@ -26,7 +26,8 @@
   .tab.on{background:var(--panel2);color:var(--ink)}
   #window{background:var(--panel);color:var(--ink2);border:1px solid var(--line);border-radius:5px;padding:4px 8px;font-size:12px}
   #updated{font-size:11px}
-  .orgchip{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:2px 7px}
+  .orgchip{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:2px 7px;display:inline-flex;align-items:center;gap:6px}
+  .orglogo{width:15px;height:15px;border-radius:3px;object-fit:cover}
   .section-h{display:flex;align-items:center;gap:12px;margin:30px 0 10px;font-size:11px;letter-spacing:.18em;
     text-transform:uppercase;color:var(--gl-amber);font-weight:700}
   .section-h span{flex:1;height:1px;background:var(--line)}
@@ -161,6 +162,7 @@
   .term-copy{position:absolute;top:7px;right:8px}
   .lane-tag{font-size:9.5px;color:var(--mut);border:1px solid var(--line);border-radius:3px;padding:1px 5px;letter-spacing:.04em}
   .tile-feats{margin-top:7px;border-top:1px dashed var(--line);padding-top:6px;display:flex;flex-direction:column;gap:4px}
+  .tf-h{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut2);margin-bottom:2px}
   .tf-row{display:flex;align-items:center;gap:7px;font-size:11.5px}
   .tf-ic{color:var(--mut2);display:inline-flex}
   .tf-ic svg{width:11px;height:11px}
@@ -796,6 +798,14 @@ async function loadMeta() {
     $('#sig-ver').textContent = v;
     const org = (m.groups && m.groups[0]) || '';
     if (org) $('#org').textContent = 'org · ' + org;
+    // the group's own logo, when it has one — proxied via the backend so
+    // private-group avatars work in the browser
+    fetchJSON('/api/org').then(o => {
+      if (!o.logo) return;
+      const chip = $('#org');
+      chip.innerHTML = `<img class="orglogo" src="${o.logo}" alt="" onerror="this.remove()"> ` + chip.textContent;
+      if (o.web_url) { chip.style.cursor = 'pointer'; chip.onclick = () => window.open(o.web_url, '_blank'); chip.title = o.name || org; }
+    }).catch(() => {});
   } catch {
     $('#ver').textContent = '';
     $('#sig-ver').textContent = '';
@@ -874,7 +884,7 @@ function tileFeatures(svc) {
   const feats = svc.features || [];
   if (!feats.length) return '';
   const act = state.act && state.act.enabled;
-  return `<div class="tile-feats">${feats.map(f => `
+  return `<div class="tile-feats"><div class="tf-h">active features</div>${feats.map(f => `
     <div class="tf-row">
       <span class="tf-ic">${ICON_BRANCH}</span>
       <a class="mono tf-name" target="_blank" href="${f.web_url}" title="${esc(f.title || '')}">${esc(f.name)}</a>

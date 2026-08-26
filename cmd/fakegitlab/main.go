@@ -99,6 +99,14 @@ func main() {
 	})
 	// group-scoped calls (the acting-as roster) route through ecoFake too
 	mux.HandleFunc("/api/v4/groups/", ecoFake)
+	mux.HandleFunc("/api/v4/groups/civo%2Fmetaphor", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"name":"Metaphor","full_path":"civo/metaphor","avatar_url":"http://localhost:9911/grouplogo.png","web_url":"https://git.civo.com/groups/civo/metaphor"}`)
+	})
+	mux.HandleFunc("/grouplogo.png", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/svg+xml")
+		fmt.Fprint(w, `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='#f97316'/><text x='8' y='12' font-size='10' text-anchor='middle' fill='#fff'>M</text></svg>`)
+	})
 	mux.HandleFunc("/api/v4/avatar", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.URL.RawQuery, "jared") {

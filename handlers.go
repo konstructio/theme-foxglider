@@ -63,6 +63,8 @@ func newAPI(gl *glClient, groups []string) http.Handler {
 	mux.HandleFunc("GET /api/ecosystem", a.guard(a.ecosystem))
 	mux.HandleFunc("GET /api/pipeline-progress", a.guard(a.pipelineProgress))
 	mux.HandleFunc("GET /api/meta", a.meta)
+	mux.HandleFunc("GET /api/org", a.guard(a.orgInfo))
+	mux.HandleFunc("GET /api/org-logo", a.guard(a.orgLogo))
 	mux.HandleFunc("GET /api/projects/{id}/pipelines", a.guard(a.projectPipelines))
 	mux.HandleFunc("GET /api/pipelines/{pid}/{plid}", a.guard(a.pipelineDetail))
 	mux.HandleFunc("GET /api/activity", a.guard(a.activity))
@@ -433,6 +435,74 @@ func (a *api) activity(w http.ResponseWriter, r *http.Request) {
 		items = []activityItem{}
 	}
 	writeJSON(w, map[string]any{"items": items})
+}
+
+// orgGroup resolves which group represents this org: the first configured
+// scope, else the macro project's parent group.
+func (a *api) orgGroup() string {
+	if len(a.groups) > 0 && a.groups[0] != "" {
+		return a.groups[0]
+	}
+	p := a.topo.MacroProj
+	if i := strings.LastIndex(p, "/"); i > 0 {
+		return p[:i]
+	}
+	return p
+}
+
+// orgInfo surfaces the group's identity; the avatar is offered as a proxied
+// path (never GitLab's raw URL — private groups 401 the browser).
+func (a *api) orgInfo(w http.ResponseWriter, r *http.Request) {
+	v, err := a.c.do("org:"+a.orgGroup(), 10*time.Minute, func() (any, error) {
+		g, err := a.gl.group(context.Background(), a.orgGroup())
+		if err != nil {
+			return nil, err
+		}
+		return g, nil
+	})
+	if err != nil {
+		writeJSON(w, map[string]any{"group": a.orgGroup()})
+		return
+	}
+	g := v.(glGroup)
+	out := map[string]any{"group": a.orgGroup(), "name": g.Name, "web_url": g.WebURL}
+	if g.AvatarURL != "" {
+		out["logo"] = "/api/org-logo"
+	}
+	writeJSON(w, out)
+}
+
+// orgLogo streams the group avatar through the server's credential.
+func (a *api) orgLogo(w http.ResponseWriter, r *http.Request) {
+	type img struct {
+		b  []byte
+		ct string
+	}
+	v, err := a.c.do("orglogo:"+a.orgGroup(), 10*time.Minute, func() (any, error) {
+		ctx := context.Background()
+		g, err := a.gl.group(ctx, a.orgGroup())
+		if err != nil {
+			return nil, err
+		}
+		if g.AvatarURL == "" {
+			return nil, fmt.Errorf("group has no avatar")
+		}
+		b, ct, err := a.gl.fetchBytes(ctx, g.AvatarURL)
+		if err != nil {
+			return nil, err
+		}
+		return img{b, ct}, nil
+	})
+	if err != nil {
+		w.WriteHeader(404)
+		return
+	}
+	im := v.(img)
+	if im.ct != "" {
+		w.Header().Set("Content-Type", im.ct)
+	}
+	w.Header().Set("Cache-Control", "max-age=600")
+	w.Write(im.b)
 }
 
 // noteBranchDeleted / branchDeleted implement the delete tombstone (2 min —

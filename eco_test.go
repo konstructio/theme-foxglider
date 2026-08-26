@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -563,5 +564,45 @@ func TestMRStateLabel(t *testing.T) {
 	}
 	if m := bestMR([]glMR{{IID: 3, State: "closed"}, merged}); m.IID != 1 {
 		t.Fatalf("bestMR merged-over-closed = %+v", m)
+	}
+}
+
+// TestOrgLogo pins the proxy: /api/org offers the proxied path only when the
+// group has an avatar, and /api/org-logo streams it with the content type.
+func TestOrgLogo(t *testing.T) {
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.EscapedPath(), "/api/v4/groups/"):
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"name":"Metaphor","full_path":"civo/metaphor","avatar_url":"%s/logo.png","web_url":"http://gl/groups/civo/metaphor"}`, "http://"+r.Host)
+		case r.URL.Path == "/logo.png":
+			if r.Header.Get("PRIVATE-TOKEN") != "tok" {
+				w.WriteHeader(401)
+				return
+			}
+			w.Header().Set("Content-Type", "image/png")
+			w.Write([]byte("PNGBYTES"))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), []string{"civo/metaphor"}))
+	defer srv.Close()
+
+	res, _ := http.Get(srv.URL + "/api/org")
+	var org struct {
+		Logo string `json:"logo"`
+		Name string `json:"name"`
+	}
+	json.NewDecoder(res.Body).Decode(&org)
+	if org.Logo != "/api/org-logo" || org.Name != "Metaphor" {
+		t.Fatalf("org = %+v", org)
+	}
+	res, _ = http.Get(srv.URL + "/api/org-logo")
+	b := make([]byte, 8)
+	res.Body.Read(b)
+	if res.StatusCode != 200 || res.Header.Get("Content-Type") != "image/png" || string(b) != "PNGBYTES" {
+		t.Fatalf("logo = %d %s %q", res.StatusCode, res.Header.Get("Content-Type"), b)
 	}
 }

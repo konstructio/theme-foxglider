@@ -393,6 +393,45 @@ func (c *glClient) openMRs(ctx context.Context, projectPath string) ([]glMR, err
 	return out, err
 }
 
+type glGroup struct {
+	Name      string `json:"name"`
+	FullPath  string `json:"full_path"`
+	AvatarURL string `json:"avatar_url"`
+	WebURL    string `json:"web_url"`
+}
+
+// group fetches a group's public face (name, avatar, url).
+func (c *glClient) group(ctx context.Context, groupPath string) (glGroup, error) {
+	var out glGroup
+	p := fmt.Sprintf("/groups/%s", url.QueryEscape(groupPath))
+	_, err := c.get(ctx, p, url.Values{"with_projects": {"false"}}, &out)
+	return out, err
+}
+
+// fetchBytes GETs an arbitrary URL with the token — the group-avatar proxy
+// (private groups serve avatars only to authenticated requests, which the
+// browser isn't). Capped at 1MB.
+func (c *glClient) fetchBytes(ctx context.Context, rawURL string) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+	res, err := c.hc.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return nil, "", fmt.Errorf("fetch %s: %s", rawURL, res.Status)
+	}
+	b, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return nil, "", err
+	}
+	return b, res.Header.Get("Content-Type"), nil
+}
+
 // mrsBySource lists MRs (any state) whose source is the given branch — the
 // feature view's "which MR carries this work" lookup.
 func (c *glClient) mrsBySource(ctx context.Context, projectPath, branch string) ([]glMR, error) {
