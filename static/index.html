@@ -78,7 +78,9 @@
   .eco-arrow{align-self:center;color:var(--mut2);font-size:22px;line-height:1}
   .ecard{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
   .ecard.macro{border-color:var(--line2);background:linear-gradient(180deg,var(--panel2),var(--panel))}
-  .ec-top{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  .ec-top{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:nowrap}
+  .ec-top .pname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ec-top .chip{flex:none}
   .ec-ver{font-size:12px;color:var(--ink2);display:flex;align-items:center;gap:6px}
   .ec-big{font-size:20px;font-weight:800;color:var(--ink);margin:2px 0 8px;word-break:break-all}
   .arrowlite{color:var(--mut2)}
@@ -343,7 +345,7 @@ function renderDelivery(d) {
       <div class="eco-col">
         <div class="eco-h">Microcharts</div>
         ${svcs.map(s => `<div class="ecard">
-          <div class="ec-top"><a class="pname" target="_blank" href="${s.web_url}">${esc(s.name)}</a>${statusChip(s.pipeline)}<span class="spacer"></span>${avatarImg(s.pipeline)}</div>
+          <div class="ec-top"><a class="pname" target="_blank" href="${s.web_url}" title="${esc(s.name)}">${esc(s.name)}</a>${statusChip(s.pipeline)}${avatarImg(s.pipeline)}</div>
           <div class="ec-ver mono">${verChip(s.base_version)}<span class="arrowlite">→</span>${verChip(s.bundled_version)}</div>
           ${commitLine(s)}
           ${stagesSlot(s)}
@@ -354,7 +356,7 @@ function renderDelivery(d) {
       <div class="eco-col">
         <div class="eco-h">Umbrella</div>
         <div class="ecard macro">
-          <div class="ec-top">${METAMARK}<a class="pname" target="_blank" href="${m.web_url}">${esc(m.name)}</a>${statusChip(m.pipeline)}<span class="spacer"></span>${avatarImg(m.pipeline)}</div>
+          <div class="ec-top">${METAMARK}<a class="pname" target="_blank" href="${m.web_url}" title="${esc(m.name)}">${esc(m.name)}</a>${statusChip(m.pipeline)}${avatarImg(m.pipeline)}</div>
           <div class="ec-big mono">${esc(m.published_rc || m.base_version || '—')}</div>
           <div class="mut">bundles ${svcs.length} microcharts · base <span class="mono">${esc(m.base_version || '—')}</span></div>
           ${commitLine(m)}
