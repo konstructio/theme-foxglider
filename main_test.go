@@ -20,8 +20,8 @@ func TestStaticServed(t *testing.T) {
 	}
 	buf := make([]byte, 4096)
 	n, _ := res.Body.Read(buf)
-	if !strings.Contains(string(buf[:n]), "Metaphor") {
-		t.Fatal("index.html should mention Metaphor")
+	if !strings.Contains(string(buf[:n]), "Foxglider") {
+		t.Fatal("index.html should carry the foxglider product brand")
 	}
 }
 

@@ -21,7 +21,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "1.6.1"
+const themeVersion = "1.7.0"
 
 const ttlEco = 45 * time.Second
 
@@ -495,7 +495,7 @@ collect:
 // header version badge renders even before a token is wired.
 func (a *api) meta(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
-		"theme":       "metaphor",
+		"theme":       "foxglider",
 		"version":     themeVersion,
 		"gitlab_host": a.gl.base,
 		"groups":      a.groups,

@@ -196,7 +196,7 @@ func TestMetaEndpointUnguarded(t *testing.T) {
 		Theme, Version string
 	}
 	json.NewDecoder(res.Body).Decode(&m)
-	if m.Theme != "metaphor" || m.Version != themeVersion {
+	if m.Theme != "foxglider" || m.Version != themeVersion {
 		t.Fatalf("meta = %+v", m)
 	}
 }
