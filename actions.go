@@ -1,21 +1,24 @@
 package main
 
-// actions.go — bot-executed CI actions (re-run, release) with the acting user
-// carried as a trace. The theme's READ token never gains write power: actions
-// use a separate GITLAB_ACTION_TOKEN (a group bot token distributed via the
+// actions.go — bot-executed CI actions (trigger, release) with SERVER-SET
+// attribution. The theme's READ token never gains write power: actions use a
+// separate GITLAB_ACTION_TOKEN (a group bot token distributed via the
 // ThemedApp env secret — never committed to git; unset = actions hidden).
 //
-// Identity is self-declared v1: the operator picks who they are from the
-// group roster and the choice rides the run as an INITIATED_BY job variable,
-// which the CI templates stamp into the commits the job creates (author on
-// the SHA + Initiated-by trailer). The seam upgrades cleanly to a
-// konstruct-forwarded verified identity later — only the source of
-// `acting_as` changes, nothing else.
+// Attribution: the backend stamps the acting identity itself — the signed-in
+// konstruct user. Clients cannot supply or influence it (an earlier design
+// offered an "acting as" picker; that was an impersonation vector with no
+// real weight, so it's gone). Until konstruct SSO forwards a per-user
+// identity into the theme, the actor is the configured session identity
+// (ACTION_ACTOR, default "kbot") — coarse but honest. The identity rides
+// every run as the INITIATED_BY job variable, which the CI templates stamp
+// into the commits the jobs create. Seam: when konstruct forwards a signed
+// per-user identity, only actorFor() changes.
 //
 // Mistake-proofing: only two job names are playable, only on projects in the
-// metaphor topology, only when GitLab says the job is in "manual" state; a
-// release additionally requires typing the repo's short name. Every run
-// writes one greppable audit line into the runtime logs.
+// metaphor topology, only when GitLab says the job is playable; a release
+// additionally requires typing the repo's short name. Every run writes one
+// greppable audit line into the runtime logs.
 
 import (
 	"context"
@@ -24,12 +27,8 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"sort"
 	"strings"
-	"time"
 )
-
-const ttlMembers = 5 * time.Minute
 
 // actionJobs maps an action to the one manual job it may play.
 var actionJobs = map[string]string{
@@ -39,25 +38,30 @@ var actionJobs = map[string]string{
 
 type actions struct {
 	gl    *glClient // write-scoped bot client; nil = actions disabled
-	read  *glClient // read client (roster)
-	c     *cache
 	topo  topology
-	group string
+	actor string // server-set attribution for every action
 }
 
 func newActions(read *glClient, topo topology, groups []string) *actions {
-	group := "civo/metaphor"
-	if len(groups) > 0 {
-		group = groups[0]
-	}
 	var wr *glClient
 	if tok := os.Getenv("GITLAB_ACTION_TOKEN"); tok != "" {
 		wr = newGLClient(read.base, tok)
 	}
-	return &actions{gl: wr, read: read, c: newCache(), topo: topo, group: group}
+	actor := os.Getenv("ACTION_ACTOR")
+	if actor == "" {
+		// The konstruct session identity. Internal SSO isn't per-user yet, so
+		// everyone shares the platform identity — coarse today, honest always.
+		actor = "kbot"
+	}
+	return &actions{gl: wr, topo: topo, actor: actor}
 }
 
 func (x *actions) enabled() bool { return x.gl != nil }
+
+// actorFor resolves who this action is attributed to. Server-side only — the
+// request never carries identity. This is the konstruct-SSO seam: a verified
+// per-user identity forwarded by the shell would be read here.
+func (x *actions) actorFor(r *http.Request) string { return x.actor }
 
 // allowed restricts actions to the metaphor topology — never arbitrary projects.
 func (x *actions) allowed(project string) bool {
@@ -72,37 +76,23 @@ func (x *actions) allowed(project string) bool {
 	return false
 }
 
-// status tells the UI whether actions render, and offers the acting-as roster.
+// status tells the UI whether actions render and who they run as.
 func (x *actions) status(w http.ResponseWriter, r *http.Request) {
 	if !x.enabled() {
 		writeJSON(w, map[string]any{"enabled": false})
 		return
 	}
-	type person struct {
-		Username string `json:"username"`
-		Name     string `json:"name"`
-	}
-	var roster []person
-	if v, err := x.c.do("members:"+x.group, ttlMembers, func() (any, error) {
-		return x.read.members(context.Background(), x.group)
-	}); err == nil {
-		for _, m := range v.([]glMember) {
-			// Developer+ humans only: bots can't be "acting as" anyone.
-			if m.AccessLevel >= 30 && !strings.HasPrefix(m.Username, "group_") &&
-				!strings.Contains(strings.ToLower(m.Username), "bot") {
-				roster = append(roster, person{m.Username, m.Name})
-			}
-		}
-		sort.Slice(roster, func(i, j int) bool { return roster[i].Username < roster[j].Username })
-	}
-	writeJSON(w, map[string]any{"enabled": true, "actions": []string{"trigger", "release"}, "members": roster})
+	writeJSON(w, map[string]any{
+		"enabled": true,
+		"actions": []string{"trigger", "release"},
+		"actor":   x.actorFor(r),
+	})
 }
 
 type runReq struct {
-	Project  string `json:"project"`
-	Action   string `json:"action"`
-	ActingAs string `json:"acting_as"`
-	Confirm  string `json:"confirm"`
+	Project string `json:"project"`
+	Action  string `json:"action"`
+	Confirm string `json:"confirm"`
 }
 
 func (x *actions) run(w http.ResponseWriter, r *http.Request) {
@@ -124,10 +114,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "project is not part of the metaphor topology")
 		return
 	}
-	if req.ActingAs == "" {
-		writeErr(w, 400, "acting_as required — pick who you are")
-		return
-	}
+	actor := x.actorFor(r)
 	short := req.Project[strings.LastIndex(req.Project, "/")+1:]
 	if req.Action == "release" && req.Confirm != short {
 		writeErr(w, 400, fmt.Sprintf("confirmation mismatch: type %q to release", short))
@@ -154,22 +141,22 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if target == nil || target.Status != "manual" {
-		// Re-run degrades gracefully: when the latest pipeline has no playable
+		// Trigger degrades gracefully: when the latest pipeline has no playable
 		// trigger job (config-error pipelines have zero jobs), start a fresh
 		// pipeline on the same ref instead. Same delivery outcome, no new
 		// commit — the trace rides as a pipeline variable.
 		if req.Action == "trigger" {
 			pl, err := x.gl.createPipeline(ctx, req.Project, lp.Ref, map[string]string{
-				"INITIATED_BY": req.ActingAs,
+				"INITIATED_BY": actor,
 			})
 			if err != nil {
 				writeErr(w, 502, "new pipeline: "+err.Error())
 				return
 			}
-			log.Printf("ACTION %s project=%s mode=fresh-pipeline pipeline=%d acting_as=%s remote=%s",
-				req.Action, req.Project, pl.ID, req.ActingAs, r.RemoteAddr)
+			log.Printf("ACTION %s project=%s mode=fresh-pipeline pipeline=%d actor=%s remote=%s",
+				req.Action, req.Project, pl.ID, actor, r.RemoteAddr)
 			writeJSON(w, map[string]any{
-				"ok": true, "action": req.Action, "acting_as": req.ActingAs,
+				"ok": true, "action": req.Action, "actor": actor,
 				"job_url": pl.WebURL, "pipeline_url": pl.WebURL,
 			})
 			return
@@ -183,17 +170,17 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 	}
 
 	played, err := x.gl.playJob(ctx, req.Project, target.ID, map[string]string{
-		"INITIATED_BY": req.ActingAs,
+		"INITIATED_BY": actor,
 	})
 	if err != nil {
 		writeErr(w, 502, "play: "+err.Error())
 		return
 	}
 	// One greppable audit line per action, in the platform runtime logs.
-	log.Printf("ACTION %s project=%s job=%s(%d) pipeline=%d acting_as=%s remote=%s",
-		req.Action, req.Project, jobName, target.ID, lp.ID, req.ActingAs, r.RemoteAddr)
+	log.Printf("ACTION %s project=%s job=%s(%d) pipeline=%d actor=%s remote=%s",
+		req.Action, req.Project, jobName, target.ID, lp.ID, actor, r.RemoteAddr)
 	writeJSON(w, map[string]any{
-		"ok": true, "action": req.Action, "acting_as": req.ActingAs,
+		"ok": true, "action": req.Action, "actor": actor,
 		"job_url": played.WebURL, "pipeline_url": lp.WebURL,
 	})
 }

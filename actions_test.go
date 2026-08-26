@@ -10,8 +10,8 @@ import (
 )
 
 // fakeActionsGitLab serves the minimum action surface: a latest pipeline, its
-// jobs (release + trigger:manual in playable state), a play endpoint that
-// records the variables it received, and the group roster.
+// jobs (release + trigger:manual in playable state), and a play endpoint that
+// records the variables it received.
 func fakeActionsGitLab(t *testing.T, played map[string]any) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -27,9 +27,6 @@ func fakeActionsGitLab(t *testing.T, played map[string]any) *httptest.Server {
 			json.NewDecoder(r.Body).Decode(&body)
 			played[p] = body
 			w.Write([]byte(`{"id":2,"name":"x","status":"pending","web_url":"http://gl/x/-/jobs/2","pipeline":{"id":500,"web_url":"http://gl/x/-/pipelines/500"}}`))
-		case strings.Contains(p, "/members/all"):
-			// one human Developer+, one group bot, one Reporter — only the human may act
-			w.Write([]byte(`[{"username":"john.dietz","name":"John Dietz","access_level":50},{"username":"group_1_bot_x","name":"bot","access_level":40},{"username":"viewer","name":"V","access_level":20}]`))
 		default:
 			w.WriteHeader(404)
 		}
@@ -44,19 +41,18 @@ func TestActions(t *testing.T) {
 	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
 	defer srv.Close()
 
+	// status reports the server-set actor — no roster, nothing to pick.
 	res, err := http.Get(srv.URL + "/api/actions/status")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var st struct {
-		Enabled bool `json:"enabled"`
-		Members []struct {
-			Username string `json:"username"`
-		} `json:"members"`
+		Enabled bool   `json:"enabled"`
+		Actor   string `json:"actor"`
 	}
 	json.NewDecoder(res.Body).Decode(&st)
-	if !st.Enabled || len(st.Members) != 1 || st.Members[0].Username != "john.dietz" {
-		t.Fatalf("status = %+v (want enabled, roster = the one human Developer+)", st)
+	if !st.Enabled || st.Actor != "kbot" {
+		t.Fatalf("status = %+v (want enabled, actor kbot)", st)
 	}
 
 	post := func(body string) *http.Response {
@@ -66,36 +62,55 @@ func TestActions(t *testing.T) {
 		}
 		return res
 	}
-	if res := post(`{"project":"civo/metaphor/charts","action":"trigger","acting_as":"john.dietz"}`); res.StatusCode != 200 {
+	if res := post(`{"project":"civo/metaphor/charts","action":"trigger"}`); res.StatusCode != 200 {
 		t.Fatalf("trigger = %d", res.StatusCode)
 	}
-	if res := post(`{"project":"civo/metaphor/charts","action":"release","acting_as":"john.dietz"}`); res.StatusCode != 400 {
+	if res := post(`{"project":"civo/metaphor/charts","action":"release"}`); res.StatusCode != 400 {
 		t.Fatalf("release without typed confirm = %d, want 400", res.StatusCode)
 	}
-	if res := post(`{"project":"civo/metaphor/charts","action":"release","acting_as":"john.dietz","confirm":"charts"}`); res.StatusCode != 200 {
+	if res := post(`{"project":"civo/metaphor/charts","action":"release","confirm":"charts"}`); res.StatusCode != 200 {
 		t.Fatalf("release = %d", res.StatusCode)
 	}
-	if res := post(`{"project":"civo/other/thing","action":"trigger","acting_as":"john.dietz"}`); res.StatusCode != 400 {
+	if res := post(`{"project":"civo/other/thing","action":"trigger"}`); res.StatusCode != 400 {
 		t.Fatalf("off-topology project = %d, want 400", res.StatusCode)
 	}
-	if res := post(`{"project":"civo/metaphor/charts","action":"trigger","acting_as":""}`); res.StatusCode != 400 {
-		t.Fatalf("missing acting_as = %d, want 400", res.StatusCode)
-	}
 
-	// every play carried the acting-as trace
+	// every play carried the SERVER-set trace — a client-supplied acting_as
+	// must be ignored entirely.
+	if res := post(`{"project":"civo/metaphor/charts","action":"trigger","acting_as":"someone.else"}`); res.StatusCode != 200 {
+		t.Fatalf("trigger with stray acting_as = %d", res.StatusCode)
+	}
 	for path, b := range played {
 		bb, _ := json.Marshal(b)
-		if !strings.Contains(string(bb), "INITIATED_BY") || !strings.Contains(string(bb), "john.dietz") {
-			t.Fatalf("play %s missing INITIATED_BY trace: %s", path, bb)
+		if !strings.Contains(string(bb), "INITIATED_BY") || !strings.Contains(string(bb), "kbot") {
+			t.Fatalf("play %s missing server-set INITIATED_BY: %s", path, bb)
+		}
+		if strings.Contains(string(bb), "someone.else") {
+			t.Fatalf("client-supplied identity leaked into %s: %s", path, bb)
 		}
 	}
 	if len(played) != 2 {
-		t.Fatalf("played = %d jobs, want 2 (trigger + release)", len(played))
+		t.Fatalf("played = %d distinct jobs, want 2 (trigger + release)", len(played))
+	}
+}
+
+func TestActorEnvOverride(t *testing.T) {
+	t.Setenv("GITLAB_ACTION_TOKEN", "act-tok")
+	t.Setenv("ACTION_ACTOR", "konstruct-sso-user")
+	srv := httptest.NewServer(newAPI(newGLClient("http://unused", "tok"), nil))
+	defer srv.Close()
+	res, _ := http.Get(srv.URL + "/api/actions/status")
+	var st struct {
+		Actor string `json:"actor"`
+	}
+	json.NewDecoder(res.Body).Decode(&st)
+	if st.Actor != "konstruct-sso-user" {
+		t.Fatalf("actor = %q, want env override", st.Actor)
 	}
 }
 
 // When the latest pipeline has no playable trigger job (e.g. a zero-job
-// config-error pipeline), re-run falls back to creating a fresh pipeline.
+// config-error pipeline), trigger falls back to creating a fresh pipeline.
 func TestTriggerFallsBackToFreshPipeline(t *testing.T) {
 	var created map[string]any
 	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -119,7 +134,7 @@ func TestTriggerFallsBackToFreshPipeline(t *testing.T) {
 	defer srv.Close()
 
 	res, err := http.Post(srv.URL+"/api/actions/run", "application/json",
-		strings.NewReader(`{"project":"civo/metaphor/charts","action":"trigger","acting_as":"john.dietz"}`))
+		strings.NewReader(`{"project":"civo/metaphor/charts","action":"trigger"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,12 +142,12 @@ func TestTriggerFallsBackToFreshPipeline(t *testing.T) {
 		t.Fatalf("fallback trigger = %d, want 200", res.StatusCode)
 	}
 	bb, _ := json.Marshal(created)
-	if !strings.Contains(string(bb), "INITIATED_BY") || !strings.Contains(string(bb), "john.dietz") {
+	if !strings.Contains(string(bb), "INITIATED_BY") || !strings.Contains(string(bb), "kbot") {
 		t.Fatalf("fresh pipeline missing INITIATED_BY: %s", bb)
 	}
 	// release must NOT silently fall back — it still refuses honestly
 	res2, _ := http.Post(srv.URL+"/api/actions/run", "application/json",
-		strings.NewReader(`{"project":"civo/metaphor/charts","action":"release","acting_as":"john.dietz","confirm":"charts"}`))
+		strings.NewReader(`{"project":"civo/metaphor/charts","action":"release","confirm":"charts"}`))
 	if res2.StatusCode != 409 {
 		t.Fatalf("release on jobless pipeline = %d, want 409", res2.StatusCode)
 	}

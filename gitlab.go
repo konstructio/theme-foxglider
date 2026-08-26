@@ -347,18 +347,3 @@ func (c *glClient) createPipeline(ctx context.Context, projectPath, ref string, 
 	err := c.postJSON(ctx, p, map[string]any{"ref": ref, "variables": vv}, &out)
 	return out, err
 }
-
-type glMember struct {
-	Username    string `json:"username"`
-	Name        string `json:"name"`
-	AccessLevel int    `json:"access_level"`
-}
-
-// members lists a group's effective membership (direct + inherited) — the
-// roster the acting-as picker offers.
-func (c *glClient) members(ctx context.Context, groupPath string) ([]glMember, error) {
-	var out []glMember
-	p := fmt.Sprintf("/groups/%s/members/all", url.QueryEscape(groupPath))
-	_, err := c.get(ctx, p, url.Values{"per_page": {"100"}}, &out)
-	return out, err
-}

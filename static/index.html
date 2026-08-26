@@ -105,6 +105,7 @@
   #actmodal label{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut)}
   #actmodal p{margin:0 0 14px;font-size:13px}
   .act-row{display:flex;align-items:center;gap:12px;margin-top:6px;flex-wrap:wrap}
+  .act-id{font-size:11px;border:1px solid var(--line);border-radius:4px;padding:2px 8px}
   .fleet-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:10px;margin-bottom:6px}
   .tile{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--c);border-radius:8px;padding:10px 12px}
   .tile-head{display:flex;align-items:center;gap:7px;margin-bottom:4px}
@@ -411,9 +412,10 @@ document.addEventListener('click', e => {
 });
 function openActionModal(action, project) {
   const short = project.split('/').pop();
-  const roster = (state.act && state.act.members) || [];
-  const saved = localStorage.getItem('mf_acting_as') || '';
   const needsConfirm = action === 'release';
+  // Attribution is server-set (the konstruct session identity) — nothing to
+  // pick, nothing to impersonate. The modal just states who it runs as.
+  const actor = (state.act && state.act.actor) || 'konstruct';
   $('#actmodal').innerHTML = `
     <div class="d-back"></div>
     <div class="d-panel" role="dialog" aria-modal="true">
@@ -423,13 +425,11 @@ function openActionModal(action, project) {
       <p class="mut">${action === 'release'
         ? 'Plays the manual <b>release</b> job on the latest main pipeline: cuts the clean tag from the current RC, retags artifacts (no rebuild), and opens the next dev cycle.'
         : 'Plays the manual <b>trigger:manual</b> job: pushes an empty commit to main so the delivery pipeline runs end-to-end on a fresh SHA.'}</p>
-      <label for="act-who">acting as</label>
-      <select id="act-who">${roster.map(m =>
-        `<option value="${esc(m.username)}" ${m.username === saved ? 'selected' : ''}>${esc(m.name)} (@${esc(m.username)})</option>`).join('')}</select>
       ${needsConfirm ? `<label for="act-confirm">type <b class="mono">${esc(short)}</b> to confirm</label>
         <input id="act-confirm" autocomplete="off" placeholder="${esc(short)}">` : ''}
       <div class="act-row">
         <button id="act-go" class="abtn ${needsConfirm ? 'warn' : ''}">${action === 'release' ? ICON_ROCKET + ' release' : ICON_SCOPE + ' trigger'}</button>
+        <span class="act-id mono mut" title="attribution is set by the server — the signed-in konstruct session">as @${esc(actor)}</span>
         <span id="act-out" class="mono mut"></span>
       </div>
     </div>`;
@@ -437,14 +437,11 @@ function openActionModal(action, project) {
   $('#act-x').onclick = e => { e.preventDefault(); closeActModal(); };
   $('#actmodal .d-back').onclick = closeActModal;
   $('#act-go').onclick = async () => {
-    const who = $('#act-who').value;
-    if (!who) { $('#act-out').textContent = '✗ pick who you are'; return; }
-    localStorage.setItem('mf_acting_as', who);
     const confirm = needsConfirm ? $('#act-confirm').value.trim() : '';
     $('#act-out').textContent = 'starting…';
     try {
       const res = await fetch('/api/actions/run', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project, action, acting_as: who, confirm }) });
+        body: JSON.stringify({ project, action, confirm }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw body;
       $('#act-out').innerHTML = `✓ started — <a target="_blank" href="${body.job_url}">job</a> · <a target="_blank" href="${body.pipeline_url}">pipeline</a>`;
