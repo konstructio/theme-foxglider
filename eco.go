@@ -24,7 +24,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.3.0"
+const themeVersion = "2.3.1"
 
 const ttlEco = 45 * time.Second
 
@@ -179,29 +179,35 @@ func cmpVer(a, b ver) int {
 	return 0
 }
 
-// newestTag returns the highest-versioned tag carrying prefix (full tag name).
+// reRCTag matches an rc tag suffix of either style: numeric counters
+// (metaphor: -rc.19) or sha-suffixed (konstruct: -rc.443f3828).
+var reRCTag = regexp.MustCompile(`-rc\.[0-9a-f]+$`)
+
+// newestTag returns the newest rc tag carrying prefix. The tags list arrives
+// ordered by update time (newest first), which is the only ordering that
+// works for BOTH rc styles — semver-comparing sha suffixes is a trap (an
+// all-digit sha parses as a huge counter and outranks everything).
 func newestTag(tags []glTag, prefix string) string {
-	best, bestV := "", ver{}
 	for _, t := range tags {
-		if !strings.HasPrefix(t.Name, prefix) {
-			continue
-		}
-		v := parseVer(strings.TrimPrefix(t.Name, prefix))
-		if !v.ok {
-			continue
-		}
-		if best == "" || cmpVer(v, bestV) > 0 {
-			best, bestV = t.Name, v
+		if strings.HasPrefix(t.Name, prefix) && reRCTag.MatchString(t.Name) {
+			return t.Name
 		}
 	}
-	return best
+	return ""
 }
 
 // drift classifies a delivered version against the published one.
 func drift(delivered, published string) (state string, behind int) {
 	d, p := parseVer(delivered), parseVer(published)
-	if delivered == "" || published == "" || !d.ok || !p.ok {
+	if delivered == "" || published == "" {
 		return "unknown", 0
+	}
+	if !d.ok || !p.ok {
+		// sha-suffixed rc lines aren't ordered — equality is still knowable
+		if delivered == published {
+			return "current", 0
+		}
+		return "differs", 0
 	}
 	switch c := cmpVer(d, p); {
 	case c == 0:

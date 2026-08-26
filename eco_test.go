@@ -70,9 +70,15 @@ func TestVersionCompareAndNewestTag(t *testing.T) {
 			t.Fatalf("cmpVer(%s,%s) = %d, want %d", c.a, c.b, got, c.want)
 		}
 	}
-	tags := []glTag{{"metaphor-v0.2.0-rc.2"}, {"metaphor-v0.2.0-rc.4"}, {"metaphor-v0.2.0-rc.3"}, {"unrelated-1.0.0"}}
+	// tags arrive ordered by update time (newest first) — positional pick
+	// works for numeric counters AND sha-suffixed rc styles (konstruct)
+	tags := []glTag{{"unrelated-1.0.0"}, {"metaphor-v0.2.0-rc.4"}, {"metaphor-v0.2.0-rc.3"}, {"metaphor-v0.2.0-rc.2"}}
 	if got := newestTag(tags, "metaphor-v"); got != "metaphor-v0.2.0-rc.4" {
 		t.Fatalf("newestTag = %q, want metaphor-v0.2.0-rc.4", got)
+	}
+	sha := []glTag{{"konstruct-v0.7.8-rc.57f3903b"}, {"konstruct-v0.6.5-rc.44372335"}}
+	if got := newestTag(sha, "konstruct-v"); got != "konstruct-v0.7.8-rc.57f3903b" {
+		t.Fatalf("sha-rc newestTag = %q — all-digit shas must not outrank by fake semver", got)
 	}
 }
 
@@ -268,12 +274,12 @@ func TestEpicVersionsNeverOutrankRCs(t *testing.T) {
 		t.Fatalf("epic version parsed as ordered semver: %+v", v)
 	}
 	tags := []glTag{
-		{"metaphor-v0.2.0-rc.4"},
 		{"metaphor-v0.2.0-epic-20-pink.9"},
 		{"metaphor-v0.2.0-rc.19"},
+		{"metaphor-v0.2.0-rc.4"},
 	}
 	if got := newestTag(tags, "metaphor-v"); got != "metaphor-v0.2.0-rc.19" {
-		t.Fatalf("newestTag = %q — epic tags must never win", got)
+		t.Fatalf("newestTag = %q — epic tags must never win even when newer", got)
 	}
 	// clean releases and rcs still parse
 	if !parseVer("0.2.0").ok || !parseVer("0.2.0-rc.19").ok || !parseVer("v1.2.3").ok {

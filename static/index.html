@@ -417,7 +417,8 @@ function envCard(e, m) {
 function driftChip(d) {
   const M = { current: ['✓ up to date', 'var(--civo)'],
     behind: [d.behind > 0 ? `↑ ${d.behind} behind` : 'behind', 'var(--gl-amber)'],
-    ahead: ['ahead', 'var(--gl-orange)'], unknown: ['unknown', 'var(--mut2)'] };
+    ahead: ['ahead', 'var(--gl-orange)'], differs: ['≠ differs from newest', 'var(--gl-amber)'],
+    unknown: ['unknown', 'var(--mut2)'] };
   const [t, c] = M[d.state] || M.unknown;
   return `<span class="chip" style="--c:${c}">${t}</span>`;
 }
