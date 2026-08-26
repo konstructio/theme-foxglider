@@ -334,6 +334,22 @@ func (c *glClient) playJob(ctx context.Context, projectPath string, jobID int, v
 	return out, err
 }
 
+// recentPipelines lists pipelines for a path-addressed project filtered by
+// ref/status — used to find the previous successful run for progress baselines.
+func (c *glClient) recentPipelines(ctx context.Context, projectPath, ref, status string, limit int) ([]glSHAPipeline, error) {
+	var out []glSHAPipeline
+	q := url.Values{"per_page": {fmt.Sprint(limit)}}
+	if ref != "" {
+		q.Set("ref", ref)
+	}
+	if status != "" {
+		q.Set("status", status)
+	}
+	p := fmt.Sprintf("/projects/%s/pipelines", url.QueryEscape(projectPath))
+	_, err := c.get(ctx, p, q, &out)
+	return out, err
+}
+
 // createPipeline starts a fresh pipeline on a ref with pipeline-level
 // variables — the re-run fallback when the latest pipeline has no playable
 // trigger job (e.g. it was a config-error pipeline with zero jobs).

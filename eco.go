@@ -21,7 +21,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "1.3.0"
+const themeVersion = "1.4.0"
 
 const ttlEco = 45 * time.Second
 
@@ -492,16 +492,68 @@ func (a *api) meta(w http.ResponseWriter, r *http.Request) {
 
 // ttlProgress keeps live stage-progress fresh without hammering GitLab: the
 // frontend only polls this for running pipelines, and hits this short cache.
-const ttlProgress = 5 * time.Second
+// ttlHistory caches the previous successful run's per-job durations — the
+// baseline that turns the stage bar into a real progress bar.
+const (
+	ttlProgress = 5 * time.Second
+	ttlHistory  = 10 * time.Minute
+)
+
+type jobProgress struct {
+	Name      string  `json:"name"`
+	Status    string  `json:"status"`
+	DurationS float64 `json:"duration_s,omitempty"` // actual, for finished jobs
+	ExpectedS float64 `json:"expected_s,omitempty"` // from the previous successful run
+}
 
 type stageProgress struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	Name   string        `json:"name"`
+	Status string        `json:"status"`
+	Jobs   []jobProgress `json:"jobs"`
+	// Running carries what the frontend needs to animate the fill locally
+	// (elapsed vs expected) — smooth progress with no extra polling.
+	Running *struct {
+		Name      string     `json:"name"`
+		StartedAt *time.Time `json:"started_at"`
+		ExpectedS float64    `json:"expected_s"`
+	} `json:"running,omitempty"`
+}
+
+// jobHistory maps job name → duration from the newest successful pipeline on
+// the same ref — the progress baseline. Empty map when there's no history.
+func (a *api) jobHistory(ctx context.Context, proj, ref string, excludeID int) map[string]float64 {
+	v, err := a.c.do("hist:"+proj+":"+ref, ttlHistory, func() (any, error) {
+		hist := map[string]float64{}
+		pls, err := a.gl.recentPipelines(ctx, proj, ref, "success", 3)
+		if err != nil {
+			return hist, nil // no baseline is fine — bars degrade to pulses
+		}
+		for _, pl := range pls {
+			if pl.ID == excludeID {
+				continue
+			}
+			jobs, err := a.gl.jobsByPath(ctx, proj, pl.ID)
+			if err != nil {
+				break
+			}
+			for _, j := range jobs {
+				if j.Duration > 0 {
+					hist[j.Name] = j.Duration
+				}
+			}
+			break // newest prior success only
+		}
+		return hist, nil
+	})
+	if err != nil {
+		return map[string]float64{}
+	}
+	return v.(map[string]float64)
 }
 
 // pipelineProgress rolls a running pipeline's jobs up into ordered per-stage
-// statuses for the live mini-progress bar. Cheap: one cached call, only ever
-// polled while a pipeline is actually running.
+// statuses, enriched with per-job timings and a baseline from the previous
+// successful run so the frontend can draw honest progress bars.
 func (a *api) pipelineProgress(w http.ResponseWriter, r *http.Request) {
 	proj := r.URL.Query().Get("project")
 	id, _ := strconv.Atoi(r.URL.Query().Get("id"))
@@ -509,30 +561,51 @@ func (a *api) pipelineProgress(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "project and id required")
 		return
 	}
+	ctx := context.Background()
 	v, err := a.c.do(fmt.Sprintf("prog:%s:%d", proj, id), ttlProgress, func() (any, error) {
-		return a.gl.jobsByPath(context.Background(), proj, id)
+		return a.gl.jobsByPath(ctx, proj, id)
 	})
 	if err != nil {
 		writeErr(w, 503, "GitLab unreachable: "+err.Error())
 		return
 	}
-	stages := rollupStages(v.([]glJob))
+	hist := a.jobHistory(ctx, proj, "main", id)
+	stages := rollupStages(v.([]glJob), hist)
 	writeJSON(w, map[string]any{"stages": stages, "status": overallStatus(stages)})
 }
 
-// rollupStages collapses jobs into ordered per-stage statuses (first-seen order).
-func rollupStages(jobs []glJob) []stageProgress {
+// rollupStages collapses jobs into ordered per-stage progress (first-seen
+// order), attaching timings and the running job's animation baseline.
+func rollupStages(jobs []glJob, hist map[string]float64) []stageProgress {
 	var order []string
-	byStage := map[string][]string{}
+	byStage := map[string][]glJob{}
 	for _, j := range jobs {
 		if _, ok := byStage[j.Stage]; !ok {
 			order = append(order, j.Stage)
 		}
-		byStage[j.Stage] = append(byStage[j.Stage], j.Status)
+		byStage[j.Stage] = append(byStage[j.Stage], j)
 	}
 	out := make([]stageProgress, 0, len(order))
 	for _, s := range order {
-		out = append(out, stageProgress{Name: s, Status: stageStatus(byStage[s])})
+		sp := stageProgress{Name: s}
+		var statuses []string
+		for _, j := range byStage[s] {
+			statuses = append(statuses, j.Status)
+			jp := jobProgress{Name: j.Name, Status: j.Status, ExpectedS: hist[j.Name]}
+			if j.Duration > 0 {
+				jp.DurationS = j.Duration
+			}
+			sp.Jobs = append(sp.Jobs, jp)
+			if j.Status == "running" && sp.Running == nil {
+				sp.Running = &struct {
+					Name      string     `json:"name"`
+					StartedAt *time.Time `json:"started_at"`
+					ExpectedS float64    `json:"expected_s"`
+				}{Name: j.Name, StartedAt: j.StartedAt, ExpectedS: hist[j.Name]}
+			}
+		}
+		sp.Status = stageStatus(statuses)
+		out = append(out, sp)
 	}
 	return out
 }

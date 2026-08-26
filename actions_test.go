@@ -51,12 +51,16 @@ func TestActions(t *testing.T) {
 		Actor   string `json:"actor"`
 	}
 	json.NewDecoder(res.Body).Decode(&st)
-	if !st.Enabled || st.Actor != "kbot" {
-		t.Fatalf("status = %+v (want enabled, actor kbot)", st)
+	if !st.Enabled || st.Actor != "konstruct" {
+		t.Fatalf("status = %+v (want enabled, neutral fallback actor)", st)
 	}
 
 	post := func(body string) *http.Response {
-		res, err := http.Post(srv.URL+"/api/actions/run", "application/json", bytes.NewBufferString(body))
+		req, _ := http.NewRequest("POST", srv.URL+"/api/actions/run", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		// the konstruct shell communicated this session's identity
+		req.Header.Set("X-Konstruct-Actor", "kbot")
+		res, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -75,18 +79,25 @@ func TestActions(t *testing.T) {
 		t.Fatalf("off-topology project = %d, want 400", res.StatusCode)
 	}
 
-	// every play carried the SERVER-set trace — a client-supplied acting_as
-	// must be ignored entirely.
-	if res := post(`{"project":"civo/metaphor/charts","action":"trigger","acting_as":"someone.else"}`); res.StatusCode != 200 {
-		t.Fatalf("trigger with stray acting_as = %d", res.StatusCode)
+	// a malformed communicated identity must fall back, not pass through
+	badreq, _ := http.NewRequest("POST", srv.URL+"/api/actions/run",
+		bytes.NewBufferString(`{"project":"civo/metaphor/charts","action":"trigger"}`))
+	badreq.Header.Set("Content-Type", "application/json")
+	badreq.Header.Set("X-Konstruct-Actor", "evil user!! not@a@username")
+	resBad, err := http.DefaultClient.Do(badreq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resBad.StatusCode != 200 {
+		t.Fatalf("trigger with malformed actor header = %d", resBad.StatusCode)
 	}
 	for path, b := range played {
 		bb, _ := json.Marshal(b)
-		if !strings.Contains(string(bb), "INITIATED_BY") || !strings.Contains(string(bb), "kbot") {
-			t.Fatalf("play %s missing server-set INITIATED_BY: %s", path, bb)
+		if !strings.Contains(string(bb), "INITIATED_BY") {
+			t.Fatalf("play %s missing INITIATED_BY: %s", path, bb)
 		}
-		if strings.Contains(string(bb), "someone.else") {
-			t.Fatalf("client-supplied identity leaked into %s: %s", path, bb)
+		if strings.Contains(string(bb), "evil") {
+			t.Fatalf("malformed identity leaked into %s: %s", path, bb)
 		}
 	}
 	if len(played) != 2 {
@@ -142,8 +153,8 @@ func TestTriggerFallsBackToFreshPipeline(t *testing.T) {
 		t.Fatalf("fallback trigger = %d, want 200", res.StatusCode)
 	}
 	bb, _ := json.Marshal(created)
-	if !strings.Contains(string(bb), "INITIATED_BY") || !strings.Contains(string(bb), "kbot") {
-		t.Fatalf("fresh pipeline missing INITIATED_BY: %s", bb)
+	if !strings.Contains(string(bb), "INITIATED_BY") || !strings.Contains(string(bb), "konstruct") {
+		t.Fatalf("fresh pipeline missing fallback INITIATED_BY: %s", bb)
 	}
 	// release must NOT silently fall back — it still refuses honestly
 	res2, _ := http.Post(srv.URL+"/api/actions/run", "application/json",

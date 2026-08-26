@@ -85,7 +85,9 @@
   .vchip.mut{color:var(--mut)}
   .avatar{width:22px;height:22px;border-radius:50%;border:1px solid var(--line2);vertical-align:middle;flex:none;background:var(--panel2)}
   .stages{display:flex;gap:3px;margin-top:9px}
-  .stg{flex:1;height:5px;border-radius:3px;background:var(--c,var(--mut2));opacity:.92;transition:background .3s}
+  .stg{flex:1;height:6px;border-radius:3px;position:relative;overflow:hidden;
+    background:color-mix(in srgb, var(--c,var(--mut2)) 20%, transparent)}
+  .stg-fill{position:absolute;top:0;bottom:0;left:0;background:var(--c,var(--mut2));border-radius:3px;transition:width .9s linear}
   .stg.run{animation:pulse 1.4s ease-in-out infinite}
   .ec-msg{font-size:12px;margin-top:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ec-msg a{color:var(--ink2)} .ec-msg a:hover{color:var(--civo)}
@@ -259,15 +261,48 @@ function startProgressPollers() {
   const gen = ++progressGen; // supersede pollers from any previous render
   document.querySelectorAll('.stages[data-pid]').forEach(el => pollProgress(el, gen));
 }
+// Each stage segment is a real progress bar: fill = elapsed vs the same
+// job's duration in the previous successful run. Hover names the jobs.
+const STG_DONE = ['success', 'failed', 'canceled', 'skipped']; // manual/queued stay empty — nothing ran
+function stageTitle(st) {
+  const jobsTxt = (st.jobs || []).map(j => j.name + (j.duration_s ? ` ${fmtDur(j.duration_s)}` : '')).join(', ');
+  if (st.running) {
+    const exp = st.running.expected_s > 0 ? ` of ~${fmtDur(st.running.expected_s)}` : '';
+    const el = st.running.started_at ? fmtDur((Date.now() - new Date(st.running.started_at)) / 1000) : '';
+    return `${st.name} ▸ ${st.running.name} — ${el}${exp}`;
+  }
+  return `${st.name} · ${st.status}${jobsTxt ? ` — ${jobsTxt}` : ''}`;
+}
 async function pollProgress(el, gen) {
   if (gen !== progressGen || !el.isConnected) return;
   try {
     const d = await fetchJSON(`/api/pipeline-progress?project=${encodeURIComponent(el.dataset.proj)}&id=${el.dataset.pid}`);
-    el.innerHTML = (d.stages || []).map(st =>
-      `<span class="stg ${st.status === 'running' ? 'run' : ''}" style="--c:${statusColor(st.status)}" title="${esc(st.name)} · ${st.status}"></span>`).join('');
+    el.innerHTML = (d.stages || []).map(st => {
+      const done = STG_DONE.includes(st.status);
+      let pct = done ? 100 : 0;
+      const hasBaseline = st.running && st.running.started_at && st.running.expected_s > 0;
+      if (hasBaseline) pct = Math.min(96, (Date.now() - new Date(st.running.started_at)) / 1000 / st.running.expected_s * 100);
+      const anim = hasBaseline
+        ? ` data-start="${st.running.started_at}" data-exp="${st.running.expected_s}" data-run="${esc(st.running.name)}" data-stage="${esc(st.name)}"`
+        : '';
+      // no baseline → keep the pulse; with one, the fill IS the signal
+      const pulse = st.status === 'running' && !hasBaseline ? ' run' : '';
+      return `<span class="stg${pulse}" style="--c:${statusColor(st.status)}" title="${esc(stageTitle(st))}"${anim}><span class="stg-fill" style="width:${pct}%"></span></span>`;
+    }).join('');
     if (isRunning({ status: d.status }) && gen === progressGen) setTimeout(() => pollProgress(el, gen), 5000);
   } catch { if (gen === progressGen) setTimeout(() => pollProgress(el, gen), 8000); }
 }
+// animate running fills between polls — smooth progress, zero extra requests
+setInterval(() => {
+  document.querySelectorAll('.stg[data-exp]').forEach(s => {
+    const elapsed = (Date.now() - new Date(s.dataset.start)) / 1000;
+    const exp = +s.dataset.exp;
+    const pct = Math.min(96, elapsed / exp * 100);
+    const f = s.querySelector('.stg-fill');
+    if (f) f.style.width = pct + '%';
+    s.title = `${s.dataset.stage} ▸ ${s.dataset.run} — ${fmtDur(elapsed)} of ~${fmtDur(exp)} (${pct | 0}%)`;
+  });
+}, 1000);
 function driftChip(d) {
   const M = { current: ['✓ up to date', 'var(--civo)'],
     behind: [d.behind > 0 ? `↑ ${d.behind} behind` : 'behind', 'var(--gl-amber)'],
@@ -396,6 +431,21 @@ async function loadActions() {
   try { state.act = await fetchJSON('/api/actions/status'); }
   catch { state.act = { enabled: false }; }
 }
+// Identity is COMMUNICATED by the konstruct shell — never chosen here. The
+// shell posts the signed-in user into the iframe; we relay it per request.
+window.addEventListener('message', e => {
+  let host = ''; try { host = new URL(e.origin).hostname; } catch {}
+  const trusted = e.source === window.parent &&
+    (/\.civo-platform\.com$/.test(host) || host === 'localhost');
+  if (!trusted || !e.data || e.data.type !== 'konstruct:user') return;
+  const u = String(e.data.username || '').trim();
+  if (!u) return;
+  state.konstructUser = u;
+  const el = document.querySelector('.act-id');
+  if (el) el.textContent = 'as @' + u;
+});
+// ask the shell who is signed in (harmless when nothing answers)
+try { if (window.parent !== window) window.parent.postMessage({ type: 'konstruct:whoami' }, '*'); } catch {}
 // actBtns renders the two guarded actions when the write token is configured.
 const ICON_SCOPE = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M22 12h-4M6 12H2M12 6V2M12 22v-4"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>';
 const ICON_ROCKET = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>';
@@ -413,9 +463,9 @@ document.addEventListener('click', e => {
 function openActionModal(action, project) {
   const short = project.split('/').pop();
   const needsConfirm = action === 'release';
-  // Attribution is server-set (the konstruct session identity) — nothing to
-  // pick, nothing to impersonate. The modal just states who it runs as.
-  const actor = (state.act && state.act.actor) || 'konstruct';
+  // Attribution is communicated by the konstruct shell — nothing to pick,
+  // nothing to impersonate. The modal just states who it runs as.
+  const actor = state.konstructUser || (state.act && state.act.actor) || 'konstruct';
   $('#actmodal').innerHTML = `
     <div class="d-back"></div>
     <div class="d-panel" role="dialog" aria-modal="true">
@@ -440,7 +490,9 @@ function openActionModal(action, project) {
     const confirm = needsConfirm ? $('#act-confirm').value.trim() : '';
     $('#act-out').textContent = 'starting…';
     try {
-      const res = await fetch('/api/actions/run', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const hdrs = { 'Content-Type': 'application/json' };
+      if (state.konstructUser) hdrs['X-Konstruct-Actor'] = state.konstructUser;
+      const res = await fetch('/api/actions/run', { method: 'POST', headers: hdrs,
         body: JSON.stringify({ project, action, confirm }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw body;

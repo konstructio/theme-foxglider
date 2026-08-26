@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestChartVersionAndTargetRevision(t *testing.T) {
@@ -197,5 +198,28 @@ func TestMetaEndpointUnguarded(t *testing.T) {
 	json.NewDecoder(res.Body).Decode(&m)
 	if m.Theme != "metaphor" || m.Version != themeVersion {
 		t.Fatalf("meta = %+v", m)
+	}
+}
+
+func TestRollupStagesProgressBaseline(t *testing.T) {
+	start := time.Now().Add(-40 * time.Second)
+	jobs := []glJob{
+		{Name: "lint", Stage: "validate", Status: "success", Duration: 9},
+		{Name: "build", Stage: "build", Status: "running", StartedAt: &start},
+		{Name: "publish", Stage: "publish", Status: "created"},
+	}
+	hist := map[string]float64{"build": 95, "lint": 8}
+	st := rollupStages(jobs, hist)
+	if len(st) != 3 {
+		t.Fatalf("stages = %+v", st)
+	}
+	if st[0].Status != "success" || st[0].Jobs[0].DurationS != 9 || st[0].Jobs[0].ExpectedS != 8 {
+		t.Fatalf("validate stage = %+v", st[0])
+	}
+	if st[1].Running == nil || st[1].Running.Name != "build" || st[1].Running.ExpectedS != 95 || st[1].Running.StartedAt == nil {
+		t.Fatalf("build stage running baseline = %+v", st[1].Running)
+	}
+	if st[2].Status != "created" || st[2].Running != nil {
+		t.Fatalf("publish stage = %+v", st[2])
 	}
 }

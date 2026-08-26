@@ -5,15 +5,16 @@ package main
 // separate GITLAB_ACTION_TOKEN (a group bot token distributed via the
 // ThemedApp env secret — never committed to git; unset = actions hidden).
 //
-// Attribution: the backend stamps the acting identity itself — the signed-in
-// konstruct user. Clients cannot supply or influence it (an earlier design
-// offered an "acting as" picker; that was an impersonation vector with no
-// real weight, so it's gone). Until konstruct SSO forwards a per-user
-// identity into the theme, the actor is the configured session identity
-// (ACTION_ACTOR, default "kbot") — coarse but honest. The identity rides
-// every run as the INITIATED_BY job variable, which the CI templates stamp
-// into the commits the jobs create. Seam: when konstruct forwards a signed
-// per-user identity, only actorFor() changes.
+// Attribution: the acting identity is COMMUNICATED by konstruct, never
+// chosen in the theme (an earlier "acting as" picker was an impersonation
+// vector with no real weight, so it's gone) and never hardcoded. The
+// konstruct shell posts the signed-in user into the iframe; the frontend
+// relays it as the X-Konstruct-Actor header. Today that session resolves to
+// kbot (internal SSO is not per-user yet) — commits say kbot because
+// konstruct SAID kbot, not because anything assumes it. With no
+// communicated identity the fallback is ACTION_ACTOR, then the neutral
+// "konstruct". The identity rides every run as the INITIATED_BY job
+// variable, which the CI templates stamp into the commits the jobs create.
 //
 // Mistake-proofing: only two job names are playable, only on projects in the
 // metaphor topology, only when GitLab says the job is playable; a release
@@ -27,6 +28,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -49,19 +51,27 @@ func newActions(read *glClient, topo topology, groups []string) *actions {
 	}
 	actor := os.Getenv("ACTION_ACTOR")
 	if actor == "" {
-		// The konstruct session identity. Internal SSO isn't per-user yet, so
-		// everyone shares the platform identity — coarse today, honest always.
-		actor = "kbot"
+		actor = "konstruct" // neutral: no identity was communicated
 	}
 	return &actions{gl: wr, topo: topo, actor: actor}
 }
 
 func (x *actions) enabled() bool { return x.gl != nil }
 
-// actorFor resolves who this action is attributed to. Server-side only — the
-// request never carries identity. This is the konstruct-SSO seam: a verified
-// per-user identity forwarded by the shell would be read here.
-func (x *actions) actorFor(r *http.Request) string { return x.actor }
+// reActor keeps communicated identities to sane username shapes.
+var reActor = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// actorFor resolves who this action is attributed to: the identity the
+// konstruct shell communicated for this session (relayed by the frontend as
+// X-Konstruct-Actor), else the configured fallback. The value is a relayed
+// session fact, not a user choice — the UI offers no way to set it, and
+// malformed values fall back rather than pass through.
+func (x *actions) actorFor(r *http.Request) string {
+	if h := r.Header.Get("X-Konstruct-Actor"); h != "" && reActor.MatchString(h) {
+		return h
+	}
+	return x.actor
+}
 
 // allowed restricts actions to the metaphor topology — never arbitrary projects.
 func (x *actions) allowed(project string) bool {
