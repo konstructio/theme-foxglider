@@ -520,3 +520,16 @@ func (c *glClient) commitMRs(ctx context.Context, projectPath, sha string) ([]st
 	_, err := c.get(ctx, p, nil, &out)
 	return out, err
 }
+
+// compareAhead returns how many commits `to` carries that `from` lacks —
+// the "hotfix not merged back to main" signal.
+func (c *glClient) compareAhead(ctx context.Context, projectPath, from, to string) (int, error) {
+	var out struct {
+		Commits []struct {
+			ID string `json:"id"`
+		} `json:"commits"`
+	}
+	p := fmt.Sprintf("/projects/%s/repository/compare", url.QueryEscape(projectPath))
+	_, err := c.get(ctx, p, url.Values{"from": {from}, "to": {to}}, &out)
+	return len(out.Commits), err
+}

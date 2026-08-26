@@ -332,3 +332,47 @@ func TestFeatureAction(t *testing.T) {
 		t.Fatalf("feature on macro = %d, want 400", res.StatusCode)
 	}
 }
+
+// branch-scoped trigger runs the branch's CI; branch-scoped release plays
+// the release job from the branch's newest pipeline.
+func TestBranchScopedActions(t *testing.T) {
+	var createdRef string
+	var playedJob int
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(p, "/pipeline"): // trigger-on-ref
+			var v map[string]any
+			json.NewDecoder(r.Body).Decode(&v)
+			createdRef, _ = v["ref"].(string)
+			w.Write([]byte(`{"id":800,"status":"created","ref":"` + createdRef + `","sha":"e","web_url":"http://gl/x/-/pipelines/800","created_at":"2026-08-26T00:00:00Z","updated_at":"2026-08-26T00:00:00Z"}`))
+		case strings.HasSuffix(p, "/pipelines") && r.URL.Query().Get("ref") == "hotfix/0.2":
+			w.Write([]byte(`[{"id":801,"status":"success","ref":"hotfix/0.2","web_url":"http://gl/x/-/pipelines/801","updated_at":"2026-08-26T00:00:00Z"}]`))
+		case strings.HasSuffix(p, "/pipelines/801"):
+			w.Write([]byte(`{"id":801,"status":"success","ref":"hotfix/0.2","sha":"h","web_url":"http://gl/x/-/pipelines/801","created_at":"2026-08-26T00:00:00Z","updated_at":"2026-08-26T00:00:00Z"}`))
+		case strings.HasSuffix(p, "/pipelines/801/jobs"):
+			w.Write([]byte(`[{"id":9,"name":"release","status":"manual"}]`))
+		case strings.HasSuffix(p, "/jobs/9/play"):
+			playedJob = 9
+			w.Write([]byte(`{"id":9,"name":"release","status":"pending","web_url":"http://gl/x/-/jobs/9","pipeline":{"id":801,"web_url":"http://gl/x/-/pipelines/801"}}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	t.Setenv("GITLAB_ACTION_TOKEN", "act-tok")
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	res, _ := http.Post(srv.URL+"/api/actions/run", "application/json",
+		strings.NewReader(`{"project":"civo/metaphor/metaphor","action":"trigger","ref":"epic-101-aurora"}`))
+	if res.StatusCode != 200 || createdRef != "epic-101-aurora" {
+		t.Fatalf("trigger-on-ref = %d ref=%q", res.StatusCode, createdRef)
+	}
+	res, _ = http.Post(srv.URL+"/api/actions/run", "application/json",
+		strings.NewReader(`{"project":"civo/metaphor/metaphor","action":"release","ref":"hotfix/0.2","confirm":"metaphor"}`))
+	if res.StatusCode != 200 || playedJob != 9 {
+		t.Fatalf("release-on-ref = %d played=%d", res.StatusCode, playedJob)
+	}
+}

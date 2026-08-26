@@ -134,6 +134,12 @@
   .lane-epic{color:var(--civo)} .lane-hot{color:var(--gl-orange)}
   .br-tags{display:flex;gap:6px;flex-wrap:wrap}
   .tag-epic{color:var(--civo);border-color:var(--civo)}
+  .br-name{color:var(--ink2)} .br-name:hover{color:var(--civo)}
+  .br-act{padding:2px 6px;font-size:10px;gap:0}
+  .br-ahead{font-size:10px;color:var(--gl-amber);border:1px solid var(--gl-amber);border-radius:3px;padding:1px 6px}
+  .br-merged{font-size:10px;color:var(--civo);opacity:.75}
+  .lane-stale{color:var(--mut2)}
+  .lane-stale ~ .br-row .br-chip, .section-h.lane-stale + div + .br-row .br-chip{opacity:.75}
   .up-row{display:flex;gap:8px;margin-top:10px}
   .upin{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);border-radius:5px;color:var(--ink);padding:5px 8px;font-size:12px;font-family:var(--mono)}
   .upin:focus{outline:none;border-color:var(--civo)}
@@ -474,13 +480,25 @@ function renderDelivery(d) {
 // Branches: swimlanes of the delivery lines — main, hotfix-*, epic-* —
 // across every repo in the set, with the macro's newest tags as the
 // release/feature timeline.
-function laneRow(repo, list) {
+function branchActs(repo, b, lane) {
+  if (!state.act || !state.act.enabled) return '';
+  if (lane === 'stale') lane = /^epic-/.test(b.name) ? 'epic' : 'hotfix'; // stale rows keep their real lane's rules
+  const t = `<button class="abtn br-act" data-act="trigger" data-proj="${esc(repo.project)}" data-ref="${esc(b.name)}" title="run ${esc(b.name)}'s CI">${ICON_SCOPE}</button>`;
+  const r = lane !== 'epic'
+    ? `<button class="abtn warn br-act" data-act="release" data-proj="${esc(repo.project)}" data-ref="${b.name === 'main' ? '' : esc(b.name)}" title="release from ${esc(b.name)}">${ICON_ROCKET}</button>`
+    : '';
+  return t + r;
+}
+function laneRow(repo, list, lane) {
   if (!list.length) return '';
   return list.map(b => `
-    <a class="br-chip" target="_blank" href="${b.web_url}" title="${esc(b.title || '')} — ${esc(b.author || '')}">
-      <span class="mono">${esc(b.name)}</span>
+    <span class="br-chip">
+      <a class="mono br-name" target="_blank" href="${b.web_url}" title="${esc(b.title || '')} — ${esc(b.author || '')}">${esc(b.name)}</a>
       <span class="mut">${b.when ? relTime(b.when) : ''}</span>
-    </a>`).join('');
+      ${b.ahead > 0 ? `<span class="br-ahead" title="${b.ahead} commit(s) not yet merged back to main">↑${b.ahead} not in main</span>` : ''}
+      ${lane === 'hotfix' && b.ahead === 0 ? `<span class="br-merged" title="everything merged back">✓ merged</span>` : ''}
+      ${branchActs(repo, b, lane)}
+    </span>`).join('');
 }
 function renderBranches(data) {
   const repos = data.repos || [];
@@ -490,14 +508,20 @@ function renderBranches(data) {
     { key: 'epic', label: 'epic-*', cls: 'lane-epic' },
   ];
   const epicLink = iid => `${(state.eco?.macro?.web_url || '').split('/').slice(0, 3).join('/')}/groups/${(data.group || 'civo/metaphor')}/-/epics/${iid}`;
+  const fresh = b => !b.stale, staleOf = b => b.stale;
+  const staleRows = repos.map(r => {
+    const all = [...(r.hotfix || []), ...(r.epic || [])].filter(staleOf);
+    if (!all.length) return '';
+    return `<div class="br-row"><span class="br-repo mono">${esc(r.name)}</span>${laneRow(r, all, 'stale')}</div>`;
+  }).filter(Boolean).join('');
   $('#view').innerHTML = lanes.map(l => {
     const rows = repos.map(r => {
-      const list = r[l.key] || [];
+      const list = (r[l.key] || []).filter(l.key === 'main' ? () => true : fresh);
       if (!list.length) return '';
-      return `<div class="br-row"><span class="br-repo mono">${esc(r.name)}</span>${laneRow(r, list)}</div>`;
+      return `<div class="br-row"><span class="br-repo mono">${esc(r.name)}</span>${laneRow(r, list, l.key)}</div>`;
     }).filter(Boolean).join('');
     const epics = l.key === 'epic'
-      ? [...new Set(repos.flatMap(r => (r.epic || []).map(b => b.epic_iid).filter(Boolean)))]
+      ? [...new Set(repos.flatMap(r => (r.epic || []).filter(fresh).map(b => b.epic_iid).filter(Boolean)))]
           .map(iid => `<a class="pv-epic" target="_blank" href="${epicLink(iid)}">&${iid}</a>`).join('')
       : '';
     return `<div class="section-h ${l.cls}">${l.label} ${epics}<span></span></div>
@@ -505,7 +529,11 @@ function renderBranches(data) {
   }).join('') + `
     <div class="section-h">macro tags<span></span></div>
     <div class="br-tags">${(data.macro_tags || []).map(t =>
-      `<span class="vchip mono${t.includes('-epic-') ? ' tag-epic' : ''}">${esc(t)}</span>`).join('')}</div>`;
+      `<span class="vchip mono${t.includes('-epic-') ? ' tag-epic' : ''}">${esc(t)}</span>`).join('')}</div>` +
+    (staleRows ? `
+    <div class="section-h lane-stale">stale · 30d+ quiet<span></span></div>
+    <div class="mut" style="font-size:11px;margin:-4px 0 10px">branches with no commits in a month — merge back, delete, or revive with a trigger</div>
+    ${staleRows}` : '');
 }
 
 // Fleet is a dense health wall: one status-colored tile per project + a compact
@@ -674,13 +702,16 @@ document.addEventListener('click', e => {
   const x = e.target.closest('#explain-t');
   if (x) { e.preventDefault(); const p = $('#explain'); if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none'; return; }
   const b = e.target.closest('.abtn'); if (!b || !b.dataset.act) return;
-  const ver = b.classList.contains('upbtn')
-    ? (b.closest('.up-row')?.querySelector('.upin')?.value || '').trim()
-    : '';
-  openActionModal(b.dataset.act, b.dataset.proj, ver);
+  const opts = {};
+  if (b.classList.contains('upbtn')) opts.version = (b.closest('.up-row')?.querySelector('.upin')?.value || '').trim();
+  if (b.dataset.ref) opts.ref = b.dataset.ref;
+  openActionModal(b.dataset.act, b.dataset.proj, opts);
 });
-function openActionModal(action, project, version) {
+function openActionModal(action, project, opts) {
   if (action === 'feature') return openFeatureModal(project);
+  opts = opts || {};
+  const version = opts.version || '';
+  const ref = opts.ref || '';
   const short = project.split('/').pop();
   const needsConfirm = action === 'release' || action === 'deliver';
   const verb = action === 'deliver' ? 'delivering' : 'releasing';
@@ -695,9 +726,13 @@ function openActionModal(action, project, version) {
         <span class="mono mut">${esc(project)}</span><span class="spacer"></span>
         <a href="#" id="act-x" aria-label="close">✕</a></div>
       <p class="mut">${action === 'release'
-        ? 'Plays the manual <b>release</b> job on the latest main pipeline: cuts the clean tag from the current RC, retags artifacts (no rebuild), and opens the next dev cycle.'
+        ? ref
+          ? `Plays the manual <b>release</b> job on <b class="mono">${esc(ref)}</b>'s newest pipeline — the hotfix-line release path.`
+          : 'Plays the manual <b>release</b> job on the latest main pipeline: cuts the clean tag from the current RC, retags artifacts (no rebuild), and opens the next dev cycle.'
         : action === 'deliver'
         ? `Runs the tag pipeline for <b class="mono">${esc(rc || 'the latest RC')}</b>: republishes it (idempotent), writes the dev-33 bump MR, and auto-merges it — ArgoCD takes it from there.`
+        : ref
+        ? `Runs <b class="mono">${esc(ref)}</b>'s CI on its tip — on an epic branch that's the full publish chain, minting a fresh <span class="mono">-${esc(ref)}.N</span> version.`
         : 'Plays the manual <b>trigger:manual</b> job: pushes an empty commit to main so the delivery pipeline runs end-to-end on a fresh SHA.'}</p>
       ${action === 'deliver' ? `<div id="act-preview" class="mut" style="font-size:12px;margin:2px 0 12px">checking what this introduces…</div>` : ''}
       <div class="act-row">
@@ -730,7 +765,7 @@ function openActionModal(action, project, version) {
       const hdrs = { 'Content-Type': 'application/json' };
       if (state.konstructUser) hdrs['X-Konstruct-Actor'] = state.konstructUser;
       const res = await fetch('/api/actions/run', { method: 'POST', headers: hdrs,
-        body: JSON.stringify({ project, action, confirm, version: action === 'deliver' ? (version || '') : undefined }) });
+        body: JSON.stringify({ project, action, confirm, ref: ref || undefined, version: action === 'deliver' ? (version || '') : undefined }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw body;
       $('#act-out').innerHTML = `✓ started — <a target="_blank" href="${body.job_url}">job</a> · <a target="_blank" href="${body.pipeline_url}">pipeline</a>`;

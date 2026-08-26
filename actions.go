@@ -165,6 +165,9 @@ type runReq struct {
 	// epic it came from (trace only; naming is the UI's job).
 	Branch  string `json:"branch"`
 	EpicIID int    `json:"epic_iid"`
+	// Ref: trigger/release on a specific branch (epic-*, hotfix/*) instead of
+	// the default branch — branch CI from the Branches page.
+	Ref string `json:"ref"`
 }
 
 // reVersionArg keeps typed version overrides to sane semver-ish shapes.
@@ -308,10 +311,55 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 
 	// Uncached reads: an action must see reality, not a 45s-old cache.
 	ctx := context.Background()
-	lp, err := x.gl.latestPipeline(ctx, req.Project)
-	if err != nil {
-		writeErr(w, 502, "latest pipeline: "+err.Error())
+
+	// Branch-scoped trigger: run the branch's CI on its tip — for epic
+	// branches that's the whole publish chain (a fresh -<branch>.N version).
+	if req.Action == "trigger" && req.Ref != "" {
+		if !reBranch.MatchString(strings.ToLower(req.Ref)) {
+			writeErr(w, 400, "that doesn't look like a branch name")
+			return
+		}
+		pl, err := x.gl.createPipeline(ctx, req.Project, req.Ref, map[string]string{
+			"INITIATED_BY": actor,
+		})
+		if err != nil {
+			writeErr(w, 502, "pipeline on "+req.Ref+": "+err.Error())
+			return
+		}
+		if x.markHot != nil {
+			x.markHot(req.Project)
+		}
+		log.Printf("ACTION trigger project=%s ref=%s pipeline=%d actor=%s remote=%s",
+			req.Project, req.Ref, pl.ID, actor, r.RemoteAddr)
+		writeJSON(w, map[string]any{
+			"ok": true, "action": "trigger", "actor": actor, "ref": req.Ref,
+			"job_url": pl.WebURL, "pipeline_url": pl.WebURL,
+		})
 		return
+	}
+
+	// Branch-scoped release: play the release job on the branch's newest
+	// pipeline (hotfix releases live on hotfix branches).
+	var lp glLatestPipeline
+	var err error
+	if req.Action == "release" && req.Ref != "" {
+		recent, rerr := x.gl.recentPipelines(ctx, req.Project, req.Ref, "", 1)
+		if rerr != nil || len(recent) == 0 {
+			writeErr(w, 409, "no pipeline on "+req.Ref+" yet — trigger it first")
+			return
+		}
+		full, ferr := x.gl.pipelineByPath(ctx, req.Project, recent[0].ID)
+		if ferr != nil {
+			writeErr(w, 502, "pipeline: "+ferr.Error())
+			return
+		}
+		lp = full
+	} else {
+		lp, err = x.gl.latestPipeline(ctx, req.Project)
+		if err != nil {
+			writeErr(w, 502, "latest pipeline: "+err.Error())
+			return
+		}
 	}
 	jobs, err := x.gl.jobsByPath(ctx, req.Project, lp.ID)
 	if err != nil {

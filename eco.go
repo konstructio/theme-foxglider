@@ -24,7 +24,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.3.1"
+const themeVersion = "2.4.0"
 
 const ttlEco = 45 * time.Second
 
@@ -707,6 +707,10 @@ type branchJSON struct {
 	Author  string `json:"author,omitempty"`
 	When    string `json:"when,omitempty"`
 	EpicIID int    `json:"epic_iid,omitempty"`
+	// Stale: no commits in 30 days — surfaced separately so live lanes stay
+	// scannable. Ahead: commits not yet merged back to main (hotfix lanes).
+	Stale bool `json:"stale,omitempty"`
+	Ahead int  `json:"ahead,omitempty"`
 }
 
 type repoBranches struct {
@@ -732,6 +736,9 @@ func toBranchJSON(b glBranch) branchJSON {
 			out.EpicIID = n
 		}
 	}
+	if b.Commit != nil && time.Since(b.Commit.CommittedDate) > 30*24*time.Hour {
+		out.Stale = true
+	}
 	return out
 }
 
@@ -750,17 +757,31 @@ func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
 			rb := repoBranches{Name: s.Name, Project: s.Project,
 				Main: []branchJSON{}, Hotfix: []branchJSON{}, Epic: []branchJSON{}}
 			v, err := a.c.do("br:"+s.Project, ttlBranches, func() (any, error) {
-				return a.gl.branches(ctx, s.Project, "")
+				brs, err := a.gl.branches(ctx, s.Project, "")
+				if err != nil {
+					return nil, err
+				}
+				out := make([]branchJSON, 0, len(brs))
+				for _, b := range brs {
+					bj := toBranchJSON(b)
+					// hotfix divergence: commits not yet merged back to main
+					if strings.HasPrefix(b.Name, "hotfix") {
+						if n, err := a.gl.compareAhead(ctx, s.Project, "main", b.Name); err == nil {
+							bj.Ahead = n
+						}
+					}
+					out = append(out, bj)
+				}
+				return out, nil
 			})
 			if err == nil {
-				for _, b := range v.([]glBranch) {
-					bj := toBranchJSON(b)
+				for _, bj := range v.([]branchJSON) {
 					switch {
-					case b.Name == "main":
+					case bj.Name == "main":
 						rb.Main = append(rb.Main, bj)
-					case strings.HasPrefix(b.Name, "hotfix"):
+					case strings.HasPrefix(bj.Name, "hotfix"):
 						rb.Hotfix = append(rb.Hotfix, bj)
-					case strings.HasPrefix(b.Name, "epic-"):
+					case strings.HasPrefix(bj.Name, "epic-"):
 						rb.Epic = append(rb.Epic, bj)
 					}
 				}
