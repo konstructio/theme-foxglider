@@ -440,7 +440,7 @@ function envCard(e, m) {
     ${e.state === 'current' ? driftChip(e) : upgradable ? `<div class="up-hint">upgrade available → ${esc(latest)}${e.behind > 0 ? ` · ↑${e.behind} change${e.behind === 1 ? '' : 's'}` : ''}</div>` : driftChip(e)}
     ${canAct ? `<div class="up-row">
         <input class="upin" value="${esc(latest)}" spellcheck="false" title="any published version — type an older one to roll back">
-        <button class="abtn warn upbtn" data-act="deliver" data-proj="${esc(m.project)}">${ICON_SHIP} upgrade</button>
+        <button class="abtn warn upbtn" data-act="deliver" data-proj="${esc(m.project)}" data-env="${esc(e.environment)}">${ICON_SHIP} upgrade</button>
       </div>` : ''}
     ${watchChip({ project: '__delivery__' })}
   </div>`;
@@ -783,7 +783,7 @@ document.addEventListener('click', e => {
   if (x) { e.preventDefault(); const p = $('#explain'); if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none'; return; }
   const b = e.target.closest('.abtn'); if (!b || !b.dataset.act) return;
   const opts = {};
-  if (b.classList.contains('upbtn')) opts.version = (b.closest('.up-row')?.querySelector('.upin')?.value || '').trim();
+  if (b.classList.contains('upbtn')) { opts.version = (b.closest('.up-row')?.querySelector('.upin')?.value || '').trim(); opts.env = b.dataset.env; }
   if (b.dataset.ref) opts.ref = b.dataset.ref;
   if (b.dataset.ahead !== undefined && b.dataset.ahead !== '') opts.ahead = parseInt(b.dataset.ahead, 10);
   openActionModal(b.dataset.act, b.dataset.proj, opts);
@@ -805,7 +805,7 @@ function openActionModal(action, project, opts) {
   $('#actmodal').innerHTML = `
     <div class="d-back"></div>
     <div class="d-panel" role="dialog" aria-modal="true">
-      <div class="d-head">${METAMARK}<b>${action === 'release' ? 'Release' : action === 'deliver' ? 'Deliver to dev-33' : action === 'delete' ? 'Delete branch' : 'Trigger pipeline'}</b>
+      <div class="d-head">${METAMARK}<b>${action === 'release' ? 'Release' : action === 'deliver' ? `Deliver to ${esc(opts.env || (state.eco?.delivery?.[0]?.environment ?? 'the environment'))}` : action === 'delete' ? 'Delete branch' : 'Trigger pipeline'}</b>
         <span class="mono mut">${esc(project)}</span><span class="spacer"></span>
         <a href="#" id="act-x" aria-label="close">✕</a></div>
       <p class="mut">${action === 'delete'
@@ -819,7 +819,7 @@ function openActionModal(action, project, opts) {
           ? `Plays the manual <b>release</b> job on <b class="mono">${esc(ref)}</b>'s newest pipeline — the hotfix-line release path.`
           : 'Plays the manual <b>release</b> job on the latest main pipeline: cuts the clean tag from the current RC, retags artifacts (no rebuild), and opens the next dev cycle.'
         : action === 'deliver'
-        ? `Runs the tag pipeline for <b class="mono">${esc(rc || 'the latest RC')}</b>: republishes it (idempotent), writes the dev-33 bump MR, and auto-merges it — ArgoCD takes it from there.`
+        ? `Runs the tag pipeline for <b class="mono">${esc(rc || 'the latest RC')}</b>: republishes it (idempotent), writes the ${esc(opts.env || (state.eco?.delivery?.[0]?.environment ?? 'environment'))} bump MR, and auto-merges it — ArgoCD takes it from there.`
         : ref
         ? `Runs <b class="mono">${esc(ref)}</b>'s CI on its tip — on an epic branch that's the full publish chain, minting a fresh <span class="mono">-${esc(ref)}.N</span> version.`
         : 'Plays the manual <b>trigger:manual</b> job: pushes an empty commit to main so the delivery pipeline runs end-to-end on a fresh SHA.'}</p>
