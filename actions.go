@@ -239,13 +239,36 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			x.markHot(req.Project)
 			x.markHot(x.topo.MacroProj)
 		}
-		log.Printf("ACTION feature project=%s branch=%s epic=%d micro_created=%v charts_created=%v actor=%s remote=%s",
-			req.Project, branch, req.EpicIID, created[req.Project], created[x.topo.MacroProj], actor, r.RemoteAddr)
-		writeJSON(w, map[string]any{
+		// draft the carrying MR on the service repo (idempotent: reuse an
+		// existing one if the branch already had it) — the feature is
+		// mergeable from minute one.
+		var mr *glMR
+		if list, err := x.gl.mrsBySource(ctx, req.Project, branch); err == nil && len(list) > 0 {
+			mr = &list[0]
+		} else {
+			desc := "Feature branch drafted by foxglider.\n\nInitiated-by: @" + actor
+			if req.EpicIID > 0 {
+				desc += fmt.Sprintf("\n\nRelated to &%d", req.EpicIID)
+			}
+			if m, err := x.gl.createMR(ctx, req.Project, branch, "main", "Draft: "+branch, desc); err == nil {
+				mr = &m
+			} else {
+				log.Printf("ACTION feature draft-mr failed project=%s branch=%s err=%v", req.Project, branch, err)
+			}
+		}
+		log.Printf("ACTION feature project=%s branch=%s epic=%d micro_created=%v charts_created=%v mr=%v actor=%s remote=%s",
+			req.Project, branch, req.EpicIID, created[req.Project], created[x.topo.MacroProj], mr != nil, actor, r.RemoteAddr)
+		resp := map[string]any{
 			"ok": true, "action": "feature", "actor": actor, "branch": branch,
 			"micro_created": created[req.Project], "charts_created": created[x.topo.MacroProj],
 			"urls": urls,
-		})
+			// copy-paste for the engineer's terminal, straight from the modal
+			"checkout": fmt.Sprintf("git fetch origin %s && git checkout %s", branch, branch),
+		}
+		if mr != nil {
+			resp["mr"] = map[string]any{"iid": mr.IID, "web_url": mr.WebURL}
+		}
+		writeJSON(w, resp)
 		return
 	}
 

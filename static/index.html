@@ -138,6 +138,29 @@
   .br-act{padding:2px 6px;font-size:10px;gap:0}
   a.br-ahead{text-decoration:none}
   a.br-ahead:hover{filter:brightness(1.25)}
+  .feat-g{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 14px;margin:0 0 10px}
+  .feat-h{display:flex;align-items:center;gap:9px;margin-bottom:7px}
+  .feat-name{font-size:13px;color:var(--ink)}
+  .fs-row{display:flex;align-items:center;gap:9px;padding:3px 0 3px 20px;font-size:12px}
+  .fs-name a{color:var(--ink2);text-decoration:none}
+  .fs-name a:hover{color:var(--ink)}
+  .fs-b{font-size:10px;border-radius:3px;padding:1px 7px;border:1px solid}
+  .fs-upd{color:#34d399;border-color:#14532d;background:rgba(52,211,153,.07)}
+  .fs-join{color:var(--mut);border-color:var(--line2)}
+  .fs-main{color:var(--mut2);border-color:var(--line)}
+  .fs-mr{color:#93c5fd;text-decoration:none;font-size:11px}
+  .fs-mr:hover{text-decoration:underline}
+  .term{position:relative;margin-top:10px;background:#0d1117;border:1px solid var(--line);border-radius:6px;padding:9px 12px;font-size:12px}
+  .term-c{color:var(--mut2);font-family:var(--mono)}
+  .term-l{color:#7ee787;margin-top:2px;user-select:all}
+  .term-copy{position:absolute;top:7px;right:8px}
+  .lane-tag{font-size:9.5px;color:var(--mut);border:1px solid var(--line);border-radius:3px;padding:1px 5px;letter-spacing:.04em}
+  .tile-feats{margin-top:7px;border-top:1px dashed var(--line);padding-top:6px;display:flex;flex-direction:column;gap:4px}
+  .tf-row{display:flex;align-items:center;gap:7px;font-size:11.5px}
+  .tf-ic{color:var(--mut2);display:inline-flex}
+  .tf-ic svg{width:11px;height:11px}
+  .tf-name{color:var(--ink2);text-decoration:none}
+  .tf-name:hover{color:var(--ink)}
   .btree{margin:7px 0 2px;padding:7px 9px;background:var(--panel2);border:1px solid var(--line);border-radius:5px}
   .bt-row{display:flex;align-items:baseline;gap:7px;font-size:11.5px;line-height:1.85;border-radius:3px;padding:0 4px}
   .bt-branch{color:var(--mut2);flex:none}
@@ -312,6 +335,7 @@ function commitLine(n) {
   return `<div class="ec-msg" title="${esc(c.title)} — ${esc(c.author_name || '')}">
       <a target="_blank" href="${c.web_url}">${esc(c.title)}</a><span class="mut"> · ${relTime(t)}</span></div>
     <div class="ec-sha mono">
+      <span class="lane-tag" title="everything in this block — commit, sha, pipeline, trigger, release — is the main branch">main</span>
       <a target="_blank" href="${c.web_url}" title="view commit">${esc(c.short_sha)}</a>
       <button class="copy" data-sha="${esc(c.sha)}" title="copy full sha">⧉</button>
       ${pl ? `<a class="pipebtn" target="_blank" href="${pl.web_url}" style="--c:${statusColor(pl.status)}"
@@ -509,7 +533,7 @@ function renderDelivery(d) {
           <div class="ec-ver mono"><span class="vlbl">in macro</span>${verChip(s.bundled_version)}<span class="vlbl">dev</span>${verChip(s.base_version)}</div>
           ${commitLine(s)}
           ${stagesSlot(s)}
-          ${actBtns(s.project)}${watchChip(s)}
+          ${actBtns(s.project)}${tileFeatures(s)}${watchChip(s)}
         </div>`).join('')}
       </div>
       <div class="eco-arrow">→</div>
@@ -541,9 +565,7 @@ function branchActs(repo, b, lane) {
   if (!state.act || !state.act.enabled) return '';
   if (lane === 'stale') lane = /^epic-/.test(b.name) ? 'epic' : 'hotfix'; // stale rows keep their real lane's rules
   const t = `<button class="abtn br-act" data-act="trigger" data-proj="${esc(repo.project)}" data-ref="${esc(b.name)}" title="run ${esc(b.name)}'s CI">${ICON_SCOPE}</button>`;
-  const r = lane !== 'epic'
-    ? `<button class="abtn warn br-act" data-act="release" data-proj="${esc(repo.project)}" data-ref="${b.name === 'main' ? '' : esc(b.name)}" title="release from ${esc(b.name)}">${ICON_ROCKET}</button>`
-    : '';
+  const r = `<button class="abtn warn br-act" data-act="release" data-proj="${esc(repo.project)}" data-ref="${b.name === 'main' ? '' : esc(b.name)}" title="release from ${esc(b.name)}">${ICON_ROCKET}</button>`;
   const del = lane === 'hotfix'
     ? `<button class="abtn br-act danger" data-act="delete" data-proj="${esc(repo.project)}" data-ref="${esc(b.name)}" data-ahead="${b.ahead ?? ''}" title="${b.ahead === 0 ? 'delete — fully merged, nothing is lost' : 'delete branch (confirms first)'}">${ICON_TRASH}</button>`
     : '';
@@ -574,33 +596,63 @@ function laneRow(repo, list, lane) {
     </span>`;
   }).join('');
 }
+// featureGroup: one feature (epic branch) = one block. Every microservice is
+// listed with how it participates: updated by the feature, joined but still
+// tracking main, or simply riding main. epic-showrishi and epic-101-* are
+// separate features even though both are epic-* — grouping is by branch name.
+function featureGroup(f) {
+  const act = state.act && state.act.enabled;
+  const stBadge = st => st === 'updated'
+    ? '<span class="fs-b fs-upd" title="the feature\'s charts branch pins this service at a feature version">updated by feature</span>'
+    : st === 'joined'
+    ? '<span class="fs-b fs-join" title="branch exists but its chart pin is still the stable one — no feature publish yet">joined · tracking main</span>'
+    : '<span class="fs-b fs-main" title="no feature branch here — this service rides main inside the feature umbrella">from main</span>';
+  const rows = (f.services || []).map(sv => `
+    <div class="fs-row">
+      <span class="mono fs-name">${sv.web_url ? `<a target="_blank" href="${sv.web_url}">${esc(sv.name)}</a>` : esc(sv.name)}</span>
+      ${stBadge(sv.state)}
+      ${sv.mr_iid ? `<a class="fs-mr mono" target="_blank" href="${sv.mr_url}" title="the carrying merge request">!${sv.mr_iid}</a>` : ''}
+      <span class="mut">${sv.when ? relTime(sv.when) : ''}</span>
+      <span class="spacer"></span>
+      ${act && sv.state !== 'main' ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(sv.project)}" data-ref="${esc(f.branch)}" title="run ${esc(f.branch)}'s CI on ${esc(sv.name)}">${ICON_SCOPE}</button>
+      <button class="abtn warn br-act" data-act="release" data-proj="${esc(sv.project)}" data-ref="${esc(f.branch)}" title="release from ${esc(f.branch)}">${ICON_ROCKET}</button>` : ''}
+    </div>`).join('');
+  return `<div class="feat-g">
+    <div class="feat-h">
+      <span class="tf-ic">${ICON_BRANCH}</span>
+      <span class="mono feat-name">${esc(f.branch)}</span>
+      ${f.epic_iid ? `<a class="pv-epic" target="_blank" href="${f.epic_url}">&${f.epic_iid}</a>` : ''}
+      ${f.macro_ver ? `<a class="br-macro mono" target="_blank" href="${f.macro_url}" title="the feature umbrella this branch publishes">${ICON_SHIP} ${esc(f.macro_ver)}</a>` : ''}
+      <span class="mut">${f.when ? relTime(f.when) : ''}</span>
+      ${f.charts ? '' : '<span class="mut" style="font-size:10.5px">· no charts branch yet</span>'}
+    </div>
+    ${rows}
+  </div>`;
+}
 function renderBranches(data) {
   const repos = data.repos || [];
   const lanes = [
     { key: 'main', label: 'main', cls: 'lane-main' },
     { key: 'hotfix', label: 'hotfix-*', cls: 'lane-hot' },
-    { key: 'epic', label: 'epic-*', cls: 'lane-epic' },
   ];
-  const epicLink = iid => `${(state.eco?.macro?.web_url || '').split('/').slice(0, 3).join('/')}/groups/${(data.group || 'civo/metaphor')}/-/epics/${iid}`;
   const fresh = b => !b.stale, staleOf = b => b.stale;
   const staleRows = repos.map(r => {
     const all = [...(r.hotfix || []), ...(r.epic || [])].filter(staleOf);
     if (!all.length) return '';
     return `<div class="br-row"><span class="br-repo mono">${esc(r.name)}</span>${laneRow(r, all, 'stale')}</div>`;
   }).filter(Boolean).join('');
+  const feats = (data.features || []).map(featureGroup).join('');
   $('#view').innerHTML = lanes.map(l => {
     const rows = repos.map(r => {
       const list = (r[l.key] || []).filter(l.key === 'main' ? () => true : fresh);
       if (!list.length) return '';
       return `<div class="br-row"><span class="br-repo mono">${esc(r.name)}</span>${laneRow(r, list, l.key)}</div>`;
     }).filter(Boolean).join('');
-    const epics = l.key === 'epic'
-      ? [...new Set(repos.flatMap(r => (r.epic || []).filter(fresh).map(b => b.epic_iid).filter(Boolean)))]
-          .map(iid => `<a class="pv-epic" target="_blank" href="${epicLink(iid)}">&${iid}</a>`).join('')
-      : '';
-    return `<div class="section-h ${l.cls}">${l.label} ${epics}<span></span></div>
+    return `<div class="section-h ${l.cls}">${l.label}<span></span></div>
       ${rows || '<div class="mut" style="padding:4px 2px 14px;font-size:12px">none right now</div>'}`;
   }).join('') + `
+    <div class="section-h lane-epic">features · by epic<span></span></div>
+    ${feats || '<div class="mut" style="padding:4px 2px 14px;font-size:12px">no active features — start one from any microservice tile</div>'}` + `
     <div class="section-h">macro tags<span></span></div>
     <div class="br-tags">${(data.macro_tags || []).map(t =>
       `<span class="vchip mono${t.includes('-epic-') ? ' tag-epic' : ''}">${esc(t)}</span>`).join('')}</div>` +
@@ -795,10 +847,27 @@ const ICON_BRANCH = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none"
 function actBtns(project, isMacro) {
   if (!state.act || !state.act.enabled) return '';
   return `<div class="ec-act">
-    <button class="abtn" data-act="trigger" data-proj="${esc(project)}" title="trigger the delivery pipeline on a fresh sha">${ICON_SCOPE} trigger</button>
-    <button class="abtn warn" data-act="release" data-proj="${esc(project)}" title="cut a clean release from the latest RC">${ICON_ROCKET} release</button>
+    <button class="abtn" data-act="trigger" data-proj="${esc(project)}" title="trigger the delivery pipeline on main (fresh sha)">${ICON_SCOPE} trigger</button>
+    <button class="abtn warn" data-act="release" data-proj="${esc(project)}" title="cut a clean release from main's latest RC">${ICON_ROCKET} release</button>
     ${isMacro ? '' : `<button class="abtn" data-act="feature" data-proj="${esc(project)}" title="start or join an epic feature branch (app + charts)">${ICON_BRANCH} feature</button>`}
   </div>`;
+}
+// tileFeatures: epic branches touched in the last 2 days become first-class
+// secondary targets on the tile — their own trigger/release, aimed at the
+// branch (the block above stays main's).
+function tileFeatures(svc) {
+  const feats = svc.features || [];
+  if (!feats.length) return '';
+  const act = state.act && state.act.enabled;
+  return `<div class="tile-feats">${feats.map(f => `
+    <div class="tf-row">
+      <span class="tf-ic">${ICON_BRANCH}</span>
+      <a class="mono tf-name" target="_blank" href="${f.web_url}" title="${esc(f.title || '')}">${esc(f.name)}</a>
+      <span class="mut">${f.when ? relTime(f.when) : ''}</span>
+      <span class="spacer"></span>
+      ${act ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(svc.project)}" data-ref="${esc(f.name)}" title="run ${esc(f.name)}'s CI">${ICON_SCOPE}</button>
+      <button class="abtn warn br-act" data-act="release" data-proj="${esc(svc.project)}" data-ref="${esc(f.name)}" title="release from ${esc(f.name)}">${ICON_ROCKET}</button>` : ''}
+    </div>`).join('')}</div>`;
 }
 // featureSlug: the shortest meaningful word from an epic title — strip filler
 // verbs, articles, and product words; first survivor wins. Always editable.
@@ -848,7 +917,7 @@ function openActionModal(action, project, opts) {
           : `Deletes <b class="mono">${esc(ref)}</b>. Merge state gets re-checked at delete time — unmerged commits will stop and ask.`
         : action === 'release'
         ? ref
-          ? `Plays the manual <b>release</b> job on <b class="mono">${esc(ref)}</b>'s newest pipeline — the hotfix-line release path.`
+          ? `Plays the manual <b>release</b> job on <b class="mono">${esc(ref)}</b>'s newest pipeline — releasing from the branch, not main. If that branch's CI offers no release job, this reports it honestly.`
           : 'Plays the manual <b>release</b> job on the latest main pipeline: cuts the clean tag from the current RC, retags artifacts (no rebuild), and opens the next dev cycle.'
         : action === 'deliver'
         ? `Runs the tag pipeline for <b class="mono">${esc(rc || 'the latest RC')}</b>: republishes it (idempotent), writes the ${esc(opts.env || (state.eco?.delivery?.[0]?.environment ?? 'environment'))} bump MR, and auto-merges it — ArgoCD takes it from there.`
@@ -974,6 +1043,7 @@ async function openFeatureModal(project) {
         <span class="act-id mono mut">as @${esc(state.konstructUser || (state.act && state.act.actor) || 'konstruct')}</span>
         <span id="act-out" class="mono mut"></span>
       </div>
+      <div id="feat-term"></div>
     </div>`;
   $('#actmodal').style.display = 'block';
   $('#act-x').onclick = e => { e.preventDefault(); closeActModal(); };
@@ -1006,10 +1076,22 @@ async function openFeatureModal(project) {
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw body;
       const verb = body.micro_created ? 'created' : 'joined';
-      $('#act-out').innerHTML = `✓ ${esc(branch)} ${verb} on app${body.charts_created ? ' + charts' : ' (charts already had it)'}`;
+      $('#act-out').innerHTML = `✓ ${esc(branch)} ${verb} on app${body.charts_created ? ' + charts' : ' (charts already had it)'}${body.mr ? ` · <a target="_blank" href="${body.mr.web_url}">draft !${body.mr.iid}</a>` : ''}`;
+      if (body.checkout) {
+        const shortRepo = project.split('/').pop();
+        $('#feat-term').innerHTML = `
+          <div class="term">
+            <div class="term-c"># in your ${esc(shortRepo)} clone</div>
+            <div class="term-l mono">${esc(body.checkout)}</div>
+            <button class="copy term-copy" data-sha="${esc(body.checkout)}" title="copy">⧉</button>
+          </div>`;
+      }
       state.burstUntil = Date.now() + 120000;
       poll();
-      setTimeout(() => { closeActModal(); refresh(); }, 3000);
+      // keep the modal open while the checkout instructions are up — the
+      // engineer closes it after copying; without them, close as before.
+      if (!body.checkout) setTimeout(() => { closeActModal(); refresh(); }, 3000);
+      else refresh();
     } catch (err) { $('#act-out').textContent = '✗ ' + errMsg(err); }
   };
 }

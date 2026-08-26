@@ -406,6 +406,86 @@ func TestBranchesView(t *testing.T) {
 	}
 }
 
+// TestFeaturesGrouping pins the by-epic feature view: distinct branches are
+// distinct features, every service is listed with its derivation state, and
+// stale epics stay out.
+func TestFeaturesGrouping(t *testing.T) {
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(p, "/repository/tags"):
+			w.Write([]byte(`[{"name":"metaphor-v0.2.0-epic-101-aurora.2"},{"name":"metaphor-v0.2.0-rc.4"}]`))
+		case strings.Contains(p, "metaphor-macro%2FChart.yaml") && strings.Contains(r.URL.RawQuery, "epic-101-aurora"):
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("version: 0.2.0\ndependencies:\n  - name: metaphor\n    version: \"0.11.0-epic-101-aurora.1\"\n  - name: metaphor-dashboard-manager\n    version: \"0.12.0-rc.15\"\n"))
+		case strings.HasSuffix(p, "/merge_requests") && r.URL.Query().Get("source_branch") == "epic-101-aurora":
+			w.Write([]byte(`[{"iid":12,"title":"Draft: epic-101-aurora","state":"opened","web_url":"http://gl/x/-/merge_requests/12"}]`))
+		case strings.HasSuffix(p, "/merge_requests"):
+			w.Write([]byte(`[]`))
+		case strings.HasSuffix(p, "/repository/branches") && strings.Contains(p, "micro-frontend"):
+			// micro-frontend never joined the feature
+			w.Write([]byte(`[{"name":"main","web_url":"http://gl/t/m","commit":{"short_id":"aa","title":"x","author_name":"jd","committed_date":"2026-08-26T10:00:00Z"}}]`))
+		case strings.HasSuffix(p, "/repository/branches"):
+			w.Write([]byte(`[
+				{"name":"main","web_url":"http://gl/t/m","commit":{"short_id":"aa","title":"x","author_name":"jd","committed_date":"2026-08-26T10:00:00Z"}},
+				{"name":"epic-101-aurora","web_url":"http://gl/t/e","commit":{"short_id":"bb","title":"y","author_name":"jd","committed_date":"2026-08-26T09:00:00Z"}},
+				{"name":"epic-7-legacy","web_url":"http://gl/t/l","commit":{"short_id":"cc","title":"z","author_name":"jd","committed_date":"2026-06-01T00:00:00Z"}},
+				{"name":"epic-showrishi","web_url":"http://gl/t/s","commit":{"short_id":"dd","title":"w","author_name":"jd","committed_date":"2026-08-26T08:00:00Z"}}]`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	res, err := http.Get(srv.URL + "/api/branches")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Features []featureJSON `json:"features"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	byBranch := map[string]featureJSON{}
+	for _, f := range out.Features {
+		byBranch[f.Branch] = f
+	}
+	if _, ok := byBranch["epic-7-legacy"]; ok {
+		t.Fatal("stale epic leaked into features")
+	}
+	a, ok := byBranch["epic-101-aurora"]
+	if !ok {
+		t.Fatalf("aurora missing: %+v", out.Features)
+	}
+	sh, ok := byBranch["epic-showrishi"]
+	if !ok || sh.EpicIID != 0 {
+		t.Fatalf("showrishi must be its own feature with no epic: %+v", sh)
+	}
+	if a.EpicIID != 101 || !a.Charts || a.MacroVer != "0.2.0-epic-101-aurora.2" {
+		t.Fatalf("aurora = %+v", a)
+	}
+	st := map[string]featSvcJSON{}
+	for _, sv := range a.Services {
+		st[sv.Name] = sv
+	}
+	if st["metaphor"].State != "updated" {
+		t.Fatalf("metaphor state = %q (pin is a feature version)", st["metaphor"].State)
+	}
+	if st["metaphor-dashboard-manager"].State != "joined" {
+		t.Fatalf("dashboard state = %q (branch exists, pin stable)", st["metaphor-dashboard-manager"].State)
+	}
+	if st["metaphor-micro-frontend"].State != "main" {
+		t.Fatalf("micro-frontend state = %q (never joined)", st["metaphor-micro-frontend"].State)
+	}
+	if st["metaphor"].MRIID != 12 {
+		t.Fatalf("metaphor mr = %+v", st["metaphor"])
+	}
+}
+
 // TestOverviewActivity pins the fleet's activity-view payload: per-project
 // last_activity_at, the latest human-readable event, and release staleness.
 func TestOverviewActivity(t *testing.T) {

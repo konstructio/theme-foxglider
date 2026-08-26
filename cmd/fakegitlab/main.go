@@ -152,6 +152,10 @@ func fakeCommitter(proj string) (name, avatar string) {
 func ecoFake(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.EscapedPath()
 	switch {
+	case strings.Contains(p, "metaphor-macro%2FChart.yaml") && strings.Contains(r.URL.RawQuery, "epic-101-aurora"):
+		fmt.Fprint(w, "version: 0.2.0\ndependencies:\n  - name: metaphor\n    version: \"0.11.0-rc.13\"\n  - name: metaphor-dashboard-manager\n    version: \"0.12.0-epic-101-aurora.2\"\n  - name: metaphor-micro-frontend\n    version: \"0.1.0-rc.7\"\n")
+	case strings.Contains(p, "metaphor-macro%2FChart.yaml") && strings.Contains(r.URL.RawQuery, "epic-showrishi"):
+		fmt.Fprint(w, "version: 0.2.0\ndependencies:\n  - name: metaphor\n    version: \"0.11.0-rc.13\"\n  - name: metaphor-dashboard-manager\n    version: \"0.12.0-rc.15\"\n  - name: metaphor-micro-frontend\n    version: \"0.1.0-epic-showrishi.1\"\n")
 	case strings.Contains(p, "metaphor-macro%2FChart.yaml"):
 		if strings.Contains(r.URL.RawQuery, "rc.2") {
 			fmt.Fprint(w, "version: 0.2.0\ndependencies:\n  - name: metaphor\n    version: \"0.11.0-rc.10\"\n  - name: metaphor-dashboard-manager\n    version: \"0.12.0-rc.15\"\n  - name: metaphor-micro-frontend\n    version: \"0.1.0-rc.7\"\n")
@@ -208,6 +212,11 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 			{"hotfix-done", "beefcafe", "fix: already merged", "John Dietz", now2.Add(-3 * time.Hour)},
 			{"epic-7-legacy", "old00001", "wip: abandoned spike", "John Dietz", now2.Add(-45 * 24 * time.Hour)},
 		}
+		// epic-showrishi joins only the micro-frontend + charts — the feature
+		// view's "one service updated, others from main" demo
+		if strings.Contains(p, "micro-frontend") || strings.Contains(p, "%2Fcharts") {
+			all = append(all, fb{"epic-showrishi", "aa11bb22", "wip: show rishi", "John Dietz", now2.Add(-40 * time.Minute)})
+		}
 		delMu.Lock()
 		items := []string{}
 		for _, b := range all {
@@ -236,6 +245,16 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(p, "/pipeline"): // deliver: create pipeline on a tag
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"id":701,"status":"created","ref":"metaphor-v0.2.0-rc.4","sha":"feedfacecafe0000","web_url":"https://git.civo.com/civo/metaphor/charts/-/pipelines/701","created_at":"2026-08-26T00:00:00Z","updated_at":"2026-08-26T00:00:00Z"}`)
+	case strings.HasSuffix(p, "/merge_requests") && r.Method == "POST":
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		fmt.Fprintf(w, `{"iid":88,"title":%q,"state":"opened","web_url":"https://git.civo.com/x/-/merge_requests/88"}`, body["title"])
+	case strings.HasSuffix(p, "/merge_requests") && r.Method == "GET" && r.URL.Query().Get("source_branch") != "":
+		if r.URL.Query().Get("source_branch") == "epic-101-aurora" {
+			fmt.Fprint(w, `[{"iid":12,"title":"Draft: epic-101-aurora","state":"opened","web_url":"https://git.civo.com/x/-/merge_requests/12"}]`)
+			return
+		}
+		fmt.Fprint(w, `[]`)
 	case strings.HasSuffix(p, "/merge_requests") && r.Method == "GET":
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `[{"iid":55,"title":"chore: bump metaphor-macro to 0.2.0-rc.4 (release_preview)","state":"opened","web_url":"https://git.civo.com/civo/metaphor/metaphor-gitops/-/merge_requests/55"}]`)

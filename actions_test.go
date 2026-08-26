@@ -293,6 +293,19 @@ func TestFeatureAction(t *testing.T) {
 			}
 			created["micro"]++
 			w.Write([]byte(`{"name":"epic-20-pink","web_url":"http://gl/x/-/tree/epic-20-pink"}`))
+		case strings.HasSuffix(p, "/merge_requests") && r.Method == "GET":
+			w.Write([]byte(`[]`)) // no MR yet — the action drafts one
+		case strings.HasSuffix(p, "/merge_requests") && r.Method == "POST":
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			created["mr"]++
+			if body["source_branch"] != "epic-20-pink" || body["target_branch"] != "main" || !strings.HasPrefix(body["title"].(string), "Draft:") {
+				t.Errorf("draft MR body = %+v", body)
+			}
+			if !strings.Contains(body["description"].(string), "&20") {
+				t.Errorf("draft MR description misses the epic ref: %v", body["description"])
+			}
+			w.Write([]byte(`{"iid":88,"title":"Draft: epic-20-pink","state":"opened","web_url":"http://gl/x/-/merge_requests/88"}`))
 		default:
 			w.WriteHeader(404)
 		}
@@ -308,9 +321,14 @@ func TestFeatureAction(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out struct {
-		OK            bool `json:"ok"`
-		MicroCreated  bool `json:"micro_created"`
-		ChartsCreated bool `json:"charts_created"`
+		OK            bool   `json:"ok"`
+		MicroCreated  bool   `json:"micro_created"`
+		ChartsCreated bool   `json:"charts_created"`
+		Checkout      string `json:"checkout"`
+		MR            *struct {
+			IID    int    `json:"iid"`
+			WebURL string `json:"web_url"`
+		} `json:"mr"`
 	}
 	json.NewDecoder(res.Body).Decode(&out)
 	if res.StatusCode != 200 || !out.OK || !out.MicroCreated || out.ChartsCreated {
@@ -318,6 +336,12 @@ func TestFeatureAction(t *testing.T) {
 	}
 	if created["micro"] != 1 || created["charts"] != 1 {
 		t.Fatalf("branch calls = %+v", created)
+	}
+	if created["mr"] != 1 || out.MR == nil || out.MR.IID != 88 {
+		t.Fatalf("draft MR = calls %d, resp %+v", created["mr"], out.MR)
+	}
+	if out.Checkout != "git fetch origin epic-20-pink && git checkout epic-20-pink" {
+		t.Fatalf("checkout = %q", out.Checkout)
 	}
 	// bad names refused
 	res, _ = http.Post(srv.URL+"/api/actions/run", "application/json",

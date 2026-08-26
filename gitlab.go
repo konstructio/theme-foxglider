@@ -391,6 +391,27 @@ func (c *glClient) openMRs(ctx context.Context, projectPath string) ([]glMR, err
 	return out, err
 }
 
+// mrsBySource lists MRs (any state) whose source is the given branch — the
+// feature view's "which MR carries this work" lookup.
+func (c *glClient) mrsBySource(ctx context.Context, projectPath, branch string) ([]glMR, error) {
+	var out []glMR
+	p := fmt.Sprintf("/projects/%s/merge_requests", url.QueryEscape(projectPath))
+	_, err := c.get(ctx, p, url.Values{"source_branch": {branch}, "per_page": {"5"}, "order_by": {"created_at"}}, &out)
+	return out, err
+}
+
+// createMR opens a merge request (used for the auto-drafted feature MR).
+func (c *glClient) createMR(ctx context.Context, projectPath, source, target, title, description string) (glMR, error) {
+	var out glMR
+	p := fmt.Sprintf("/projects/%s/merge_requests", url.QueryEscape(projectPath))
+	err := c.postJSON(ctx, p, map[string]any{
+		"source_branch": source, "target_branch": target,
+		"title": title, "description": description,
+		"remove_source_branch": true,
+	}, &out)
+	return out, err
+}
+
 // mergeMR merges one MR; best-effort approve first (repos differ on rules).
 func (c *glClient) mergeMR(ctx context.Context, projectPath string, iid int) (glMR, error) {
 	base := fmt.Sprintf("/projects/%s/merge_requests/%d", url.QueryEscape(projectPath), iid)

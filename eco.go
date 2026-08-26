@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.7.0"
+const themeVersion = "2.8.0"
 
 const ttlEco = 45 * time.Second
 
@@ -258,6 +258,10 @@ type svcNode struct {
 	Pipeline *pipelineJSON `json:"pipeline,omitempty"`
 	Commit   *commitJSON   `json:"commit,omitempty"`
 	SHAPipes []shaPipeJSON `json:"sha_pipelines,omitempty"`
+	// Features: epic-* branches on this repo touched in the last 2 days —
+	// rendered on the tile as first-class secondary targets (the tile's main
+	// block stays main; these carry their own trigger/release).
+	Features []branchJSON `json:"features,omitempty"`
 }
 
 type macroNode struct {
@@ -484,7 +488,8 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 		i    int
 		v    any
 	}
-	total := 3 + len(t.Services)*2 + len(t.Delivery)
+	svcFeats := make([][]branchJSON, len(t.Services))
+	total := 3 + len(t.Services)*3 + len(t.Delivery)
 	ch := make(chan slot, total)
 	go func() { ch <- slot{"macroRaw", 0, a.rawFile(ctx, t.MacroProj, t.MacroFile)} }()
 	go func() { ch <- slot{"tag", 0, newestTag(a.cachedTags(ctx, t.MacroProj), t.MacroTag)} }()
@@ -493,6 +498,7 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 		i, s := i, s
 		go func() { ch <- slot{"svcRaw", i, a.rawFile(ctx, s.Project, s.Chart)} }()
 		go func() { ch <- slot{"svcPipe", i, a.pipeBundleFor(ctx, s.Project)} }()
+		go func() { ch <- slot{"svcFeat", i, a.activeFeatures(ctx, s.Project)} }()
 	}
 	for i, d := range t.Delivery {
 		i, d := i, d
@@ -517,6 +523,8 @@ collect:
 				svcPB[s.i] = s.v.(pipeBundle)
 			case "delRaw":
 				delRaw[s.i] = s.v.(string)
+			case "svcFeat":
+				svcFeats[s.i], _ = s.v.([]branchJSON)
 			}
 		case <-deadline:
 			break collect
@@ -557,6 +565,7 @@ collect:
 			WebURL:  a.gl.base + "/" + s.Project,
 			BaseVer: chartVersion(svcRaw[i]), Bundled: deps[s.Name],
 			Pipeline: svcPB[i].Pipe, Commit: svcPB[i].Commit, SHAPipes: svcPB[i].Pipes,
+			Features: svcFeats[i],
 		}
 		// A service run just finished: its dep-bump is pushing the next macro
 		// RC — put the macro on the fast lane so the handoff shows promptly.
@@ -807,6 +816,197 @@ func toBranchJSON(b glBranch) branchJSON {
 	return out
 }
 
+// cachedBranches lists a repo's branches (60s cache) enriched with the hotfix
+// divergence data — shared by the Branches tab and the delivery tiles.
+func (a *api) cachedBranches(ctx context.Context, project string) ([]branchJSON, error) {
+	v, err := a.c.do("br:"+project, ttlBranches, func() (any, error) {
+		brs, err := a.gl.branches(ctx, project, "")
+		if err != nil {
+			return nil, err
+		}
+		out := make([]branchJSON, 0, len(brs))
+		for _, b := range brs {
+			out = append(out, toBranchJSON(b))
+		}
+		// hotfix divergence: commits not yet merged back to main.
+		// Bounded to the 10 most recent — repos like konstruct-ui carry
+		// dozens of old hotfix branches and each check is an API call.
+		hix := []int{}
+		for i, bj := range out {
+			if strings.HasPrefix(bj.Name, "hotfix") {
+				hix = append(hix, i)
+			}
+		}
+		sort.Slice(hix, func(x, y int) bool { return out[hix[x]].When > out[hix[y]].When })
+		if len(hix) > 10 {
+			hix = hix[:10]
+		}
+		for _, i := range hix {
+			n, people, err := a.gl.compareBranch(ctx, project, "main", out[i].Name)
+			if err != nil {
+				continue
+			}
+			ah := n
+			out[i].Ahead = &ah
+			out[i].CompareURL = a.gl.base + "/" + project + "/-/compare/main..." + url.PathEscape(out[i].Name)
+			for _, p := range people {
+				out[i].Committers = append(out[i].Committers,
+					committerJSON{Name: p.AuthorName, Avatar: a.avatarFor(ctx, p.AuthorEmail)})
+			}
+		}
+		return out, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.([]branchJSON), nil
+}
+
+// activeFeatures filters a repo's epic-* branches to those touched within the
+// last two days — the tile's "this repo is part of live feature work" signal.
+func (a *api) activeFeatures(ctx context.Context, project string) []branchJSON {
+	brs, err := a.cachedBranches(ctx, project)
+	if err != nil {
+		return nil
+	}
+	cutoff := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
+	var out []branchJSON
+	for _, b := range brs {
+		if strings.HasPrefix(b.Name, "epic-") && b.When >= cutoff && !a.branchDeleted(project, b.Name) {
+			out = append(out, b)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].When > out[j].When })
+	if len(out) > 4 {
+		out = out[:4]
+	}
+	return out
+}
+
+type featSvcJSON struct {
+	Name    string `json:"name"`
+	Project string `json:"project"`
+	// State: "updated" — the feature's charts branch pins this service at a
+	// feature version; "joined" — the branch exists but the pin is still
+	// stable; "main" — no branch, the service rides main inside this feature.
+	State  string `json:"state"`
+	When   string `json:"when,omitempty"`
+	WebURL string `json:"web_url,omitempty"`
+	MRIID  int    `json:"mr_iid,omitempty"`
+	MRURL  string `json:"mr_url,omitempty"`
+}
+
+type featureJSON struct {
+	Branch   string        `json:"branch"`
+	EpicIID  int           `json:"epic_iid,omitempty"`
+	EpicURL  string        `json:"epic_url,omitempty"`
+	Charts   bool          `json:"charts"`
+	MacroVer string        `json:"macro_ver,omitempty"`
+	MacroURL string        `json:"macro_url,omitempty"`
+	When     string        `json:"when,omitempty"`
+	Services []featSvcJSON `json:"services"`
+}
+
+// assembleFeatures groups epic-* branches into features: one entry per branch
+// name, every topology service listed with its derivation state (from the
+// charts feature-branch pins), plus the carrying MR per joined service.
+func (a *api) assembleFeatures(ctx context.Context, t topology, repos []repoBranches, allTags []glTag) []featureJSON {
+	type presence struct {
+		when, webURL string
+	}
+	found := map[string]map[string]presence{} // branch → project → presence
+	chartsHas := map[string]string{}          // branch → when (macro repo)
+	newest := map[string]string{}
+	for _, rb := range repos {
+		for _, b := range rb.Epic {
+			if found[b.Name] == nil {
+				found[b.Name] = map[string]presence{}
+			}
+			found[b.Name][rb.Project] = presence{b.When, b.WebURL}
+			if b.When > newest[b.Name] {
+				newest[b.Name] = b.When
+			}
+			if rb.Project == t.MacroProj {
+				chartsHas[b.Name] = b.When
+			}
+		}
+	}
+	names := make([]string, 0, len(found))
+	for n := range found {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool { return newest[names[i]] > newest[names[j]] })
+	// stale features (30d+ quiet everywhere) live in the stale section, not here
+	staleCut := time.Now().Add(-30 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	fresh := names[:0]
+	for _, n := range names {
+		if newest[n] >= staleCut {
+			fresh = append(fresh, n)
+		}
+	}
+	names = fresh
+	if len(names) > 6 {
+		names = names[:6]
+	}
+	group := t.MacroProj
+	if i := strings.LastIndex(group, "/"); i > 0 {
+		group = group[:i]
+	}
+	out := make([]featureJSON, 0, len(names))
+	for _, name := range names {
+		f := featureJSON{Branch: name, When: newest[name]}
+		if m := reEpicBranch.FindStringSubmatch(name); m != nil {
+			if iid, err := strconv.Atoi(m[1]); err == nil && iid > 0 {
+				f.EpicIID = iid
+				f.EpicURL = a.gl.base + "/groups/" + group + "/-/epics/" + m[1]
+			}
+		}
+		_, f.Charts = chartsHas[name]
+		if tag := macroTagFor(allTags, t.MacroTag, name); tag != "" {
+			f.MacroVer = strings.TrimPrefix(tag, t.MacroTag)
+			f.MacroURL = a.gl.base + "/" + t.MacroProj + "/-/tags/" + url.PathEscape(tag)
+		}
+		// which services the feature ACTUALLY moves: the charts branch pins
+		var pins map[string]string
+		if f.Charts {
+			if v, err := a.c.do("fdeps:"+name, ttlBranches, func() (any, error) {
+				bctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+				raw, err := a.gl.fileRaw(bctx, t.MacroProj, t.MacroFile, name)
+				if err != nil {
+					return nil, err
+				}
+				return macroDeps(raw), nil
+			}); err == nil {
+				pins, _ = v.(map[string]string)
+			}
+		}
+		needle := "-" + reBranchID.ReplaceAllString(strings.ToLower(name), "-") + "."
+		for _, svc := range t.Services {
+			fs := featSvcJSON{Name: svc.Name, Project: svc.Project, State: "main"}
+			if p, ok := found[name][svc.Project]; ok {
+				fs.State, fs.When, fs.WebURL = "joined", p.when, p.webURL
+				if strings.Contains(pins[svc.Name], needle) {
+					fs.State = "updated"
+				}
+				// the MR carrying this work (draft or open)
+				if v, err := a.c.do("mrs:"+svc.Project+"@"+name, ttlBranches, func() (any, error) {
+					bctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					defer cancel()
+					return a.gl.mrsBySource(bctx, svc.Project, name)
+				}); err == nil {
+					if list, _ := v.([]glMR); len(list) > 0 {
+						fs.MRIID, fs.MRURL = list[0].IID, list[0].WebURL
+					}
+				}
+			}
+			f.Services = append(f.Services, fs)
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
 // branchesView lists every topology repo's branches grouped into lanes, plus
 // the macro repo's newest tags — the release/feature timeline in one payload.
 func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
@@ -821,45 +1021,9 @@ func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			rb := repoBranches{Name: s.Name, Project: s.Project,
 				Main: []branchJSON{}, Hotfix: []branchJSON{}, Epic: []branchJSON{}}
-			v, err := a.c.do("br:"+s.Project, ttlBranches, func() (any, error) {
-				brs, err := a.gl.branches(ctx, s.Project, "")
-				if err != nil {
-					return nil, err
-				}
-				out := make([]branchJSON, 0, len(brs))
-				for _, b := range brs {
-					out = append(out, toBranchJSON(b))
-				}
-				// hotfix divergence: commits not yet merged back to main.
-				// Bounded to the 10 most recent — repos like konstruct-ui carry
-				// dozens of old hotfix branches and each check is an API call.
-				hix := []int{}
-				for i, bj := range out {
-					if strings.HasPrefix(bj.Name, "hotfix") {
-						hix = append(hix, i)
-					}
-				}
-				sort.Slice(hix, func(x, y int) bool { return out[hix[x]].When > out[hix[y]].When })
-				if len(hix) > 10 {
-					hix = hix[:10]
-				}
-				for _, i := range hix {
-					n, people, err := a.gl.compareBranch(ctx, s.Project, "main", out[i].Name)
-					if err != nil {
-						continue
-					}
-					ah := n
-					out[i].Ahead = &ah
-					out[i].CompareURL = a.gl.base + "/" + s.Project + "/-/compare/main..." + url.PathEscape(out[i].Name)
-					for _, p := range people {
-						out[i].Committers = append(out[i].Committers,
-							committerJSON{Name: p.AuthorName, Avatar: a.avatarFor(ctx, p.AuthorEmail)})
-					}
-				}
-				return out, nil
-			})
+			v, err := a.cachedBranches(ctx, s.Project)
 			if err == nil {
-				for _, bj := range v.([]branchJSON) {
+				for _, bj := range v {
 					if a.branchDeleted(s.Project, bj.Name) {
 						continue
 					}
@@ -901,7 +1065,8 @@ func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]any{"repos": out, "macro_tags": tags,
-		"group": strings.TrimSuffix(t.MacroProj, "/"+t.MacroProj[strings.LastIndex(t.MacroProj, "/")+1:])})
+		"features": a.assembleFeatures(ctx, t, out, allTags),
+		"group":    strings.TrimSuffix(t.MacroProj, "/"+t.MacroProj[strings.LastIndex(t.MacroProj, "/")+1:])})
 }
 
 // avatarFor resolves (and long-caches) the avatar for a commit email; "" when
