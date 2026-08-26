@@ -650,6 +650,20 @@ func (c *glClient) latestRelease(ctx context.Context, projectID int) (*glRelease
 	return &out[0], nil
 }
 
+// latestReleaseByPath is latestRelease for path-addressed projects (the
+// delivery-ecosystem side of the client).
+func (c *glClient) latestReleaseByPath(ctx context.Context, projectPath string) (*glRelease, error) {
+	var out []glRelease
+	p := fmt.Sprintf("/projects/%s/releases", url.QueryEscape(projectPath))
+	if _, err := c.get(ctx, p, url.Values{"per_page": {"1"}}, &out); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return &out[0], nil
+}
+
 // deleteBranch removes a branch ref. GitLab refuses protected branches (403)
 // and 404s absent ones — both surface as errors.
 func (c *glClient) deleteBranch(ctx context.Context, projectPath, branch string) error {

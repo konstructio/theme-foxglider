@@ -161,6 +161,10 @@
   .term-l{color:#7ee787;margin-top:2px;user-select:all}
   .term-copy{position:absolute;top:7px;right:8px}
   .lane-tag{font-size:9.5px;color:var(--mut);border:1px solid var(--line);border-radius:3px;padding:1px 5px;letter-spacing:.04em}
+  .tile-sec{margin-top:7px;border-top:1px dashed var(--line);padding-top:6px}
+  .tile-sec .ec-msg{margin:0 0 3px}
+  .tf-h-row{display:flex;align-items:center;gap:6px;text-transform:uppercase}
+  .tf-h-row .abtn{text-transform:none;letter-spacing:0}
   .tile-feats{margin-top:7px;border-top:1px dashed var(--line);padding-top:6px;display:flex;flex-direction:column;gap:4px}
   .tf-h{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut2);margin-bottom:2px}
   .tf-row{display:flex;align-items:center;gap:7px;font-size:11.5px}
@@ -538,9 +542,9 @@ function renderDelivery(d) {
         ${svcs.map(s => `<div class="ecard">
           <div class="ec-top"><a class="pname" target="_blank" href="${s.web_url}" title="${esc(s.name)}">${esc(s.name)}</a>${statusChip(s.pipeline)}${avatarImg(s.pipeline)}</div>
           <div class="ec-ver mono"><span class="vlbl">in macro</span>${verChip(s.bundled_version)}<span class="vlbl">dev</span>${verChip(s.base_version)}</div>
-          ${commitLine(s)}
-          ${stagesSlot(s)}
-          ${actBtns(s.project)}${tileFeatures(s)}${watchChip(s)}
+          ${mainPipelineSection(s)}
+          ${mainReleaseSection(s)}
+          ${tileFeatures(s)}${watchChip(s)}
         </div>`).join('')}
       </div>
       <div class="eco-arrow">→</div>
@@ -551,9 +555,9 @@ function renderDelivery(d) {
           <div class="ec-big mono">${esc(m.published_rc || m.base_version || '—')}</div>
           <div class="mut">bundles ${svcs.length} microcharts · base <span class="mono">${esc(m.base_version || '—')}</span></div>
           ${bundleTree(m)}
-          ${commitLine(m)}
-          ${stagesSlot(m)}
-          ${actBtns(m.project, true)}${watchChip(m)}
+          ${mainPipelineSection(m)}
+          ${mainReleaseSection(m)}
+          ${watchChip(m)}
         </div>
       </div>
       <div class="eco-arrow${state.watch && state.watch.mode === 'deliver' && !state.watch.done && Date.now() < state.watch.until ? ' flow' : ''}">${state.watch && state.watch.mode === 'deliver' && !state.watch.done ? '<span class="pkt"></span><span class="pkt"></span>' : ''}→</div>
@@ -869,6 +873,43 @@ function watchChip(n) {
 }
 const ICON_SHIP = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>';
 const ICON_BRANCH = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>';
+// The three tile sections share one row grammar — icon · name · meta ·
+// actions at the right — so main visibly works the same way features do.
+function mainPipelineSection(n) {
+  const c = n.commit, pl = n.pipeline;
+  const act = state.act && state.act.enabled;
+  return `<div class="tile-sec">
+    <div class="tf-h">main pipeline</div>
+    ${c ? `<div class="ec-msg" title="${esc(c.title)} — ${esc(c.author_name || '')}">
+      <a target="_blank" href="${c.web_url}">${esc(c.title)}</a><span class="mut"> · ${relTime((pl && (pl.finished_at || pl.updated_at)) || c.authored_at)}</span></div>` : ''}
+    <div class="tf-row">
+      <span class="tf-ic">${ICON_BRANCH}</span>
+      <span class="mono tf-name">main</span>
+      ${c ? `<span class="ec-sha mono" style="margin:0"><a target="_blank" href="${c.web_url}" title="view commit">${esc(c.short_sha)}</a>
+        <button class="copy" data-sha="${esc(c.sha)}" title="copy full sha">⧉</button></span>` : ''}
+      ${pl ? `<a class="pipebtn" target="_blank" href="${pl.web_url}" style="--c:${statusColor(pl.status)}"
+        title="pipeline #${pl.id} · ${esc(pl.ref)} · ${pl.status}">${ICON_PIPE} pipeline</a>` : ''}
+      <span class="spacer"></span>
+      ${act ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(n.project)}" title="trigger the delivery pipeline on main (fresh sha)">${ICON_SCOPE}</button>` : ''}
+    </div>
+    ${stagesSlot(n)}
+  </div>`;
+}
+function mainReleaseSection(n) {
+  const act = state.act && state.act.enabled;
+  const r = n.latest_release;
+  return `<div class="tile-sec">
+    <div class="tf-h">main release</div>
+    <div class="tf-row">
+      <span class="tf-ic">${ICON_ROCKET}</span>
+      ${r ? `<a class="mono tf-name" target="_blank" href="${r.web_url || '#'}" title="released ${esc(r.released_at)}">${esc(r.tag)}</a>
+        <span class="mut">${r.days_ago === 0 ? 'today' : r.days_ago === 1 ? '1 day ago' : `${r.days_ago} days ago`}</span>`
+        : `<span class="mut">no releases yet</span>`}
+      <span class="spacer"></span>
+      ${act ? `<button class="abtn warn br-act" data-act="release" data-proj="${esc(n.project)}" title="cut a clean release from main's latest RC">${ICON_ROCKET}</button>` : ''}
+    </div>
+  </div>`;
+}
 function actBtns(project, isMacro) {
   if (!state.act || !state.act.enabled) return '';
   return `<div class="ec-act">
@@ -882,9 +923,9 @@ function actBtns(project, isMacro) {
 // branch (the block above stays main's).
 function tileFeatures(svc) {
   const feats = svc.features || [];
-  if (!feats.length) return '';
   const act = state.act && state.act.enabled;
-  return `<div class="tile-feats"><div class="tf-h">active features</div>${feats.map(f => `
+  if (!feats.length && !act) return '';
+  return `<div class="tile-feats"><div class="tf-h tf-h-row">active features<span class="spacer"></span>${act ? `<button class="abtn br-act" data-act="feature" data-proj="${esc(svc.project)}" title="start or join an epic feature branch (app + charts)">${ICON_BRANCH} start · join</button>` : ''}</div>${!feats.length ? '<div class="mut" style="font-size:11px">none right now</div>' : ''}${feats.map(f => `
     <div class="tf-row">
       <span class="tf-ic">${ICON_BRANCH}</span>
       <a class="mono tf-name" target="_blank" href="${f.web_url}" title="${esc(f.title || '')}">${esc(f.name)}</a>

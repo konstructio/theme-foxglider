@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.10.1"
+const themeVersion = "2.11.0"
 
 const ttlEco = 45 * time.Second
 
@@ -262,6 +262,8 @@ type svcNode struct {
 	// rendered on the tile as first-class secondary targets (the tile's main
 	// block stays main; these carry their own trigger/release).
 	Features []branchJSON `json:"features,omitempty"`
+	// LatestRelease feeds the tile's "main release" section.
+	LatestRelease *releaseJSON `json:"latest_release,omitempty"`
 }
 
 type macroNode struct {
@@ -274,11 +276,12 @@ type macroNode struct {
 	// Bundle: the subchart pins inside the PUBLISHED umbrella (deps at the
 	// tag ref; falls back to main's tip when the tag read misses — BundleRef
 	// says which one you're looking at).
-	Bundle    []depJSON     `json:"bundle,omitempty"`
-	BundleRef string        `json:"bundle_ref,omitempty"`
-	Pipeline  *pipelineJSON `json:"pipeline,omitempty"`
-	Commit    *commitJSON   `json:"commit,omitempty"`
-	SHAPipes  []shaPipeJSON `json:"sha_pipelines,omitempty"`
+	Bundle        []depJSON     `json:"bundle,omitempty"`
+	BundleRef     string        `json:"bundle_ref,omitempty"`
+	LatestRelease *releaseJSON  `json:"latest_release,omitempty"`
+	Pipeline      *pipelineJSON `json:"pipeline,omitempty"`
+	Commit        *commitJSON   `json:"commit,omitempty"`
+	SHAPipes      []shaPipeJSON `json:"sha_pipelines,omitempty"`
 }
 
 // commitJSON is the headline of the commit behind the latest pipeline — the
@@ -489,16 +492,20 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 		v    any
 	}
 	svcFeats := make([][]branchJSON, len(t.Services))
-	total := 3 + len(t.Services)*3 + len(t.Delivery)
+	svcRels := make([]*releaseJSON, len(t.Services))
+	var macroRel *releaseJSON
+	total := 4 + len(t.Services)*4 + len(t.Delivery)
 	ch := make(chan slot, total)
 	go func() { ch <- slot{"macroRaw", 0, a.rawFile(ctx, t.MacroProj, t.MacroFile)} }()
 	go func() { ch <- slot{"tag", 0, newestTag(a.cachedTags(ctx, t.MacroProj), t.MacroTag)} }()
 	go func() { ch <- slot{"macroPipe", 0, a.pipeBundleFor(ctx, t.MacroProj)} }()
+	go func() { ch <- slot{"macroRel", 0, a.cachedRelease(ctx, t.MacroProj)} }()
 	for i, s := range t.Services {
 		i, s := i, s
 		go func() { ch <- slot{"svcRaw", i, a.rawFile(ctx, s.Project, s.Chart)} }()
 		go func() { ch <- slot{"svcPipe", i, a.pipeBundleFor(ctx, s.Project)} }()
 		go func() { ch <- slot{"svcFeat", i, a.activeFeatures(ctx, s.Project)} }()
+		go func() { ch <- slot{"svcRel", i, a.cachedRelease(ctx, s.Project)} }()
 	}
 	for i, d := range t.Delivery {
 		i, d := i, d
@@ -525,6 +532,10 @@ collect:
 				delRaw[s.i] = s.v.(string)
 			case "svcFeat":
 				svcFeats[s.i], _ = s.v.([]branchJSON)
+			case "svcRel":
+				svcRels[s.i], _ = s.v.(*releaseJSON)
+			case "macroRel":
+				macroRel, _ = s.v.(*releaseJSON)
 			}
 		case <-deadline:
 			break collect
@@ -554,7 +565,7 @@ collect:
 		Name: t.MacroName, Project: t.MacroProj,
 		WebURL:  a.gl.base + "/" + t.MacroProj,
 		BaseVer: chartVersion(macroRaw), PublishedRC: publishedRC, PublishedTag: publishedTag,
-		Bundle: bundle, BundleRef: bundleRef,
+		Bundle: bundle, BundleRef: bundleRef, LatestRelease: macroRel,
 		Pipeline: macroPB.Pipe, Commit: macroPB.Commit, SHAPipes: macroPB.Pipes,
 	}
 
@@ -565,7 +576,7 @@ collect:
 			WebURL:  a.gl.base + "/" + s.Project,
 			BaseVer: chartVersion(svcRaw[i]), Bundled: deps[s.Name],
 			Pipeline: svcPB[i].Pipe, Commit: svcPB[i].Commit, SHAPipes: svcPB[i].Pipes,
-			Features: svcFeats[i],
+			Features: svcFeats[i], LatestRelease: svcRels[i],
 		}
 		// A service run just finished: its dep-bump is pushing the next macro
 		// RC — put the macro on the fast lane so the handoff shows promptly.
@@ -1103,6 +1114,27 @@ func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"repos": out, "macro_tags": tags,
 		"features": a.assembleFeatures(ctx, t, out, allTags),
 		"group":    strings.TrimSuffix(t.MacroProj, "/"+t.MacroProj[strings.LastIndex(t.MacroProj, "/")+1:])})
+}
+
+// cachedRelease fetches a repo's newest release (5-min cache; nil when the
+// repo has never cut one).
+func (a *api) cachedRelease(ctx context.Context, project string) *releaseJSON {
+	v, err := a.c.do("relp:"+project, 5*time.Minute, func() (any, error) {
+		r, err := a.gl.latestReleaseByPath(ctx, project)
+		if err != nil {
+			return nil, err
+		}
+		return r, nil
+	})
+	if err != nil {
+		return nil
+	}
+	r, _ := v.(*glRelease)
+	if r == nil {
+		return nil
+	}
+	return &releaseJSON{Tag: r.TagName, Name: r.Name, ReleasedAt: r.ReleasedAt,
+		WebURL: r.Links.Self, DaysAgo: int(time.Since(r.ReleasedAt).Hours() / 24)}
 }
 
 // avatarFor resolves (and long-caches) the avatar for a commit email; "" when

@@ -103,6 +103,10 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"name":"Metaphor","full_path":"civo/metaphor","avatar_url":"http://localhost:9911/grouplogo.png","web_url":"https://git.civo.com/groups/civo/metaphor"}`)
 	})
+	mux.HandleFunc("/api/v4/groups/civo%2Fmetaphor/avatar", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		fmt.Fprint(w, "\x89PNG\r\n\x1a\n") // sniffable magic — the proxy detects image/png
+	})
 	mux.HandleFunc("/grouplogo.png", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/svg+xml")
 		fmt.Fprint(w, `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='#f97316'/><text x='8' y='12' font-size='10' text-anchor='middle' fill='#fff'>M</text></svg>`)
@@ -253,6 +257,12 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(p, "/pipeline"): // deliver: create pipeline on a tag
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"id":701,"status":"created","ref":"metaphor-v0.2.0-rc.4","sha":"feedfacecafe0000","web_url":"https://git.civo.com/civo/metaphor/charts/-/pipelines/701","created_at":"2026-08-26T00:00:00Z","updated_at":"2026-08-26T00:00:00Z"}`)
+	case strings.HasSuffix(p, "/releases") && r.Method == "GET":
+		if strings.Contains(p, "%2Fcharts") {
+			fmt.Fprintf(w, `[{"tag_name":"metaphor-v0.1.0","name":"metaphor-v0.1.0","released_at":%q,"_links":{"self":"https://git.civo.com/civo/metaphor/charts/-/releases/metaphor-v0.1.0"}}]`, time.Now().UTC().Add(-24*time.Hour).Format(time.RFC3339))
+			return
+		}
+		fmt.Fprintf(w, `[{"tag_name":"v0.11.0","name":"v0.11.0","released_at":%q,"_links":{"self":"https://git.civo.com/x/-/releases/v0.11.0"}}]`, time.Now().UTC().Add(-3*24*time.Hour).Format(time.RFC3339))
 	case strings.HasSuffix(p, "/merge_requests") && r.Method == "POST":
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
