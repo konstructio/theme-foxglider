@@ -117,7 +117,6 @@
     <nav class="tabs">
       <a href="#delivery" class="tab on" data-view="delivery">Delivery</a>
       <a href="#fleet" class="tab" data-view="fleet">Fleet</a>
-      <a href="#activity" class="tab" data-view="activity">Activity</a>
     </nav>
     <span class="spacer"></span>
     <select id="window" class="mono">
@@ -310,15 +309,13 @@ function renderFleet(data) {
 
 async function refresh() {
   try {
-    if (state.view === 'delivery') {
-      state.eco = await fetchJSON('/api/ecosystem');
-      renderDelivery(state.eco);
-    } else if (state.view === 'fleet') {
+    if (state.view === 'fleet') {
       state.overview = await fetchJSON('/api/overview');
       renderFleet(state.overview);
     } else {
-      state.activity = await fetchJSON(`/api/activity?hours=${state.windowH}`);
-      renderActivity(state.activity);
+      // Activity tab retired — /api/activity + renderActivity kept for revisiting.
+      state.eco = await fetchJSON('/api/ecosystem');
+      renderDelivery(state.eco);
     }
     $('#updated').textContent = 'updated ' + new Date().toLocaleTimeString();
   } catch (e) { showDisconnected(e); }
