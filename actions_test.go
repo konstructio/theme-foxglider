@@ -94,6 +94,50 @@ func TestActions(t *testing.T) {
 	}
 }
 
+// When the latest pipeline has no playable trigger job (e.g. a zero-job
+// config-error pipeline), re-run falls back to creating a fresh pipeline.
+func TestTriggerFallsBackToFreshPipeline(t *testing.T) {
+	var created map[string]any
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(p, "/pipelines/latest"):
+			w.Write([]byte(`{"id":600,"status":"failed","ref":"main","sha":"dead","web_url":"http://gl/x/-/pipelines/600","created_at":"2026-08-25T00:00:00Z","updated_at":"2026-08-25T00:00:01Z"}`))
+		case strings.HasSuffix(p, "/pipelines/600/jobs"):
+			w.Write([]byte(`[]`)) // zero jobs — nothing playable
+		case strings.HasSuffix(p, "/pipeline"): // create-pipeline fallback
+			json.NewDecoder(r.Body).Decode(&created)
+			w.Write([]byte(`{"id":601,"status":"created","ref":"main","sha":"dead","web_url":"http://gl/x/-/pipelines/601","created_at":"2026-08-25T00:01:00Z","updated_at":"2026-08-25T00:01:00Z"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	t.Setenv("GITLAB_ACTION_TOKEN", "act-tok")
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	res, err := http.Post(srv.URL+"/api/actions/run", "application/json",
+		strings.NewReader(`{"project":"civo/metaphor/charts","action":"trigger","acting_as":"john.dietz"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != 200 {
+		t.Fatalf("fallback trigger = %d, want 200", res.StatusCode)
+	}
+	bb, _ := json.Marshal(created)
+	if !strings.Contains(string(bb), "INITIATED_BY") || !strings.Contains(string(bb), "john.dietz") {
+		t.Fatalf("fresh pipeline missing INITIATED_BY: %s", bb)
+	}
+	// release must NOT silently fall back — it still refuses honestly
+	res2, _ := http.Post(srv.URL+"/api/actions/run", "application/json",
+		strings.NewReader(`{"project":"civo/metaphor/charts","action":"release","acting_as":"john.dietz","confirm":"charts"}`))
+	if res2.StatusCode != 409 {
+		t.Fatalf("release on jobless pipeline = %d, want 409", res2.StatusCode)
+	}
+}
+
 func TestActionsDisabledWithoutToken(t *testing.T) {
 	srv := httptest.NewServer(newAPI(newGLClient("http://unused", "tok"), nil))
 	defer srv.Close()

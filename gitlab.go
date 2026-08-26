@@ -334,6 +334,20 @@ func (c *glClient) playJob(ctx context.Context, projectPath string, jobID int, v
 	return out, err
 }
 
+// createPipeline starts a fresh pipeline on a ref with pipeline-level
+// variables — the re-run fallback when the latest pipeline has no playable
+// trigger job (e.g. it was a config-error pipeline with zero jobs).
+func (c *glClient) createPipeline(ctx context.Context, projectPath, ref string, vars map[string]string) (glPipeline, error) {
+	vv := make([]map[string]string, 0, len(vars))
+	for k, v := range vars {
+		vv = append(vv, map[string]string{"key": k, "value": v})
+	}
+	var out glPipeline
+	p := fmt.Sprintf("/projects/%s/pipeline", url.QueryEscape(projectPath))
+	err := c.postJSON(ctx, p, map[string]any{"ref": ref, "variables": vv}, &out)
+	return out, err
+}
+
 type glMember struct {
 	Username    string `json:"username"`
 	Name        string `json:"name"`

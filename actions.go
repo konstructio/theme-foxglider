@@ -153,11 +153,31 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	if target == nil {
-		writeErr(w, 409, fmt.Sprintf("job %q not present on pipeline #%d", jobName, lp.ID))
-		return
-	}
-	if target.Status != "manual" {
+	if target == nil || target.Status != "manual" {
+		// Re-run degrades gracefully: when the latest pipeline has no playable
+		// trigger job (config-error pipelines have zero jobs), start a fresh
+		// pipeline on the same ref instead. Same delivery outcome, no new
+		// commit — the trace rides as a pipeline variable.
+		if req.Action == "trigger" {
+			pl, err := x.gl.createPipeline(ctx, req.Project, lp.Ref, map[string]string{
+				"INITIATED_BY": req.ActingAs,
+			})
+			if err != nil {
+				writeErr(w, 502, "new pipeline: "+err.Error())
+				return
+			}
+			log.Printf("ACTION %s project=%s mode=fresh-pipeline pipeline=%d acting_as=%s remote=%s",
+				req.Action, req.Project, pl.ID, req.ActingAs, r.RemoteAddr)
+			writeJSON(w, map[string]any{
+				"ok": true, "action": req.Action, "acting_as": req.ActingAs,
+				"job_url": pl.WebURL, "pipeline_url": pl.WebURL,
+			})
+			return
+		}
+		if target == nil {
+			writeErr(w, 409, fmt.Sprintf("job %q not present on pipeline #%d", jobName, lp.ID))
+			return
+		}
 		writeErr(w, 409, fmt.Sprintf("job %q is %s — not playable right now", jobName, target.Status))
 		return
 	}
