@@ -119,6 +119,21 @@
   .abtn.arming{border-color:var(--gl-orange);color:var(--gl-orange)}
   .abtn.calm,.abtn.calm:hover{border-color:var(--line2);color:var(--ink2)}
   .cd-hint{margin:10px 0 0;font-size:12px}
+  .pv-h{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--gl-amber);margin-bottom:6px}
+  .pv-svc{margin-bottom:8px}
+  .pv-epic{display:inline-block;margin-left:8px;font-size:11px;color:var(--civo);border:1px solid var(--line);border-radius:4px;padding:1px 7px}
+  .pv-c{font-size:11px;margin-left:8px}
+  .explain{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:0 0 8px;
+    font-size:13px;color:var(--ink2);line-height:1.6}
+  .br-row{display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap}
+  .br-repo{width:220px;flex:none;font-size:12px;color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .br-chip{display:inline-flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);
+    border-radius:6px;padding:4px 10px;font-size:12px;color:var(--ink2)}
+  .br-chip:hover{border-color:var(--civo);color:var(--ink2)}
+  .br-chip .mut{font-size:10.5px}
+  .lane-epic{color:var(--civo)} .lane-hot{color:var(--gl-orange)}
+  .br-tags{display:flex;gap:6px;flex-wrap:wrap}
+  .tag-epic{color:var(--civo);border-color:var(--civo)}
   .up-row{display:flex;gap:8px;margin-top:10px}
   .upin{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);border-radius:5px;color:var(--ink);padding:5px 8px;font-size:12px;font-family:var(--mono)}
   .upin:focus{outline:none;border-color:var(--civo)}
@@ -169,6 +184,7 @@
     <span id="org" class="orgchip mono" title="the org this view is scoped to"></span>
     <nav class="tabs">
       <a href="#delivery" class="tab on" data-view="delivery">Delivery</a>
+      <a href="#branches" class="tab" data-view="branches">Branches</a>
       <a href="#fleet" class="tab" data-view="fleet">Fleet</a>
     </nav>
     <span class="spacer"></span>
@@ -419,7 +435,9 @@ function renderDelivery(d) {
       <span class="spacer"></span>
       ${primary ? `<span class="mut"><span class="mono">${esc(primary.cluster)}</span> desired</span>
         <span class="vchip mono">${esc(primary.delivered_version || '—')}</span> ${driftChip(primary)}` : ''}
+      <a href="#" id="explain-t" class="fchip" title="explain this view">?</a>
     </div>
+    ${d.summary ? `<div id="explain" class="explain" style="display:none">${esc(d.summary)}</div>` : ''}
     <div class="eco">
       <div class="eco-col">
         <div class="eco-h">Microcharts</div>
@@ -450,6 +468,43 @@ function renderDelivery(d) {
       </div>
     </div>`;
   startProgressPollers();
+}
+
+// Branches: swimlanes of the delivery lines — main, hotfix-*, epic-* —
+// across every repo in the set, with the macro's newest tags as the
+// release/feature timeline.
+function laneRow(repo, list) {
+  if (!list.length) return '';
+  return list.map(b => `
+    <a class="br-chip" target="_blank" href="${b.web_url}" title="${esc(b.title || '')} — ${esc(b.author || '')}">
+      <span class="mono">${esc(b.name)}</span>
+      <span class="mut">${b.when ? relTime(b.when) : ''}</span>
+    </a>`).join('');
+}
+function renderBranches(data) {
+  const repos = data.repos || [];
+  const lanes = [
+    { key: 'main', label: 'main', cls: 'lane-main' },
+    { key: 'hotfix', label: 'hotfix-*', cls: 'lane-hot' },
+    { key: 'epic', label: 'epic-*', cls: 'lane-epic' },
+  ];
+  const epicLink = iid => `${(state.eco?.macro?.web_url || '').split('/').slice(0, 3).join('/')}/groups/${(data.group || 'civo/metaphor')}/-/epics/${iid}`;
+  $('#view').innerHTML = lanes.map(l => {
+    const rows = repos.map(r => {
+      const list = r[l.key] || [];
+      if (!list.length) return '';
+      return `<div class="br-row"><span class="br-repo mono">${esc(r.name)}</span>${laneRow(r, list)}</div>`;
+    }).filter(Boolean).join('');
+    const epics = l.key === 'epic'
+      ? [...new Set(repos.flatMap(r => (r.epic || []).map(b => b.epic_iid).filter(Boolean)))]
+          .map(iid => `<a class="pv-epic" target="_blank" href="${epicLink(iid)}">&${iid}</a>`).join('')
+      : '';
+    return `<div class="section-h ${l.cls}">${l.label} ${epics}<span></span></div>
+      ${rows || '<div class="mut" style="padding:4px 2px 14px;font-size:12px">none right now</div>'}`;
+  }).join('') + `
+    <div class="section-h">macro tags<span></span></div>
+    <div class="br-tags">${(data.macro_tags || []).map(t =>
+      `<span class="vchip mono${t.includes('-epic-') ? ' tag-epic' : ''}">${esc(t)}</span>`).join('')}</div>`;
 }
 
 // Fleet is a dense health wall: one status-colored tile per project + a compact
@@ -515,6 +570,9 @@ async function refresh() {
     if (state.view === 'fleet') {
       state.overview = await fetchJSON('/api/overview');
       renderFleet(state.overview);
+    } else if (state.view === 'branches') {
+      state.branches = await fetchJSON('/api/branches');
+      renderBranches(state.branches);
     } else {
       // Activity tab retired — /api/activity + renderActivity kept for revisiting.
       state.eco = await fetchJSON('/api/ecosystem');
@@ -612,6 +670,8 @@ function featureSlug(title) {
   return pick.slice(0, 16);
 }
 document.addEventListener('click', e => {
+  const x = e.target.closest('#explain-t');
+  if (x) { e.preventDefault(); const p = $('#explain'); if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none'; return; }
   const b = e.target.closest('.abtn'); if (!b || !b.dataset.act) return;
   const ver = b.classList.contains('upbtn')
     ? (b.closest('.up-row')?.querySelector('.upin')?.value || '').trim()
@@ -638,6 +698,7 @@ function openActionModal(action, project, version) {
         : action === 'deliver'
         ? `Runs the tag pipeline for <b class="mono">${esc(rc || 'the latest RC')}</b>: republishes it (idempotent), writes the dev-33 bump MR, and auto-merges it — ArgoCD takes it from there.`
         : 'Plays the manual <b>trigger:manual</b> job: pushes an empty commit to main so the delivery pipeline runs end-to-end on a fresh SHA.'}</p>
+      ${action === 'deliver' ? `<div id="act-preview" class="mut" style="font-size:12px;margin:2px 0 12px">checking what this introduces…</div>` : ''}
       <div class="act-row">
         <button id="act-go" class="abtn ${needsConfirm ? 'warn' : ''}">${action === 'release' ? ICON_ROCKET + ' <span class="cd-txt">release</span><span class="cd"></span>' : action === 'deliver' ? ICON_SHIP + ' <span class="cd-txt">deliver</span><span class="cd"></span>' : ICON_SCOPE + ' trigger'}</button>
         <span class="act-id mono mut" title="attribution is set by the server — the signed-in konstruct session">as @${esc(actor)}</span>
@@ -648,6 +709,20 @@ function openActionModal(action, project, version) {
   $('#actmodal').style.display = 'block';
   $('#act-x').onclick = e => { e.preventDefault(); closeActModal(); };
   $('#actmodal .d-back').onclick = closeActModal;
+  // deliver: show what the upgrade introduces (dep moves, commits, epics)
+  if (action === 'deliver' && rc) {
+    fetchJSON(`/api/actions/upgrade-preview?to=${encodeURIComponent(rc)}`).then(p => {
+      const el = $('#act-preview'); if (!el) return;
+      if (!p.changes || !p.changes.length) { el.textContent = p.from === p.to ? 'already the current version.' : 'no component changes detected.'; return; }
+      el.innerHTML = `<div class="pv-h">introduces (${esc(p.from)} → ${esc(p.to)})</div>` +
+        p.changes.map(c => `
+          <div class="pv-svc"><b>${esc(c.service)}</b> <span class="mono mut">${esc(c.from)} → ${esc(c.to)}</span>
+            ${(c.epics || []).map(ep => `<a class="pv-epic" target="_blank" href="${ep.web_url}">&${ep.iid} ${esc(ep.title.slice(0, 40))}</a>`).join('')}
+            ${(c.commits || []).slice(0, 5).map(cm => `<div class="pv-c mut">· ${esc(cm.title.slice(0, 64))}</div>`).join('')}
+            ${(c.commits || []).length > 5 ? `<div class="pv-c mut">… ${c.commits.length - 5} more</div>` : ''}
+          </div>`).join('');
+    }).catch(() => { const el = $('#act-preview'); if (el) el.textContent = ''; });
+  }
   const fire = async (confirm) => {
     $('#act-out').textContent = 'starting…';
     try {

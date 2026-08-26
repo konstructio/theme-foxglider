@@ -478,3 +478,45 @@ func (c *glClient) createBranch(ctx context.Context, projectPath, branch, ref st
 	err := c.postJSON(ctx, p, nil, &out)
 	return out, err
 }
+
+// epicByIID fetches one epic regardless of state (preview resolution).
+func (c *glClient) epicByIID(ctx context.Context, groupPath string, iid int) (glEpic, error) {
+	var out glEpic
+	p := fmt.Sprintf("/groups/%s/epics/%d", url.QueryEscape(groupPath), iid)
+	_, err := c.get(ctx, p, nil, &out)
+	return out, err
+}
+
+// commitsRange lists commits on a ref within a time window (newest first).
+func (c *glClient) commitsRange(ctx context.Context, projectPath, ref string, since, until time.Time, limit int) ([]glCommit, error) {
+	var out []glCommit
+	q := url.Values{"ref_name": {ref}, "per_page": {fmt.Sprint(limit)}}
+	if !since.IsZero() {
+		q.Set("since", since.Format(time.RFC3339))
+	}
+	if !until.IsZero() {
+		q.Set("until", until.Format(time.RFC3339))
+	}
+	p := fmt.Sprintf("/projects/%s/repository/commits", url.QueryEscape(projectPath))
+	_, err := c.get(ctx, p, q, &out)
+	return out, err
+}
+
+// commitMRs lists the merge requests a commit belongs to (epic detection via
+// MR source branches like epic-20-pink).
+func (c *glClient) commitMRs(ctx context.Context, projectPath, sha string) ([]struct {
+	IID          int    `json:"iid"`
+	Title        string `json:"title"`
+	SourceBranch string `json:"source_branch"`
+	WebURL       string `json:"web_url"`
+}, error) {
+	var out []struct {
+		IID          int    `json:"iid"`
+		Title        string `json:"title"`
+		SourceBranch string `json:"source_branch"`
+		WebURL       string `json:"web_url"`
+	}
+	p := fmt.Sprintf("/projects/%s/repository/commits/%s/merge_requests", url.QueryEscape(projectPath), url.PathEscape(sha))
+	_, err := c.get(ctx, p, nil, &out)
+	return out, err
+}

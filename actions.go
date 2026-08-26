@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -411,4 +412,107 @@ func (x *actions) mergeDevBump(version, actor string) {
 		case <-time.After(10 * time.Second):
 		}
 	}
+}
+
+// reEpicRef finds epic ids in commit titles and branch names (epic-20-pink).
+var reEpicRef = regexp.MustCompile(`epic-(\d+)`)
+
+// upgradePreview answers "what enters the environment if I upgrade to X":
+// the dependency moves between the current desired umbrella and the target,
+// each moved service's commits in that window, and any epics those commits
+// trace to (via commit titles and MR source branches). Best-effort by
+// design — an empty answer is honest, never fabricated.
+func (x *actions) upgradePreview(w http.ResponseWriter, r *http.Request) {
+	if !x.enabled() {
+		writeErr(w, 503, "actions not configured")
+		return
+	}
+	to := strings.TrimSpace(r.URL.Query().Get("to"))
+	if to == "" || !reVersionArg.MatchString(to) {
+		writeErr(w, 400, "to=<published version> required")
+		return
+	}
+	ctx := context.Background()
+	// current desired = targetRevision in the delivery app file
+	from := ""
+	if len(x.topo.Delivery) > 0 {
+		d := x.topo.Delivery[0]
+		if raw, err := x.gl.fileRaw(ctx, d.Project, d.App, "main"); err == nil {
+			from = targetRevision(raw)
+		}
+	}
+	type change struct {
+		Service string     `json:"service"`
+		From    string     `json:"from"`
+		To      string     `json:"to"`
+		Commits []glCommit `json:"commits"`
+		Epics   []glEpic   `json:"epics"`
+	}
+	out := struct {
+		From    string   `json:"from"`
+		To      string   `json:"to"`
+		Changes []change `json:"changes"`
+		Epics   []glEpic `json:"epics"`
+	}{From: from, To: to, Changes: []change{}, Epics: []glEpic{}}
+
+	if from == "" || from == to {
+		writeJSON(w, out)
+		return
+	}
+	fromRaw, err1 := x.gl.fileRaw(ctx, x.topo.MacroProj, x.topo.MacroFile, x.topo.MacroTag+from)
+	toRaw, err2 := x.gl.fileRaw(ctx, x.topo.MacroProj, x.topo.MacroFile, x.topo.MacroTag+to)
+	if err1 != nil || err2 != nil {
+		writeJSON(w, out) // tags missing → nothing to say, honestly
+		return
+	}
+	fromDeps, toDeps := macroDeps(fromRaw), macroDeps(toRaw)
+	// window boundaries from the two tags' commit times
+	var since, until time.Time
+	if c, err := x.gl.commitInfo(ctx, x.topo.MacroProj, x.topo.MacroTag+from); err == nil {
+		since = c.AuthoredDate
+	}
+	if c, err := x.gl.commitInfo(ctx, x.topo.MacroProj, x.topo.MacroTag+to); err == nil {
+		until = c.AuthoredDate
+	}
+	seenEpic := map[int]bool{}
+	for _, s := range x.topo.Services {
+		f, t := fromDeps[s.Name], toDeps[s.Name]
+		if f == t {
+			continue
+		}
+		ch := change{Service: s.Name, From: f, To: t, Commits: []glCommit{}, Epics: []glEpic{}}
+		commits, _ := x.gl.commitsRange(ctx, s.Project, "main", since, until, 20)
+		epicIDs := map[int]bool{}
+		for i, c := range commits {
+			ch.Commits = append(ch.Commits, c)
+			for _, m := range reEpicRef.FindAllStringSubmatch(c.Title, -1) {
+				if n, err := strconv.Atoi(m[1]); err == nil {
+					epicIDs[n] = true
+				}
+			}
+			if i >= 8 {
+				continue // MR lookups are the expensive part — cap them
+			}
+			if mrs, err := x.gl.commitMRs(ctx, s.Project, c.ID); err == nil {
+				for _, mr := range mrs {
+					for _, m := range reEpicRef.FindAllStringSubmatch(mr.SourceBranch+" "+mr.Title, -1) {
+						if n, err := strconv.Atoi(m[1]); err == nil {
+							epicIDs[n] = true
+						}
+					}
+				}
+			}
+		}
+		for iid := range epicIDs {
+			if ep, err := x.gl.epicByIID(ctx, x.group(), iid); err == nil && ep.IID != 0 {
+				ch.Epics = append(ch.Epics, ep)
+				if !seenEpic[iid] {
+					seenEpic[iid] = true
+					out.Epics = append(out.Epics, ep)
+				}
+			}
+		}
+		out.Changes = append(out.Changes, ch)
+	}
+	writeJSON(w, out)
 }

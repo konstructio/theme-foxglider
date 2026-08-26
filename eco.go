@@ -21,7 +21,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.1.0"
+const themeVersion = "2.2.0"
 
 const ttlEco = 45 * time.Second
 
@@ -524,6 +524,7 @@ collect:
 		"macro":        macro,
 		"services":     services,
 		"delivery":     delivery,
+		"summary":      ecoSummary(t, macro, delivery, a.cachedTags(ctx, t.MacroProj)),
 	})
 }
 
@@ -683,4 +684,139 @@ func overallStatus(stages []stageProgress) string {
 		}
 	}
 	return "success"
+}
+
+// --- branches swimlanes (main / hotfix-* / epic-*) ---
+
+const ttlBranches = 60 * time.Second
+
+type branchJSON struct {
+	Name    string `json:"name"`
+	WebURL  string `json:"web_url"`
+	Short   string `json:"short_sha,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Author  string `json:"author,omitempty"`
+	When    string `json:"when,omitempty"`
+	EpicIID int    `json:"epic_iid,omitempty"`
+}
+
+type repoBranches struct {
+	Name    string       `json:"name"`
+	Project string       `json:"project"`
+	Main    []branchJSON `json:"main"`
+	Hotfix  []branchJSON `json:"hotfix"`
+	Epic    []branchJSON `json:"epic"`
+}
+
+var reEpicBranch = regexp.MustCompile(`^epic-(\d+)`)
+
+func toBranchJSON(b glBranch) branchJSON {
+	out := branchJSON{Name: b.Name, WebURL: b.WebURL}
+	if b.Commit != nil {
+		out.Short = b.Commit.ShortID
+		out.Title = b.Commit.Title
+		out.Author = b.Commit.AuthorName
+		out.When = b.Commit.CommittedDate.UTC().Format(time.RFC3339)
+	}
+	if m := reEpicBranch.FindStringSubmatch(b.Name); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			out.EpicIID = n
+		}
+	}
+	return out
+}
+
+// branchesView lists every topology repo's branches grouped into lanes, plus
+// the macro repo's newest tags — the release/feature timeline in one payload.
+func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
+	ctx := context.Background()
+	t := a.topo
+	repos := append([]svcSpec{}, t.Services...)
+	repos = append(repos, svcSpec{Name: t.MacroName, Project: t.MacroProj})
+	out := make([]repoBranches, len(repos))
+	done := make(chan int, len(repos))
+	for i, s := range repos {
+		i, s := i, s
+		go func() {
+			rb := repoBranches{Name: s.Name, Project: s.Project,
+				Main: []branchJSON{}, Hotfix: []branchJSON{}, Epic: []branchJSON{}}
+			v, err := a.c.do("br:"+s.Project, ttlBranches, func() (any, error) {
+				return a.gl.branches(ctx, s.Project, "")
+			})
+			if err == nil {
+				for _, b := range v.([]glBranch) {
+					bj := toBranchJSON(b)
+					switch {
+					case b.Name == "main":
+						rb.Main = append(rb.Main, bj)
+					case strings.HasPrefix(b.Name, "hotfix"):
+						rb.Hotfix = append(rb.Hotfix, bj)
+					case strings.HasPrefix(b.Name, "epic-"):
+						rb.Epic = append(rb.Epic, bj)
+					}
+				}
+			}
+			out[i] = rb
+			done <- i
+		}()
+	}
+	for range repos {
+		<-done
+	}
+	tags := []string{}
+	for _, tg := range a.cachedTags(ctx, t.MacroProj) {
+		tags = append(tags, tg.Name)
+		if len(tags) >= 12 {
+			break
+		}
+	}
+	writeJSON(w, map[string]any{"repos": out, "macro_tags": tags,
+		"group": strings.TrimSuffix(t.MacroProj, "/"+t.MacroProj[strings.LastIndex(t.MacroProj, "/")+1:])})
+}
+
+// ecoSummary composes the newcomer's narrative from the same data the cards
+// render — deterministic, no drift.
+func ecoSummary(t topology, m macroNode, del []deliveryNode, tags []glTag) string {
+	names := make([]string, len(t.Services))
+	for i, s := range t.Services {
+		names[i] = s.Name
+	}
+	features := 0
+	seen := map[string]bool{}
+	for _, tg := range tags {
+		if i := strings.Index(tg.Name, "-epic-"); i > 0 {
+			key := tg.Name[i:]
+			if j := strings.LastIndex(key, "."); j > 0 {
+				key = key[:j]
+			}
+			if !seen[key] {
+				seen[key] = true
+				features++
+			}
+		}
+	}
+	b := &strings.Builder{}
+	fmt.Fprintf(b, "%s bundles %d microservice charts (%s). ", m.Name, len(t.Services), strings.Join(names, ", "))
+	b.WriteString("Each service publishes release candidates from main; every publish bumps the umbrella, ")
+	if m.PublishedRC != "" {
+		fmt.Fprintf(b, "which currently stands at %s. ", m.PublishedRC)
+	} else {
+		b.WriteString("which has no published RC yet. ")
+	}
+	for _, d := range del {
+		switch d.State {
+		case "current":
+			fmt.Fprintf(b, "%s (%s) runs the current version. ", d.Env, d.Cluster)
+		case "behind":
+			fmt.Fprintf(b, "%s (%s) asks for %s — %d candidate(s) behind; the upgrade button delivers the newest (or any published version you type). ", d.Env, d.Cluster, d.Delivered, d.Behind)
+		default:
+			fmt.Fprintf(b, "%s (%s) asks for %s. ", d.Env, d.Cluster, d.Delivered)
+		}
+	}
+	if features > 0 {
+		fmt.Fprintf(b, "Feature branches (epic-*) publish their own umbrella versions — %d feature line(s) exist — and are delivered deliberately, never automatically.", features)
+	} else {
+		b.WriteString("Feature branches (epic-*) publish their own umbrella versions and are delivered deliberately, never automatically.")
+	}
+	return b.String()
 }

@@ -131,6 +131,10 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.EscapedPath()
 	switch {
 	case strings.Contains(p, "metaphor-macro%2FChart.yaml"):
+		if strings.Contains(r.URL.RawQuery, "rc.2") {
+			fmt.Fprint(w, "version: 0.2.0\ndependencies:\n  - name: metaphor\n    version: \"0.11.0-rc.10\"\n  - name: metaphor-dashboard-manager\n    version: \"0.12.0-rc.15\"\n  - name: metaphor-micro-frontend\n    version: \"0.1.0-rc.7\"\n")
+			return
+		}
 		fmt.Fprint(w, "apiVersion: v2\nname: metaphor-macro\nversion: 0.2.0\nappVersion: \"0.1.0\"\ndependencies:\n  - name: metaphor\n    version: \"0.11.0-rc.13\"\n  - name: metaphor-dashboard-manager\n    version: \"0.12.0-rc.15\"\n  - name: metaphor-micro-frontend\n    version: \"0.1.0-rc.7\"\n")
 	case strings.Contains(p, "charts%2Fmetaphor%2FChart.yaml"):
 		fmt.Fprint(w, "name: metaphor\nversion: 0.11.0\n")
@@ -143,6 +147,9 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(p, "/repository/tags"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `[{"name":"metaphor-v0.2.0-rc.4"},{"name":"metaphor-v0.2.0-rc.3"},{"name":"metaphor-v0.2.0-rc.2"}]`)
+	case strings.Contains(p, "%2Fepics%2F"), strings.Contains(p, "/epics/"):
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"iid":101,"title":"Redesign opening screen with aurora green background","state":"opened","web_url":"https://git.civo.com/groups/civo/metaphor/-/epics/101"}`)
 	case strings.HasSuffix(p, "/epics"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `[{"iid":101,"title":"Redesign opening screen with aurora green background","state":"opened","web_url":"https://git.civo.com/groups/civo/metaphor/-/epics/101"},{"iid":20,"title":"Turn metaphor pink","state":"opened","web_url":"https://git.civo.com/groups/civo/metaphor/-/epics/20"}]`)
@@ -157,6 +164,12 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(p, "/members/all"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `[{"username":"john.dietz","name":"John Dietz","access_level":50},{"username":"jared","name":"Jared Edwards","access_level":50},{"username":"group_1642_bot_x","name":"token bot","access_level":40}]`)
+	case strings.Contains(p, "/merge_requests") && strings.Contains(p, "/repository/commits/"):
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"iid":7,"title":"feat: aurora background","source_branch":"epic-101-aurora","web_url":"https://git.civo.com/x/-/merge_requests/7"}]`)
+	case strings.HasSuffix(p, "/repository/commits"):
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `[{"id":"c1","short_id":"c1short","title":"feat: aurora background (epic-101)","author_name":"John Dietz","web_url":"https://git.civo.com/x/-/commit/c1","authored_date":%q}]`, time.Now().UTC().Add(-40*time.Minute).Format(time.RFC3339))
 	case strings.Contains(p, "%2Frepository%2Fcommits%2F"), strings.Contains(p, "/repository/commits/"):
 		w.Header().Set("Content-Type", "application/json")
 		proj := ecoProjFromPath(p)
