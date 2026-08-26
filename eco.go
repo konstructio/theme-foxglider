@@ -21,7 +21,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "1.7.2"
+const themeVersion = "1.8.0"
 
 const ttlEco = 45 * time.Second
 
@@ -282,7 +282,11 @@ func (a *api) rawFile(ctx context.Context, proj, file string) string {
 }
 
 func (a *api) cachedTags(ctx context.Context, proj string) []glTag {
-	v, err := a.c.do("tags:"+proj, ttlEco, func() (any, error) {
+	ttl := ttlEco
+	if a.isHot(proj) {
+		ttl = 5 * time.Second
+	}
+	v, err := a.c.do("tags:"+proj, ttl, func() (any, error) {
 		return a.gl.tags(ctx, proj, 100)
 	})
 	if err != nil {
@@ -469,6 +473,11 @@ collect:
 			WebURL:  a.gl.base + "/" + s.Project,
 			BaseVer: chartVersion(svcRaw[i]), Bundled: deps[s.Name],
 			Pipeline: svcPB[i].Pipe, Commit: svcPB[i].Commit, SHAPipes: svcPB[i].Pipes,
+		}
+		// A service run just finished: its dep-bump is pushing the next macro
+		// RC — put the macro on the fast lane so the handoff shows promptly.
+		if svcPB[i].Pipe != nil && a.noteServicePipeline(s.Project, svcPB[i].Pipe.Status) {
+			a.markHot(t.MacroProj)
 		}
 	}
 

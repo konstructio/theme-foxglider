@@ -32,10 +32,14 @@ type api struct {
 	// as soon as the trigger job pushes it.
 	hotMu sync.Mutex
 	hot   map[string]time.Time
+	// lastSvc remembers each service's latest pipeline state so a completion
+	// (running → success) can hot-lane the macro: the finished run's dep-bump
+	// job is already pushing the next macro RC tag.
+	lastSvc map[string]string
 }
 
 func newAPI(gl *glClient, groups []string) http.Handler {
-	a := &api{gl: gl, groups: groups, c: newCache(), topo: defaultTopology(), hot: map[string]time.Time{}}
+	a := &api{gl: gl, groups: groups, c: newCache(), topo: defaultTopology(), hot: map[string]time.Time{}, lastSvc: map[string]string{}}
 	a.act = newActions(gl, a.topo, groups)
 	a.act.markHot = a.markHot
 	mux := http.NewServeMux()
@@ -394,4 +398,19 @@ func (a *api) isHot(project string) bool {
 		return false
 	}
 	return true
+}
+
+// noteServicePipeline records a service's latest pipeline status and reports
+// whether it just COMPLETED successfully — the moment its macro dep-bump is
+// in flight. Callers hot-lane the macro on true.
+func (a *api) noteServicePipeline(project, status string) bool {
+	if status == "" {
+		return false
+	}
+	a.hotMu.Lock()
+	prev := a.lastSvc[project]
+	a.lastSvc[project] = status
+	a.hotMu.Unlock()
+	wasLive := prev == "running" || prev == "pending" || prev == "created"
+	return wasLive && status == "success"
 }

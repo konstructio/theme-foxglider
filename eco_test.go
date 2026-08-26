@@ -223,3 +223,26 @@ func TestRollupStagesProgressBaseline(t *testing.T) {
 		t.Fatalf("publish stage = %+v", st[2])
 	}
 }
+
+func TestNoteServicePipelineTransitions(t *testing.T) {
+	a := &api{hot: map[string]time.Time{}, lastSvc: map[string]string{}}
+	p := "civo/metaphor/metaphor"
+	if a.noteServicePipeline(p, "running") {
+		t.Fatal("first observation must not fire")
+	}
+	if !a.noteServicePipeline(p, "success") {
+		t.Fatal("running -> success must fire (dep-bump in flight)")
+	}
+	if a.noteServicePipeline(p, "success") {
+		t.Fatal("steady success must not re-fire")
+	}
+	a.noteServicePipeline(p, "failed")
+	if a.noteServicePipeline(p, "success") {
+		t.Fatal("failed -> success (new run seen only at terminal) must not fire")
+	}
+	// and the hot lane actually engages via markHot
+	a.markHot("civo/metaphor/charts")
+	if !a.isHot("civo/metaphor/charts") {
+		t.Fatal("markHot/isHot broken")
+	}
+}

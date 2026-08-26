@@ -422,6 +422,29 @@ function renderFleet(data) {
     </div>`).join('');
 }
 
+// noteServiceCompletions arms a macro watch when any service pipeline flips
+// from live to success between polls — the moment its dep-bump job starts
+// pushing the next macro RC.
+function noteServiceCompletions(eco) {
+  const prev = state.prevSvc || {};
+  const cur = {};
+  for (const s of (eco?.services || [])) {
+    const pl = s.pipeline;
+    if (!pl) continue;
+    cur[s.project] = { id: pl.id, status: pl.status };
+    const was = prev[s.project];
+    const completed = was && was.id === pl.id &&
+      ['running', 'pending', 'created'].includes(was.status) && pl.status === 'success';
+    if (completed && (!state.watch || state.watch.done || Date.now() > state.watch.until)) {
+      const m = eco.macro;
+      state.watch = { project: m.project, sinceId: m.pipeline?.id ?? 0, sinceStatus: m.pipeline?.status ?? '',
+        at: Date.now(), until: Date.now() + 180000, done: false, reason: s.name };
+      state.burstUntil = Date.now() + 180000;
+      poll();
+    }
+  }
+  state.prevSvc = cur;
+}
 async function refresh() {
   try {
     if (state.view === 'fleet') {
@@ -430,6 +453,7 @@ async function refresh() {
     } else {
       // Activity tab retired — /api/activity + renderActivity kept for revisiting.
       state.eco = await fetchJSON('/api/ecosystem');
+      noteServiceCompletions(state.eco);
       renderDelivery(state.eco);
     }
     const live = Date.now() < (state.burstUntil || 0);
@@ -500,7 +524,9 @@ function watchChip(n) {
   if (arrived && !w.done) { w.done = true; w.until = Date.now() + 12000; } // linger briefly, then fade
   return w.done
     ? `<span class="wchip ok">✓ new run picked up</span>`
-    : `<span class="wchip"><span class="wspin"></span>watching for the new run…</span>`;
+    : w.reason
+      ? `<span class="wchip"><span class="wspin"></span>${esc(w.reason)} finished — watching for the macro run…</span>`
+      : `<span class="wchip"><span class="wspin"></span>watching for the new run…</span>`;
 }
 const ICON_SHIP = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>';
 function actBtns(project, isMacro) {
