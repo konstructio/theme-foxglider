@@ -84,6 +84,7 @@
   .ec-ver{font-size:12px;color:var(--ink2);display:flex;align-items:center;gap:6px}
   .ec-big{font-size:20px;font-weight:800;color:var(--ink);margin:2px 0 8px;word-break:break-all}
   .arrowlite{color:var(--mut2)}
+  .vlbl{font-family:var(--sans);font-size:10px;color:var(--mut);letter-spacing:.04em}
   .vchip{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:11px;color:var(--ink2)}
   .vchip.mut{color:var(--mut)}
   .avatar{width:22px;height:22px;border-radius:50%;border:1px solid var(--line2);vertical-align:middle;flex:none;background:var(--panel2)}
@@ -387,9 +388,9 @@ function envCard(e, m) {
   const upgradable = latest && e.delivered_version !== latest;
   return `<div class="ecard env${delivering ? ' delivering' : ''}">
     <div class="ec-top"><a class="pname" target="_blank" href="${e.web_url}" title="${esc(e.environment)}">${esc(e.environment)}</a><span class="mut mono">${esc(e.cluster)}</span></div>
-    <div class="mut" style="font-size:11px">desired</div>
+    <div class="mut" style="font-size:11px">current version</div>
     <div class="ec-big mono">${verChip(e.delivered_version)}</div>
-    ${e.state === 'current' ? driftChip(e) : upgradable ? `<div class="up-hint">upgrade available → ${esc(latest)}</div>` : driftChip(e)}
+    ${e.state === 'current' ? driftChip(e) : upgradable ? `<div class="up-hint">upgrade available → ${esc(latest)}${e.behind > 0 ? ` · ↑${e.behind} change${e.behind === 1 ? '' : 's'}` : ''}</div>` : driftChip(e)}
     ${canAct ? `<div class="up-row">
         <input class="upin" value="${esc(latest)}" spellcheck="false" title="any published version — type an older one to roll back">
         <button class="abtn warn upbtn" data-act="deliver" data-proj="${esc(m.project)}">${ICON_SHIP} upgrade</button>
@@ -424,7 +425,7 @@ function renderDelivery(d) {
         <div class="eco-h">Microcharts</div>
         ${svcs.map(s => `<div class="ecard">
           <div class="ec-top"><a class="pname" target="_blank" href="${s.web_url}" title="${esc(s.name)}">${esc(s.name)}</a>${statusChip(s.pipeline)}${avatarImg(s.pipeline)}</div>
-          <div class="ec-ver mono">${verChip(s.base_version)}<span class="arrowlite">→</span>${verChip(s.bundled_version)}</div>
+          <div class="ec-ver mono"><span class="vlbl">in macro</span>${verChip(s.bundled_version)}<span class="vlbl">dev</span>${verChip(s.base_version)}</div>
           ${commitLine(s)}
           ${stagesSlot(s)}
           ${actBtns(s.project)}${watchChip(s)}
