@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +27,8 @@ type api struct {
 	c      *cache
 	topo   topology
 	act    *actions
+	// glDelivery, when set, reads ONLY the delivery app files (cross-group).
+	glDelivery *glClient
 
 	// hot marks projects with a just-fired action: their pipeline reads take a
 	// 5s cache lane (instead of 45s) so the tile reflects the new commit/SHA
@@ -39,7 +42,12 @@ type api struct {
 }
 
 func newAPI(gl *glClient, groups []string) http.Handler {
-	a := &api{gl: gl, groups: groups, c: newCache(), topo: defaultTopology(), hot: map[string]time.Time{}, lastSvc: map[string]string{}}
+	a := &api{gl: gl, groups: groups, c: newCache(), topo: loadTopology(), hot: map[string]time.Time{}, lastSvc: map[string]string{}}
+	// Cross-group delivery files (e.g. konstruct's internal targetRevision in
+	// civo/platform/civo-gitops) may need their own read credential.
+	if tok := os.Getenv("GITLAB_TOKEN_DELIVERY"); tok != "" {
+		a.glDelivery = newGLClient(gl.base, tok)
+	}
 	a.act = newActions(gl, a.topo, groups)
 	a.act.markHot = a.markHot
 	mux := http.NewServeMux()

@@ -10,8 +10,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -21,7 +24,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.2.0"
+const themeVersion = "2.3.0"
 
 const ttlEco = 45 * time.Second
 
@@ -457,7 +460,7 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 	}
 	for i, d := range t.Delivery {
 		i, d := i, d
-		go func() { ch <- slot{"delRaw", i, a.rawFile(ctx, d.Project, d.App)} }()
+		go func() { ch <- slot{"delRaw", i, a.deliveryFile(ctx, d.Project, d.App)} }()
 	}
 
 	deadline := time.After(9 * time.Second)
@@ -819,4 +822,73 @@ func ecoSummary(t topology, m macroNode, del []deliveryNode, tags []glTag) strin
 		b.WriteString("Feature branches (epic-*) publish their own umbrella versions and are delivered deliberately, never automatically.")
 	}
 	return b.String()
+}
+
+// --- topology as config (multi-org: metaphor default, konstruct via env) ---
+
+// topologyJSON is the TOPOLOGY env shape — lowercase mirrors of the structs.
+type topologyJSON struct {
+	Services []struct {
+		Name    string `json:"name"`
+		Project string `json:"project"`
+		Chart   string `json:"chart"`
+	} `json:"services"`
+	Macro struct {
+		Name      string `json:"name"`
+		Project   string `json:"project"`
+		File      string `json:"file"`
+		TagPrefix string `json:"tagPrefix"`
+	} `json:"macro"`
+	Delivery []struct {
+		Env     string `json:"env"`
+		Cluster string `json:"cluster"`
+		Project string `json:"project"`
+		App     string `json:"app"`
+	} `json:"delivery"`
+}
+
+// loadTopology returns the TOPOLOGY env override when present and valid,
+// else the metaphor default. A broken override falls back loudly in logs
+// rather than serving a half-empty view.
+func loadTopology() topology {
+	raw := os.Getenv("TOPOLOGY")
+	if raw == "" {
+		return defaultTopology()
+	}
+	var tj topologyJSON
+	if err := json.Unmarshal([]byte(raw), &tj); err != nil || tj.Macro.Project == "" || len(tj.Services) == 0 {
+		log.Printf("TOPOLOGY env invalid (%v) — using the metaphor default", err)
+		return defaultTopology()
+	}
+	t := topology{
+		MacroName: tj.Macro.Name, MacroProj: tj.Macro.Project,
+		MacroFile: tj.Macro.File, MacroTag: tj.Macro.TagPrefix,
+	}
+	for _, s := range tj.Services {
+		t.Services = append(t.Services, svcSpec{Name: s.Name, Project: s.Project, Chart: s.Chart})
+	}
+	for _, d := range tj.Delivery {
+		t.Delivery = append(t.Delivery, deliverySpec{Env: d.Env, Cluster: d.Cluster, Project: d.Project, App: d.App})
+	}
+	log.Printf("TOPOLOGY: %d services, macro %s, %d delivery targets", len(t.Services), t.MacroProj, len(t.Delivery))
+	return t
+}
+
+// deliveryFile reads a delivery app file — with the dedicated cross-group
+// credential when configured, else the primary read token.
+func (a *api) deliveryFile(ctx context.Context, proj, file string) string {
+	if a.glDelivery == nil {
+		return a.rawFile(ctx, proj, file)
+	}
+	ttl := ttlEco
+	if a.isHot(proj) {
+		ttl = 5 * time.Second
+	}
+	v, err := a.c.do("dfile:"+proj+":"+file, ttl, func() (any, error) {
+		return a.glDelivery.fileRaw(ctx, proj, file, "main")
+	})
+	if err != nil {
+		return ""
+	}
+	return v.(string)
 }

@@ -280,3 +280,17 @@ func TestEpicVersionsNeverOutrankRCs(t *testing.T) {
 		t.Fatal("normal versions must still parse")
 	}
 }
+
+func TestLoadTopologyOverride(t *testing.T) {
+	t.Setenv("TOPOLOGY", `{"services":[{"name":"konstruct-api","project":"civo/konstruct/konstruct-api","chart":"charts/civo/konstruct/konstruct-api/Chart.yaml"}],"macro":{"name":"konstruct","project":"civo/konstruct/charts","file":"charts/konstruct/Chart.yaml","tagPrefix":"konstruct-v"},"delivery":[{"env":"internal","cluster":"konstruct-civo-internal","project":"civo/platform/civo-gitops","app":"registry/clusters/konstruct-civo-internal/components/konstruct-system/konstruct.yaml"}]}`)
+	tp := loadTopology()
+	if tp.MacroProj != "civo/konstruct/charts" || tp.MacroTag != "konstruct-v" ||
+		len(tp.Services) != 1 || tp.Services[0].Name != "konstruct-api" ||
+		len(tp.Delivery) != 1 || tp.Delivery[0].Cluster != "konstruct-civo-internal" {
+		t.Fatalf("topology = %+v", tp)
+	}
+	t.Setenv("TOPOLOGY", "{broken")
+	if tp := loadTopology(); tp.MacroProj != "civo/metaphor/charts" {
+		t.Fatalf("broken TOPOLOGY must fall back to metaphor default, got %s", tp.MacroProj)
+	}
+}
