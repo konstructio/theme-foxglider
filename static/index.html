@@ -273,9 +273,27 @@ function stagesSlot(node) {
     ? `<div class="stages" data-proj="${esc(node.project)}" data-pid="${node.pipeline.id}"></div>` : '';
 }
 let progressGen = 0;
+const progCache = new Map(); // "proj:pid" → last progress snapshot
 function startProgressPollers() {
   const gen = ++progressGen; // supersede pollers from any previous render
-  document.querySelectorAll('.stages[data-pid]').forEach(el => pollProgress(el, gen));
+  document.querySelectorAll('.stages[data-pid]').forEach(el => {
+    const cached = progCache.get(`${el.dataset.proj}:${el.dataset.pid}`);
+    if (cached) paintStages(el, cached); // instant — no blank flash on re-render
+    pollProgress(el, gen);
+  });
+}
+function paintStages(el, d) {
+  el.innerHTML = (d.stages || []).map(st => {
+    const done = STG_DONE.includes(st.status);
+    let pct = done ? 100 : 0;
+    const hasBaseline = st.running && st.running.started_at && st.running.expected_s > 0;
+    if (hasBaseline) pct = Math.min(96, (Date.now() - new Date(st.running.started_at)) / 1000 / st.running.expected_s * 100);
+    const anim = hasBaseline
+      ? ` data-start="${st.running.started_at}" data-exp="${st.running.expected_s}" data-run="${esc(st.running.name)}" data-stage="${esc(st.name)}"`
+      : '';
+    const pulse = st.status === 'running' && !hasBaseline ? ' run' : '';
+    return `<span class="stg${pulse}" style="--c:${statusColor(st.status)}" title="${esc(stageTitle(st))}"${anim}><span class="stg-fill" style="width:${pct}%"></span></span>`;
+  }).join('');
 }
 // Each stage segment is a real progress bar: fill = elapsed vs the same
 // job's duration in the previous successful run. Hover names the jobs.
@@ -293,19 +311,11 @@ async function pollProgress(el, gen) {
   if (gen !== progressGen || !el.isConnected) return;
   try {
     const d = await fetchJSON(`/api/pipeline-progress?project=${encodeURIComponent(el.dataset.proj)}&id=${el.dataset.pid}`);
-    el.innerHTML = (d.stages || []).map(st => {
-      const done = STG_DONE.includes(st.status);
-      let pct = done ? 100 : 0;
-      const hasBaseline = st.running && st.running.started_at && st.running.expected_s > 0;
-      if (hasBaseline) pct = Math.min(96, (Date.now() - new Date(st.running.started_at)) / 1000 / st.running.expected_s * 100);
-      const anim = hasBaseline
-        ? ` data-start="${st.running.started_at}" data-exp="${st.running.expected_s}" data-run="${esc(st.running.name)}" data-stage="${esc(st.name)}"`
-        : '';
-      // no baseline → keep the pulse; with one, the fill IS the signal
-      const pulse = st.status === 'running' && !hasBaseline ? ' run' : '';
-      return `<span class="stg${pulse}" style="--c:${statusColor(st.status)}" title="${esc(stageTitle(st))}"${anim}><span class="stg-fill" style="width:${pct}%"></span></span>`;
-    }).join('');
-    if (isRunning({ status: d.status }) && gen === progressGen) setTimeout(() => pollProgress(el, gen), 5000);
+    progCache.set(`${el.dataset.proj}:${el.dataset.pid}`, d);
+    if (el.isConnected) paintStages(el, d);
+    // keep polling while the PIPELINE runs (the tile status says so) — the
+    // job rollup alone can read "success" while a deploy bridge still runs
+    if (gen === progressGen) setTimeout(() => pollProgress(el, gen), 5000);
   } catch { if (gen === progressGen) setTimeout(() => pollProgress(el, gen), 8000); }
 }
 // animate running fills between polls — smooth progress, zero extra requests
