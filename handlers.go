@@ -50,6 +50,7 @@ func newAPI(gl *glClient, groups []string) http.Handler {
 	}
 	a.act = newActions(gl, a.topo, groups)
 	a.act.markHot = a.markHot
+	a.act.dropBranches = func(project string) { a.c.drop("br:" + project) }
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/overview", a.guard(a.overview))
 	mux.HandleFunc("GET /api/ecosystem", a.guard(a.ecosystem))

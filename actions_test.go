@@ -376,3 +376,82 @@ func TestBranchScopedActions(t *testing.T) {
 		t.Fatalf("release-on-ref = %d played=%d", res.StatusCode, playedJob)
 	}
 }
+
+// TestDeleteBranch covers the housekeeping guards: merged hotfixes delete
+// freely, unmerged ones demand the branch-name confirm (server re-checks
+// live), and nothing outside hotfix* is deletable.
+func TestDeleteBranch(t *testing.T) {
+	deleted := map[string]bool{}
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(p, "/repository/compare"):
+			if strings.Contains(r.URL.RawQuery, "hotfix-done") {
+				w.Write([]byte(`{"commits":[]}`))
+				return
+			}
+			w.Write([]byte(`{"commits":[{"id":"a","author_name":"Jared","author_email":"j@civo.com"},{"id":"b","author_name":"John","author_email":"jd@civo.com"}]}`))
+		case strings.Contains(p, "/repository/branches/") && r.Method == "DELETE":
+			deleted[p[strings.Index(p, "branches/")+len("branches/"):]] = true
+			w.WriteHeader(204)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	t.Setenv("GITLAB_ACTION_TOKEN", "act-tok")
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	post := func(body string) (*http.Response, map[string]any) {
+		res, err := http.Post(srv.URL+"/api/actions/run", "application/json", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out map[string]any
+		json.NewDecoder(res.Body).Decode(&out)
+		return res, out
+	}
+
+	// merged branch: deletes with no confirm at all
+	res, out := post(`{"action":"delete","project":"civo/metaphor/metaphor","ref":"hotfix-done"}`)
+	if res.StatusCode != 200 || out["ok"] != true {
+		t.Fatalf("merged delete = %d %v", res.StatusCode, out)
+	}
+	if !deleted["hotfix-done"] {
+		t.Fatal("merged branch was not deleted upstream")
+	}
+
+	// unmerged branch without confirm: 409 with the live ahead count
+	res, out = post(`{"action":"delete","project":"civo/metaphor/metaphor","ref":"hotfix/0.2"}`)
+	if res.StatusCode != 409 || out["ahead"] != float64(2) {
+		t.Fatalf("unmerged delete without confirm = %d %v (want 409 ahead=2)", res.StatusCode, out)
+	}
+	if deleted["hotfix%2F0.2"] {
+		t.Fatal("unmerged branch deleted without confirm")
+	}
+
+	// unmerged branch with the branch-name confirm: goes through
+	res, out = post(`{"action":"delete","project":"civo/metaphor/metaphor","ref":"hotfix/0.2","confirm":"hotfix/0.2"}`)
+	if res.StatusCode != 200 || out["ahead"] != float64(2) {
+		t.Fatalf("confirmed delete = %d %v", res.StatusCode, out)
+	}
+	if !deleted["hotfix%2F0.2"] {
+		t.Fatal("confirmed delete never reached GitLab")
+	}
+
+	// main and epic branches are never deletable from here
+	for _, ref := range []string{"main", "epic-101-aurora"} {
+		res, _ = post(`{"action":"delete","project":"civo/metaphor/metaphor","ref":"` + ref + `"}`)
+		if res.StatusCode != 400 {
+			t.Fatalf("delete %s = %d (want 400)", ref, res.StatusCode)
+		}
+	}
+
+	// off-topology project refused before anything else
+	res, _ = post(`{"action":"delete","project":"civo/other/thing","ref":"hotfix-x"}`)
+	if res.StatusCode != 400 {
+		t.Fatalf("off-topology delete = %d (want 400)", res.StatusCode)
+	}
+}

@@ -49,6 +49,9 @@ type actions struct {
 	// markHot flips the project onto the fast cache lane after a successful
 	// action, so the delivery tiles pick up the new commit/SHA quickly.
 	markHot func(project string)
+	// dropBranches invalidates the branches cache for a project after a
+	// mutation (branch deleted), so the next Branches render is honest.
+	dropBranches func(project string)
 }
 
 func newActions(read *glClient, topo topology, groups []string) *actions {
@@ -149,7 +152,7 @@ func (x *actions) status(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{
 		"enabled": true,
-		"actions": []string{"trigger", "release", "deliver", "feature"},
+		"actions": []string{"trigger", "release", "deliver", "feature", "delete"},
 		"actor":   x.actorFor(r),
 	})
 }
@@ -184,7 +187,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jobName, isJob := actionJobs[req.Action]
-	if !isJob && req.Action != "deliver" && req.Action != "feature" {
+	if !isJob && req.Action != "deliver" && req.Action != "feature" && req.Action != "delete" {
 		writeErr(w, 400, "unknown action")
 		return
 	}
@@ -240,6 +243,46 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			"micro_created": created[req.Project], "charts_created": created[x.topo.MacroProj],
 			"urls": urls,
 		})
+		return
+	}
+
+	// delete: remove a hotfix branch. Fully-merged branches delete freely —
+	// every commit is reachable from main, only the pointer goes. Branches
+	// ahead of main require the confirm handshake carrying the branch name,
+	// and merge state is re-checked HERE at delete time — the UI's view can
+	// be a minute stale, and stranding unmerged work deserves a live answer.
+	if req.Action == "delete" {
+		br := strings.TrimSpace(req.Ref)
+		if !strings.HasPrefix(br, "hotfix") || !reBranch.MatchString(br) {
+			writeErr(w, 400, "only hotfix branches can be deleted from here")
+			return
+		}
+		ctx := context.Background()
+		ahead, _, err := x.gl.compareBranch(ctx, req.Project, "main", br)
+		if err != nil {
+			writeErr(w, 502, "couldn't verify merge state: "+err.Error())
+			return
+		}
+		if ahead > 0 && req.Confirm != br {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(409)
+			json.NewEncoder(w).Encode(map[string]any{
+				"error": "unmerged", "ahead": ahead,
+				"message": fmt.Sprintf("%s carries %d commits not in main", br, ahead),
+			})
+			return
+		}
+		if err := x.gl.deleteBranch(ctx, req.Project, br); err != nil {
+			writeErr(w, 502, "delete failed: "+err.Error())
+			return
+		}
+		if x.dropBranches != nil {
+			x.dropBranches(req.Project)
+		}
+		log.Printf("ACTION delete project=%s branch=%s ahead=%d actor=%s remote=%s",
+			req.Project, br, ahead, actor, r.RemoteAddr)
+		writeJSON(w, map[string]any{"ok": true, "action": "delete", "actor": actor,
+			"branch": br, "ahead": ahead})
 		return
 	}
 

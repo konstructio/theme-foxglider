@@ -521,15 +521,67 @@ func (c *glClient) commitMRs(ctx context.Context, projectPath, sha string) ([]st
 	return out, err
 }
 
-// compareAhead returns how many commits `to` carries that `from` lacks —
-// the "hotfix not merged back to main" signal.
-func (c *glClient) compareAhead(ctx context.Context, projectPath, from, to string) (int, error) {
+type glCompareCommit struct {
+	AuthorName  string `json:"author_name"`
+	AuthorEmail string `json:"author_email"`
+}
+
+// compareBranch returns how many commits `to` carries that `from` lacks —
+// the "hotfix not merged back to main" signal — plus the distinct people who
+// wrote them, newest first, capped at 5 (the chip avatar stack).
+func (c *glClient) compareBranch(ctx context.Context, projectPath, from, to string) (int, []glCompareCommit, error) {
 	var out struct {
-		Commits []struct {
-			ID string `json:"id"`
-		} `json:"commits"`
+		Commits []glCompareCommit `json:"commits"`
 	}
 	p := fmt.Sprintf("/projects/%s/repository/compare", url.QueryEscape(projectPath))
-	_, err := c.get(ctx, p, url.Values{"from": {from}, "to": {to}}, &out)
-	return len(out.Commits), err
+	if _, err := c.get(ctx, p, url.Values{"from": {from}, "to": {to}}, &out); err != nil {
+		return 0, nil, err
+	}
+	// commits arrive oldest→newest; walk backwards so recency wins the cap
+	seen := map[string]bool{}
+	var people []glCompareCommit
+	for i := len(out.Commits) - 1; i >= 0 && len(people) < 5; i-- {
+		cm := out.Commits[i]
+		key := strings.ToLower(cm.AuthorEmail)
+		if key == "" {
+			key = strings.ToLower(cm.AuthorName)
+		}
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		people = append(people, cm)
+	}
+	return len(out.Commits), people, nil
+}
+
+// avatar resolves a commit email to an avatar URL via GitLab's avatar API
+// (falls back to gravatar server-side; "" when nothing resolves).
+func (c *glClient) avatar(ctx context.Context, email string) (string, error) {
+	var out struct {
+		AvatarURL string `json:"avatar_url"`
+	}
+	_, err := c.get(ctx, "/avatar", url.Values{"email": {email}, "size": {"48"}}, &out)
+	return out.AvatarURL, err
+}
+
+// deleteBranch removes a branch ref. GitLab refuses protected branches (403)
+// and 404s absent ones — both surface as errors.
+func (c *glClient) deleteBranch(ctx context.Context, projectPath, branch string) error {
+	p := fmt.Sprintf("/projects/%s/repository/branches/%s",
+		url.QueryEscape(projectPath), url.PathEscape(branch))
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.base+"/api/v4"+p, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+	res, err := c.hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		return fmt.Errorf("gitlab %s: %s", p, res.Status)
+	}
+	return nil
 }

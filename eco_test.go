@@ -300,3 +300,87 @@ func TestLoadTopologyOverride(t *testing.T) {
 		t.Fatalf("broken TOPOLOGY must fall back to metaphor default, got %s", tp.MacroProj)
 	}
 }
+
+// TestBranchesView pins the housekeeping payload: pointer-ahead semantics
+// (nil = unchecked, never "merged"), committer stacks from the compare, and
+// every branch's end-result macro version.
+func TestBranchesView(t *testing.T) {
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(p, "/repository/tags"):
+			w.Write([]byte(`[{"name":"metaphor-v0.2.0-epic-101-aurora.2"},{"name":"metaphor-v0.2.0-rc.4"},{"name":"metaphor-v0.2.0-rc.3"}]`))
+		case strings.Contains(p, "/repository/compare"):
+			if strings.Contains(r.URL.RawQuery, "hotfix-done") {
+				w.Write([]byte(`{"commits":[]}`))
+				return
+			}
+			w.Write([]byte(`{"commits":[{"id":"a","author_name":"Jared Edwards","author_email":"jared@civo.com"},{"id":"b","author_name":"John Dietz","author_email":"jd@civo.com"},{"id":"c","author_name":"John Dietz","author_email":"jd@civo.com"}]}`))
+		case strings.HasSuffix(p, "/avatar"):
+			w.Write([]byte(`{"avatar_url":"http://gl/av.png"}`))
+		case strings.HasSuffix(p, "/repository/branches"):
+			w.Write([]byte(`[
+				{"name":"main","web_url":"http://gl/t/main","commit":{"short_id":"aa","title":"feat: x","author_name":"John Dietz","committed_date":"2026-08-26T10:00:00Z"}},
+				{"name":"hotfix/0.2","web_url":"http://gl/t/h02","commit":{"short_id":"bb","title":"fix: y","author_name":"Jared Edwards","committed_date":"2026-08-25T10:00:00Z"}},
+				{"name":"hotfix-done","web_url":"http://gl/t/hd","commit":{"short_id":"cc","title":"fix: z","author_name":"John Dietz","committed_date":"2026-08-26T09:00:00Z"}},
+				{"name":"epic-101-aurora","web_url":"http://gl/t/e101","commit":{"short_id":"dd","title":"ci: bump","author_name":"kbot","committed_date":"2026-08-26T08:00:00Z"}}]`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	res, err := http.Get(srv.URL + "/api/branches")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Repos []repoBranches `json:"repos"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Repos) == 0 {
+		t.Fatal("no repos")
+	}
+	r0 := out.Repos[0]
+
+	byName := map[string]branchJSON{}
+	for _, b := range append(append([]branchJSON{}, r0.Main...), append(r0.Hotfix, r0.Epic...)...) {
+		byName[b.Name] = b
+	}
+
+	// hotfix/0.2: ahead=3, two distinct committers newest-first, avatars resolved
+	h := byName["hotfix/0.2"]
+	if h.Ahead == nil || *h.Ahead != 3 {
+		t.Fatalf("hotfix/0.2 ahead = %v", h.Ahead)
+	}
+	if len(h.Committers) != 2 || h.Committers[0].Name != "John Dietz" || h.Committers[1].Name != "Jared Edwards" {
+		t.Fatalf("hotfix/0.2 committers = %+v", h.Committers)
+	}
+	if h.Committers[0].Avatar != "http://gl/av.png" {
+		t.Fatalf("avatar not resolved: %+v", h.Committers[0])
+	}
+
+	// hotfix-done: ahead=0 (genuinely merged), no committers
+	d := byName["hotfix-done"]
+	if d.Ahead == nil || *d.Ahead != 0 || len(d.Committers) != 0 {
+		t.Fatalf("hotfix-done = ahead %v committers %+v", d.Ahead, d.Committers)
+	}
+
+	// macro mapping: main → newest rc; epic branch → its feature tag
+	if byName["main"].MacroVer != "0.2.0-rc.4" {
+		t.Fatalf("main macro_ver = %q", byName["main"].MacroVer)
+	}
+	e := byName["epic-101-aurora"]
+	if e.MacroVer != "0.2.0-epic-101-aurora.2" || !strings.Contains(e.MacroURL, "/-/tags/metaphor-v0.2.0-epic-101-aurora.2") {
+		t.Fatalf("epic macro = %q %q", e.MacroVer, e.MacroURL)
+	}
+	// hotfix lines don't publish umbrellas in this org — no false mapping
+	if h.MacroVer != "" {
+		t.Fatalf("hotfix macro_ver = %q (want empty)", h.MacroVer)
+	}
+}

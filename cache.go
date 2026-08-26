@@ -21,6 +21,21 @@ type cache struct {
 
 func newCache() *cache { return &cache{m: map[string]*entry{}} }
 
+// drop invalidates a completed entry so the next do() refetches — the
+// post-mutation refresh (e.g. a branch was just deleted). In-flight entries
+// are left alone; they expire on their own TTL.
+func (c *cache) drop(key string) {
+	c.mu.Lock()
+	if e, ok := c.m[key]; ok {
+		select {
+		case <-e.ready:
+			delete(c.m, key)
+		default:
+		}
+	}
+	c.mu.Unlock()
+}
+
 func (c *cache) do(key string, ttl time.Duration, fn func() (any, error)) (any, error) {
 	c.mu.Lock()
 	if e, ok := c.m[key]; ok {

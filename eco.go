@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -25,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.4.0"
+const themeVersion = "2.5.0"
 
 const ttlEco = 45 * time.Second
 
@@ -700,6 +701,11 @@ func overallStatus(stages []stageProgress) string {
 
 const ttlBranches = 60 * time.Second
 
+type committerJSON struct {
+	Name   string `json:"name"`
+	Avatar string `json:"avatar,omitempty"`
+}
+
 type branchJSON struct {
 	Name    string `json:"name"`
 	WebURL  string `json:"web_url"`
@@ -709,9 +715,18 @@ type branchJSON struct {
 	When    string `json:"when,omitempty"`
 	EpicIID int    `json:"epic_iid,omitempty"`
 	// Stale: no commits in 30 days — surfaced separately so live lanes stay
-	// scannable. Ahead: commits not yet merged back to main (hotfix lanes).
+	// scannable. Ahead: commits not yet merged back to main (hotfix lanes);
+	// a pointer because nil means "not checked" (beyond the compare bound),
+	// which must never render as "merged".
 	Stale bool `json:"stale,omitempty"`
-	Ahead int  `json:"ahead,omitempty"`
+	Ahead *int `json:"ahead,omitempty"`
+	// Committers: who wrote the unmerged commits (hotfix lanes, newest first).
+	Committers []committerJSON `json:"committers,omitempty"`
+	// MacroVer/MacroURL: the end-result umbrella version this branch's line
+	// publishes (newest macro tag whose prerelease id matches the branch;
+	// main → the newest rc), with a link to that tag.
+	MacroVer string `json:"macro_ver,omitempty"`
+	MacroURL string `json:"macro_url,omitempty"`
 }
 
 type repoBranches struct {
@@ -780,8 +795,15 @@ func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
 					hix = hix[:10]
 				}
 				for _, i := range hix {
-					if n, err := a.gl.compareAhead(ctx, s.Project, "main", out[i].Name); err == nil {
-						out[i].Ahead = n
+					n, people, err := a.gl.compareBranch(ctx, s.Project, "main", out[i].Name)
+					if err != nil {
+						continue
+					}
+					ah := n
+					out[i].Ahead = &ah
+					for _, p := range people {
+						out[i].Committers = append(out[i].Committers,
+							committerJSON{Name: p.AuthorName, Avatar: a.avatarFor(ctx, p.AuthorEmail)})
 					}
 				}
 				return out, nil
@@ -805,15 +827,69 @@ func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
 	for range repos {
 		<-done
 	}
+	allTags := a.cachedTags(ctx, t.MacroProj)
 	tags := []string{}
-	for _, tg := range a.cachedTags(ctx, t.MacroProj) {
+	for _, tg := range allTags {
 		tags = append(tags, tg.Name)
 		if len(tags) >= 12 {
 			break
 		}
 	}
+	// every branch gets its end-result umbrella version: the newest macro tag
+	// whose prerelease id matches the branch (main → the newest rc).
+	for ri := range out {
+		for _, lane := range [][]branchJSON{out[ri].Main, out[ri].Hotfix, out[ri].Epic} {
+			for bi := range lane {
+				if tag := macroTagFor(allTags, t.MacroTag, lane[bi].Name); tag != "" {
+					lane[bi].MacroVer = strings.TrimPrefix(tag, t.MacroTag)
+					lane[bi].MacroURL = a.gl.base + "/" + t.MacroProj + "/-/tags/" + url.PathEscape(tag)
+				}
+			}
+		}
+	}
 	writeJSON(w, map[string]any{"repos": out, "macro_tags": tags,
 		"group": strings.TrimSuffix(t.MacroProj, "/"+t.MacroProj[strings.LastIndex(t.MacroProj, "/")+1:])})
+}
+
+// avatarFor resolves (and long-caches) the avatar for a commit email; "" when
+// unknown so the frontend falls back to an initials circle.
+func (a *api) avatarFor(ctx context.Context, email string) string {
+	if email == "" {
+		return ""
+	}
+	v, err := a.c.do("av:"+strings.ToLower(email), 6*time.Hour, func() (any, error) {
+		return a.gl.avatar(ctx, email)
+	})
+	if err != nil {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
+}
+
+// reBranchID collapses a branch name to the prerelease id CI publishes under
+// (helm-publish's PRE_ID sanitize): lowercase, everything else becomes '-'.
+var reBranchID = regexp.MustCompile(`[^a-z0-9-]`)
+
+// macroTagFor finds the newest (update-ordered) macro tag a branch's line
+// publishes: main → the newest rc tag; any other branch → the newest tag
+// whose prerelease id is the sanitized branch name.
+func macroTagFor(tags []glTag, prefix, branch string) string {
+	if branch == "main" {
+		for _, t := range tags {
+			if strings.HasPrefix(t.Name, prefix) && reRCTag.MatchString(t.Name) {
+				return t.Name
+			}
+		}
+		return ""
+	}
+	needle := "-" + reBranchID.ReplaceAllString(strings.ToLower(branch), "-") + "."
+	for _, t := range tags {
+		if strings.HasPrefix(t.Name, prefix) && strings.Contains(t.Name[len(prefix):], needle) {
+			return t.Name
+		}
+	}
+	return ""
 }
 
 // ecoSummary composes the newcomer's narrative from the same data the cards

@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,6 +29,10 @@ var statuses = []string{"success", "success", "failed", "success", "canceled", "
 // bootStarted anchors the demo's running job: a fixed instant ~45s before the
 // fake booted, so client-side elapsed/progress advances in real time.
 var bootStarted = time.Now().UTC().Add(-45 * time.Second).Format(time.RFC3339)
+
+// deletedBranches tracks branch deletes so the list stays honest mid-demo.
+var delMu sync.Mutex
+var deletedBranches = map[string]bool{}
 
 func main() {
 	now := time.Now().UTC()
@@ -85,6 +91,14 @@ func main() {
 	})
 	// group-scoped calls (the acting-as roster) route through ecoFake too
 	mux.HandleFunc("/api/v4/groups/", ecoFake)
+	mux.HandleFunc("/api/v4/avatar", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.RawQuery, "jared") {
+			fmt.Fprint(w, `{"avatar_url":""}`) // exercises the initials fallback
+			return
+		}
+		fmt.Fprint(w, `{"avatar_url":"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='8' fill='%2334d399'/%3E%3C/svg%3E"}`)
+	})
 	log.Println("fakegitlab on :9911")
 	log.Fatal(http.ListenAndServe(":9911", mux))
 }
@@ -146,24 +160,57 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "spec:\n  source:\n    targetRevision: 0.2.0-rc.2\n")
 	case strings.HasSuffix(p, "/repository/tags"):
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `[{"name":"metaphor-v0.2.0-rc.4"},{"name":"metaphor-v0.2.0-rc.3"},{"name":"metaphor-v0.2.0-rc.2"}]`)
+		fmt.Fprint(w, `[{"name":"metaphor-v0.2.0-epic-101-aurora.2"},{"name":"metaphor-v0.2.0-rc.4"},{"name":"metaphor-v0.2.0-rc.3"},{"name":"metaphor-v0.2.0-rc.2"}]`)
 	case strings.Contains(p, "%2Fepics%2F"), strings.Contains(p, "/epics/"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"iid":101,"title":"Redesign opening screen with aurora green background","state":"opened","web_url":"https://git.civo.com/groups/civo/metaphor/-/epics/101"}`)
 	case strings.HasSuffix(p, "/epics"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `[{"iid":101,"title":"Redesign opening screen with aurora green background","state":"opened","web_url":"https://git.civo.com/groups/civo/metaphor/-/epics/101"},{"iid":20,"title":"Turn metaphor pink","state":"opened","web_url":"https://git.civo.com/groups/civo/metaphor/-/epics/20"}]`)
+	case strings.Contains(p, "/repository/branches/") && r.Method == "DELETE":
+		name := p[strings.Index(p, "/repository/branches/")+len("/repository/branches/"):]
+		if u, err := url.PathUnescape(name); err == nil {
+			name = u
+		}
+		delMu.Lock()
+		deletedBranches[name] = true
+		delMu.Unlock()
+		w.WriteHeader(204)
 	case strings.Contains(p, "/repository/compare"):
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"commits":[{"id":"a"},{"id":"b"},{"id":"c"}]}`)
+		if strings.Contains(r.URL.RawQuery, "hotfix-done") {
+			fmt.Fprint(w, `{"commits":[]}`) // fully merged back
+			return
+		}
+		fmt.Fprint(w, `{"commits":[{"id":"a","author_name":"Jared Edwards","author_email":"jared@civo.com"},{"id":"b","author_name":"John Dietz","author_email":"john.dietz@civo.com"},{"id":"c","author_name":"John Dietz","author_email":"john.dietz@civo.com"}]}`)
 	case strings.HasSuffix(p, "/repository/branches") && r.Method == "POST":
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"name":"epic-20-pink","web_url":"https://git.civo.com/x/-/tree/epic-20-pink"}`)
 	case strings.HasSuffix(p, "/repository/branches"):
 		w.Header().Set("Content-Type", "application/json")
 		now2 := time.Now().UTC()
-		fmt.Fprintf(w, `[{"name":"main","web_url":"https://git.civo.com/x/-/tree/main","commit":{"short_id":"feedface","title":"feat: latest","author_name":"John Dietz","committed_date":%q}},{"name":"epic-101-aurora","web_url":"https://git.civo.com/x/-/tree/epic-101-aurora","commit":{"short_id":"abc12345","title":"ci: bump dep","author_name":"kbot","committed_date":%q}},{"name":"hotfix/0.2","web_url":"https://git.civo.com/x/-/tree/hotfix-0.2","commit":{"short_id":"def67890","title":"fix: patch","author_name":"Jared Edwards","committed_date":%q}},{"name":"epic-7-legacy","web_url":"https://git.civo.com/x/-/tree/epic-7-legacy","commit":{"short_id":"old00001","title":"wip: abandoned spike","author_name":"John Dietz","committed_date":%q}}]`,
-			now2.Add(-30*time.Minute).Format(time.RFC3339), now2.Add(-2*time.Hour).Format(time.RFC3339), now2.Add(-26*time.Hour).Format(time.RFC3339), now2.Add(-45*24*time.Hour).Format(time.RFC3339))
+		type fb struct {
+			name, sha, title, author string
+			when                     time.Time
+		}
+		all := []fb{
+			{"main", "feedface", "feat: latest", "John Dietz", now2.Add(-30 * time.Minute)},
+			{"epic-101-aurora", "abc12345", "ci: bump dep", "kbot", now2.Add(-2 * time.Hour)},
+			{"hotfix/0.2", "def67890", "fix: patch", "Jared Edwards", now2.Add(-26 * time.Hour)},
+			{"hotfix-done", "beefcafe", "fix: already merged", "John Dietz", now2.Add(-3 * time.Hour)},
+			{"epic-7-legacy", "old00001", "wip: abandoned spike", "John Dietz", now2.Add(-45 * 24 * time.Hour)},
+		}
+		delMu.Lock()
+		items := []string{}
+		for _, b := range all {
+			if deletedBranches[b.name] {
+				continue
+			}
+			items = append(items, fmt.Sprintf(`{"name":%q,"web_url":"https://git.civo.com/x/-/tree/%s","commit":{"short_id":%q,"title":%q,"author_name":%q,"committed_date":%q}}`,
+				b.name, strings.ReplaceAll(b.name, "/", "-"), b.sha, b.title, b.author, b.when.Format(time.RFC3339)))
+		}
+		delMu.Unlock()
+		fmt.Fprint(w, "["+strings.Join(items, ",")+"]")
 	case strings.HasSuffix(p, "/members/all"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `[{"username":"john.dietz","name":"John Dietz","access_level":50},{"username":"jared","name":"Jared Edwards","access_level":50},{"username":"group_1642_bot_x","name":"token bot","access_level":40}]`)
