@@ -138,6 +138,15 @@
   .br-act{padding:2px 6px;font-size:10px;gap:0}
   a.br-ahead{text-decoration:none}
   a.br-ahead:hover{filter:brightness(1.25)}
+  .btree{margin:7px 0 2px;padding:7px 9px;background:var(--panel2);border:1px solid var(--line);border-radius:5px}
+  .bt-row{display:flex;align-items:baseline;gap:7px;font-size:11.5px;line-height:1.85;border-radius:3px;padding:0 4px}
+  .bt-branch{color:var(--mut2);flex:none}
+  .bt-name{color:var(--ink2);text-decoration:none;flex:none}
+  a.bt-name:hover{color:var(--ink)}
+  .bt-dots{flex:1;border-bottom:1px dotted var(--line2);transform:translateY(-3px)}
+  .bt-ver{color:var(--mut)}
+  .bt-row.bump{animation:btbump 2.4s ease-out}
+  @keyframes btbump{0%{background:rgba(52,211,153,.28)}100%{background:transparent}}
   .fl-toggle{display:flex;gap:6px;margin:2px 0 14px}
   .fl-mode{background:none;border:1px solid var(--line);border-radius:5px;color:var(--mut);font-size:12px;padding:4px 12px;cursor:pointer}
   .fl-mode.on{color:var(--ink);border-color:var(--line2);background:var(--panel2)}
@@ -427,6 +436,28 @@ setInterval(() => {
 // run, an upgrade CTA when a newer chart is published (editable — any
 // published version works, so rollback is the same gesture), and the
 // delivering glow + chip while a change flows in.
+// bundleTree: the subchart pins inside the published umbrella, as a tree.
+// Rows flash briefly when a version changes between polls — publishes are
+// visible the moment they land.
+function bundleTree(m) {
+  const deps = m.bundle || [];
+  if (!deps.length) return '';
+  const prev = state.prevBundle || {};
+  const next = {};
+  const svcByName = {};
+  for (const s of (state.eco?.services || [])) svcByName[s.name] = s;
+  const rows = deps.map((d, i) => {
+    next[d.name] = d.version;
+    const changed = prev[d.name] !== undefined && prev[d.name] !== d.version;
+    const last = i === deps.length - 1;
+    const svc = svcByName[d.name];
+    const nm = svc ? `<a class="bt-name" target="_blank" href="${svc.web_url}">${esc(d.name)}</a>` : `<span class="bt-name">${esc(d.name)}</span>`;
+    return `<div class="bt-row${changed ? ' bump' : ''}"><span class="bt-branch mono">${last ? '└─' : '├─'}</span>${nm}<span class="bt-dots"></span><span class="mono bt-ver">${esc(d.version)}</span></div>`;
+  }).join('');
+  state.prevBundle = next;
+  const refNote = m.bundle_ref && m.bundle_ref !== m.published_tag ? `<span class="mut" title="the published tag couldn't be read — showing main's tip">@${esc(m.bundle_ref)}</span>` : '';
+  return `<div class="btree" title="subchart versions published inside ${esc(m.published_tag || 'the umbrella')}">${rows}${refNote}</div>`;
+}
 function envCard(e, m) {
   const latest = m.published_rc || '';
   const w = state.watch;
@@ -488,6 +519,7 @@ function renderDelivery(d) {
           <div class="ec-top">${METAMARK}<a class="pname" target="_blank" href="${m.web_url}" title="${esc(m.name)}">${esc(m.name)}</a>${statusChip(m.pipeline)}${avatarImg(m.pipeline)}</div>
           <div class="ec-big mono">${esc(m.published_rc || m.base_version || '—')}</div>
           <div class="mut">bundles ${svcs.length} microcharts · base <span class="mono">${esc(m.base_version || '—')}</span></div>
+          ${bundleTree(m)}
           ${commitLine(m)}
           ${stagesSlot(m)}
           ${actBtns(m.project, true)}${watchChip(m)}

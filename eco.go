@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.6.1"
+const themeVersion = "2.7.0"
 
 const ttlEco = 45 * time.Second
 
@@ -126,6 +126,29 @@ func macroDeps(raw string) map[string]string {
 }
 
 func unquote(s string) string { return strings.Trim(s, `"'`) }
+
+type depJSON struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// orderedDeps is macroDeps preserving file order — the bundle tree renders
+// subcharts in the order the umbrella declares them.
+func orderedDeps(raw string) []depJSON {
+	var out []depJSON
+	var name string
+	for _, ln := range strings.Split(stripComments(raw), "\n") {
+		t := strings.TrimSpace(ln)
+		switch {
+		case strings.HasPrefix(t, "- name:"):
+			name = unquote(strings.TrimSpace(strings.TrimPrefix(t, "- name:")))
+		case strings.HasPrefix(t, "version:") && name != "":
+			out = append(out, depJSON{Name: name, Version: unquote(strings.TrimSpace(strings.TrimPrefix(t, "version:")))})
+			name = ""
+		}
+	}
+	return out
+}
 
 // --- version comparison (X.Y.Z with optional -rc.N; release > its rc's) ---
 
@@ -238,15 +261,20 @@ type svcNode struct {
 }
 
 type macroNode struct {
-	Name         string        `json:"name"`
-	Project      string        `json:"project"`
-	WebURL       string        `json:"web_url"`
-	BaseVer      string        `json:"base_version"`
-	PublishedRC  string        `json:"published_rc"`
-	PublishedTag string        `json:"published_tag"`
-	Pipeline     *pipelineJSON `json:"pipeline,omitempty"`
-	Commit       *commitJSON   `json:"commit,omitempty"`
-	SHAPipes     []shaPipeJSON `json:"sha_pipelines,omitempty"`
+	Name         string `json:"name"`
+	Project      string `json:"project"`
+	WebURL       string `json:"web_url"`
+	BaseVer      string `json:"base_version"`
+	PublishedRC  string `json:"published_rc"`
+	PublishedTag string `json:"published_tag"`
+	// Bundle: the subchart pins inside the PUBLISHED umbrella (deps at the
+	// tag ref; falls back to main's tip when the tag read misses — BundleRef
+	// says which one you're looking at).
+	Bundle    []depJSON     `json:"bundle,omitempty"`
+	BundleRef string        `json:"bundle_ref,omitempty"`
+	Pipeline  *pipelineJSON `json:"pipeline,omitempty"`
+	Commit    *commitJSON   `json:"commit,omitempty"`
+	SHAPipes  []shaPipeJSON `json:"sha_pipelines,omitempty"`
 }
 
 // commitJSON is the headline of the commit behind the latest pipeline — the
@@ -497,10 +525,28 @@ collect:
 
 	deps := macroDeps(macroRaw)
 	publishedRC := strings.TrimPrefix(publishedTag, t.MacroTag)
+	// The bundle tree shows what's inside the PUBLISHED umbrella — deps read
+	// at the tag ref (immutable, so cached long). A miss falls back to main's
+	// tip, which in steady state is the same pins.
+	bundle, bundleRef := orderedDeps(macroRaw), "main"
+	if publishedTag != "" {
+		if v, err := a.c.do("bundle:"+t.MacroProj+"@"+publishedTag, time.Hour, func() (any, error) {
+			bctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			raw, err := a.gl.fileRaw(bctx, t.MacroProj, t.MacroFile, publishedTag)
+			if err != nil {
+				return nil, err
+			}
+			return orderedDeps(raw), nil
+		}); err == nil {
+			bundle, bundleRef = v.([]depJSON), publishedTag
+		}
+	}
 	macro := macroNode{
 		Name: t.MacroName, Project: t.MacroProj,
 		WebURL:  a.gl.base + "/" + t.MacroProj,
 		BaseVer: chartVersion(macroRaw), PublishedRC: publishedRC, PublishedTag: publishedTag,
+		Bundle: bundle, BundleRef: bundleRef,
 		Pipeline: macroPB.Pipe, Commit: macroPB.Commit, SHAPipes: macroPB.Pipes,
 	}
 

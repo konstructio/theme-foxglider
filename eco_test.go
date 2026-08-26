@@ -165,6 +165,23 @@ func TestEcosystem(t *testing.T) {
 	if eco.Macro.Pipeline == nil || eco.Macro.Pipeline.Status != "success" {
 		t.Fatalf("macro pipeline = %+v", eco.Macro.Pipeline)
 	}
+	// the bundle tree: declared order, exact pins, read at the published tag
+	wantBundle := []depJSON{
+		{"metaphor", "0.11.0-rc.13"},
+		{"metaphor-dashboard-manager", "0.12.0-rc.15"},
+		{"metaphor-micro-frontend", "0.1.0-rc.7"},
+	}
+	if len(eco.Macro.Bundle) != 3 {
+		t.Fatalf("bundle = %+v", eco.Macro.Bundle)
+	}
+	for i, w := range wantBundle {
+		if eco.Macro.Bundle[i] != w {
+			t.Fatalf("bundle[%d] = %+v (want %+v)", i, eco.Macro.Bundle[i], w)
+		}
+	}
+	if eco.Macro.BundleRef != "metaphor-v0.2.0-rc.4" {
+		t.Fatalf("bundle_ref = %q", eco.Macro.BundleRef)
+	}
 	if eco.Macro.Pipeline.AuthorName != "John Dietz" || eco.Macro.Pipeline.AuthorAvatar == "" {
 		t.Fatalf("macro pipeline author = %+v", eco.Macro.Pipeline)
 	}
