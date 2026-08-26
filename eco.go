@@ -21,7 +21,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.0.0"
+const themeVersion = "2.0.1"
 
 const ttlEco = 45 * time.Second
 
@@ -130,7 +130,10 @@ type ver struct {
 	ok                bool
 }
 
-var reSemRC = regexp.MustCompile(`^v?(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?`)
+// End-anchored on purpose: a feature version like 0.2.0-epic-20-pink.3 must
+// NOT parse as release 0.2.0 (it would outrank every rc as "newest"). Epic
+// versions are deliberately un-orderable here — they never become "latest".
+var reSemRC = regexp.MustCompile(`^v?(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$`)
 
 func parseVer(s string) ver {
 	m := reSemRC.FindStringSubmatch(strings.TrimSpace(s))

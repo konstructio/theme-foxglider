@@ -260,3 +260,23 @@ func TestNoteServicePipelineTransitions(t *testing.T) {
 		t.Fatal("markHot/isHot broken")
 	}
 }
+
+func TestEpicVersionsNeverOutrankRCs(t *testing.T) {
+	// a feature tag must not parse (end anchor) — otherwise it would read as
+	// a clean release and outrank every rc as "newest"
+	if v := parseVer("0.2.0-epic-20-pink.3"); v.ok {
+		t.Fatalf("epic version parsed as ordered semver: %+v", v)
+	}
+	tags := []glTag{
+		{"metaphor-v0.2.0-rc.4"},
+		{"metaphor-v0.2.0-epic-20-pink.9"},
+		{"metaphor-v0.2.0-rc.19"},
+	}
+	if got := newestTag(tags, "metaphor-v"); got != "metaphor-v0.2.0-rc.19" {
+		t.Fatalf("newestTag = %q — epic tags must never win", got)
+	}
+	// clean releases and rcs still parse
+	if !parseVer("0.2.0").ok || !parseVer("0.2.0-rc.19").ok || !parseVer("v1.2.3").ok {
+		t.Fatal("normal versions must still parse")
+	}
+}
