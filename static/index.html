@@ -97,7 +97,7 @@
   .pchip{font-family:var(--mono);font-size:10px;color:var(--c);border:1px solid var(--c);border-radius:3px;padding:1px 6px;opacity:.88}
   .pchip:hover{opacity:1}
   .ec-act{display:flex;gap:8px;margin-top:10px}
-  .abtn{background:var(--panel2);border:1px solid var(--line2);border-radius:5px;color:var(--ink2);cursor:pointer;font-size:12px;padding:4px 10px}
+  .abtn{background:var(--panel2);border:1px solid var(--line2);border-radius:5px;color:var(--ink2);cursor:pointer;font-size:12px;padding:4px 10px;display:inline-flex;align-items:center;gap:6px}
   .abtn:hover{border-color:var(--civo);color:var(--civo)}
   .abtn.warn:hover{border-color:var(--gl-orange);color:var(--gl-orange)}
   #actmodal{position:fixed;inset:0;z-index:60}
@@ -396,11 +396,13 @@ async function loadActions() {
   catch { state.act = { enabled: false }; }
 }
 // actBtns renders the two guarded actions when the write token is configured.
+const ICON_SCOPE = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M22 12h-4M6 12H2M12 6V2M12 22v-4"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>';
+const ICON_ROCKET = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>';
 function actBtns(project) {
   if (!state.act || !state.act.enabled) return '';
   return `<div class="ec-act">
-    <button class="abtn" data-act="trigger" data-proj="${esc(project)}" title="re-run the delivery pipeline on a fresh sha">↻ re-run</button>
-    <button class="abtn warn" data-act="release" data-proj="${esc(project)}" title="cut a clean release from the latest RC">⏫ release</button>
+    <button class="abtn" data-act="trigger" data-proj="${esc(project)}" title="trigger the delivery pipeline on a fresh sha">${ICON_SCOPE} trigger</button>
+    <button class="abtn warn" data-act="release" data-proj="${esc(project)}" title="cut a clean release from the latest RC">${ICON_ROCKET} release</button>
   </div>`;
 }
 document.addEventListener('click', e => {
@@ -415,7 +417,7 @@ function openActionModal(action, project) {
   $('#actmodal').innerHTML = `
     <div class="d-back"></div>
     <div class="d-panel" role="dialog" aria-modal="true">
-      <div class="d-head">${METAMARK}<b>${action === 'release' ? 'Release' : 'Re-run pipeline'}</b>
+      <div class="d-head">${METAMARK}<b>${action === 'release' ? 'Release' : 'Trigger pipeline'}</b>
         <span class="mono mut">${esc(project)}</span><span class="spacer"></span>
         <a href="#" id="act-x" aria-label="close">✕</a></div>
       <p class="mut">${action === 'release'
@@ -427,7 +429,7 @@ function openActionModal(action, project) {
       ${needsConfirm ? `<label for="act-confirm">type <b class="mono">${esc(short)}</b> to confirm</label>
         <input id="act-confirm" autocomplete="off" placeholder="${esc(short)}">` : ''}
       <div class="act-row">
-        <button id="act-go" class="abtn ${needsConfirm ? 'warn' : ''}">${action === 'release' ? '⏫ release' : '↻ re-run'}</button>
+        <button id="act-go" class="abtn ${needsConfirm ? 'warn' : ''}">${action === 'release' ? ICON_ROCKET + ' release' : ICON_SCOPE + ' trigger'}</button>
         <span id="act-out" class="mono mut"></span>
       </div>
     </div>`;
