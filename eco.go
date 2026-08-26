@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -763,14 +764,25 @@ func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
 				}
 				out := make([]branchJSON, 0, len(brs))
 				for _, b := range brs {
-					bj := toBranchJSON(b)
-					// hotfix divergence: commits not yet merged back to main
-					if strings.HasPrefix(b.Name, "hotfix") {
-						if n, err := a.gl.compareAhead(ctx, s.Project, "main", b.Name); err == nil {
-							bj.Ahead = n
-						}
+					out = append(out, toBranchJSON(b))
+				}
+				// hotfix divergence: commits not yet merged back to main.
+				// Bounded to the 10 most recent — repos like konstruct-ui carry
+				// dozens of old hotfix branches and each check is an API call.
+				hix := []int{}
+				for i, bj := range out {
+					if strings.HasPrefix(bj.Name, "hotfix") {
+						hix = append(hix, i)
 					}
-					out = append(out, bj)
+				}
+				sort.Slice(hix, func(x, y int) bool { return out[hix[x]].When > out[hix[y]].When })
+				if len(hix) > 10 {
+					hix = hix[:10]
+				}
+				for _, i := range hix {
+					if n, err := a.gl.compareAhead(ctx, s.Project, "main", out[i].Name); err == nil {
+						out[i].Ahead = n
+					}
 				}
 				return out, nil
 			})
