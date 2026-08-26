@@ -79,6 +79,8 @@ func main() {
 			w.WriteHeader(404)
 		}
 	})
+	// group-scoped calls (the acting-as roster) route through ecoFake too
+	mux.HandleFunc("/api/v4/groups/", ecoFake)
 	log.Println("fakegitlab on :9911")
 	log.Fatal(http.ListenAndServe(":9911", mux))
 }
@@ -137,10 +139,23 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(p, "/repository/tags"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `[{"name":"metaphor-v0.2.0-rc.4"},{"name":"metaphor-v0.2.0-rc.3"},{"name":"metaphor-v0.2.0-rc.2"}]`)
-	case strings.HasSuffix(p, "/jobs"):
-		// canned running pipeline: earlier stages done, build running, publish queued
+	case strings.HasSuffix(p, "/members/all"):
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `[{"name":"lint","stage":"validate","status":"success"},{"name":"test","stage":"validate","status":"success"},{"name":"build","stage":"build","status":"running"},{"name":"publish-chart","stage":"publish","status":"created"},{"name":"publish-image","stage":"publish","status":"created"}]`)
+		fmt.Fprint(w, `[{"username":"john.dietz","name":"John Dietz","access_level":50},{"username":"jared","name":"Jared Edwards","access_level":50},{"username":"group_1642_bot_x","name":"token bot","access_level":40}]`)
+	case strings.Contains(p, "%2Frepository%2Fcommits%2F"), strings.Contains(p, "/repository/commits/"):
+		w.Header().Set("Content-Type", "application/json")
+		proj := ecoProjFromPath(p)
+		fmt.Fprintf(w, `{"id":"feedfacecafe0000deadbeef","short_id":"feedface","title":"feat: sharpen the delivery story on the tiles","web_url":"https://git.civo.com/%s/-/commit/feedfacecafe0000","author_name":"John Dietz","authored_date":%q}`,
+			proj, time.Now().UTC().Add(-25*time.Minute).Format(time.RFC3339))
+	case strings.Contains(p, "/play"):
+		// answers like GitLab so the action modal flow completes in dev
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":7,"name":"trigger:manual","status":"pending","web_url":"https://git.civo.com/civo/metaphor/charts/-/jobs/7","pipeline":{"id":900,"web_url":"https://git.civo.com/civo/metaphor/charts/-/pipelines/900"}}`)
+	case strings.HasSuffix(p, "/jobs"):
+		// canned running pipeline: earlier stages done, build running, publish
+		// queued — plus the two playable manual jobs the action layer targets.
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"lint","stage":"validate","status":"success"},{"id":2,"name":"test","stage":"validate","status":"success"},{"id":3,"name":"build","stage":"build","status":"running"},{"id":4,"name":"publish-chart","stage":"publish","status":"created"},{"id":5,"name":"publish-image","stage":"publish","status":"created"},{"id":6,"name":"release","stage":"release","status":"manual"},{"id":7,"name":"trigger:manual","stage":"toolbelt","status":"manual"}]`)
 	case strings.HasSuffix(p, "/pipelines/latest"):
 		w.Header().Set("Content-Type", "application/json")
 		proj := ecoProjFromPath(p)
@@ -162,6 +177,13 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 		}
 		now := time.Now().UTC()
 		web := "https://git.civo.com/" + proj + "/-/pipelines"
+		if r.URL.Query().Get("sha") != "" {
+			// the SHA's full story: branch run + its RC tag run
+			fmt.Fprintf(w, `[{"id":900,"status":%q,"ref":"main","source":"push","sha":"feedfacecafe0000","web_url":%q,"created_at":%q,"updated_at":%q},{"id":901,"status":"success","ref":"metaphor-v0.2.0-rc.4","source":"push","sha":"feedfacecafe0000","web_url":%q,"created_at":%q,"updated_at":%q}]`,
+				st, web, now.Add(-20*time.Minute).Format(time.RFC3339), now.Add(-18*time.Minute).Format(time.RFC3339),
+				web, now.Add(-16*time.Minute).Format(time.RFC3339), now.Add(-14*time.Minute).Format(time.RFC3339))
+			return
+		}
 		fmt.Fprintf(w, `[{"id":900,"status":%q,"ref":"main","sha":"feedfacecafe0000","web_url":%q,"created_at":%q,"updated_at":%q}]`,
 			st, web, now.Add(-20*time.Minute).Format(time.RFC3339), now.Add(-18*time.Minute).Format(time.RFC3339))
 	default:

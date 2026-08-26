@@ -87,7 +87,24 @@
   .stages{display:flex;gap:3px;margin-top:9px}
   .stg{flex:1;height:5px;border-radius:3px;background:var(--c,var(--mut2));opacity:.92;transition:background .3s}
   .stg.run{animation:pulse 1.4s ease-in-out infinite}
-  .ec-when{font-size:11px;margin-top:7px;color:var(--mut)}
+  .ec-msg{font-size:12px;margin-top:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ec-msg a{color:var(--ink2)} .ec-msg a:hover{color:var(--civo)}
+  .ec-sha{display:flex;align-items:center;gap:6px;margin-top:5px;font-size:11px;flex-wrap:wrap}
+  .ec-sha>a{color:var(--civo)}
+  .copy{background:none;border:1px solid var(--line);border-radius:4px;color:var(--mut);cursor:pointer;font-size:10px;padding:1px 5px;line-height:1.4}
+  .copy:hover{color:var(--civo);border-color:var(--civo)}
+  .pipes{display:inline-flex;gap:4px;flex-wrap:wrap;margin-left:2px}
+  .pchip{font-family:var(--mono);font-size:10px;color:var(--c);border:1px solid var(--c);border-radius:3px;padding:1px 6px;opacity:.88}
+  .pchip:hover{opacity:1}
+  .ec-act{display:flex;gap:8px;margin-top:10px}
+  .abtn{background:var(--panel2);border:1px solid var(--line2);border-radius:5px;color:var(--ink2);cursor:pointer;font-size:12px;padding:4px 10px}
+  .abtn:hover{border-color:var(--civo);color:var(--civo)}
+  .abtn.warn:hover{border-color:var(--gl-orange);color:var(--gl-orange)}
+  #actmodal{position:fixed;inset:0;z-index:60}
+  #actmodal select,#actmodal input{background:var(--panel2);border:1px solid var(--line);border-radius:5px;color:var(--ink);display:block;margin:4px 0 12px;padding:6px 8px;width:100%;font-family:var(--mono);font-size:13px}
+  #actmodal label{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut)}
+  #actmodal p{margin:0 0 14px;font-size:13px}
+  .act-row{display:flex;align-items:center;gap:12px;margin-top:6px;flex-wrap:wrap}
   .fleet-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:10px;margin-bottom:6px}
   .tile{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--c);border-radius:8px;padding:10px 12px}
   .tile-head{display:flex;align-items:center;gap:7px;margin-bottom:4px}
@@ -125,6 +142,7 @@
     <span id="updated" class="mono mut"></span>
   </header>
   <main id="view"></main>
+  <div id="actmodal" style="display:none"></div>
   <footer class="sig">
     <svg class="sig-mark" viewBox="0 0 64 48" width="16" height="12" aria-hidden="true"><path fill="var(--civo)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/></svg>
     <span class="sig-name">metaphor delivery theme</span>
@@ -134,7 +152,7 @@
   </footer>
 </div>
 <script>
-const state = { view: 'delivery', windowH: 24, overview: null, activity: null, eco: null };
+const state = { view: 'delivery', windowH: 24, overview: null, activity: null, eco: null, act: null };
 const METAMARK = '<svg viewBox="0 0 64 48" width="20" height="15" aria-hidden="true" style="flex:none"><defs><linearGradient id="gm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#05df72"/><stop offset=".55" stop-color="#00c950"/><stop offset="1" stop-color="#00a884"/></linearGradient></defs><path fill="url(#gm)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/><circle cx="26" cy="28" r="2.2" fill="#0b1220"/></svg>';
 const $ = (s, el=document) => el.querySelector(s);
 
@@ -191,13 +209,46 @@ function avatarImg(pl) {
 
 // Live stage-progress: only running pipelines are polled, and only while they run.
 const isRunning = pl => !!pl && ['running', 'pending', 'created', 'waiting_for_resource'].includes(pl.status);
-// completedLabel: "completed <ago>" from the finish time; empty while running
-// (the status chip + stage bar already convey "running").
-function completedLabel(pl) {
-  if (!pl || isRunning(pl)) return '';
-  const t = pl.finished_at || pl.updated_at;
-  return t ? '✓ completed ' + relTime(t) : '';
+
+// commitLine: the human story on a card — the commit message with its time,
+// then the short SHA (linked + copyable) and the SHA's full pipeline story.
+const shortRef = r => r.length > 22 ? r.slice(0, 20) + '…' : r;
+function commitLine(n) {
+  const c = n.commit, pl = n.pipeline;
+  if (!c) return '';
+  const t = (pl && (pl.finished_at || pl.updated_at)) || c.authored_at;
+  return `<div class="ec-msg" title="${esc(c.title)} — ${esc(c.author_name || '')}">
+      <a target="_blank" href="${c.web_url}">${esc(c.title)}</a><span class="mut"> · ${relTime(t)}</span></div>
+    <div class="ec-sha mono">
+      <a target="_blank" href="${c.web_url}" title="view commit">${esc(c.short_sha)}</a>
+      <button class="copy" data-sha="${esc(c.sha)}" title="copy full sha">⧉</button>
+      ${shaPipes(n)}
+    </div>`;
 }
+// shaPipes: every pipeline that ran on this commit (branch run, RC tag run…).
+function shaPipes(n) {
+  const ps = n.sha_pipelines || [];
+  if (!ps.length) return '';
+  return `<span class="pipes">${ps.slice(0, 4).map(p =>
+    `<a class="pchip" target="_blank" href="${p.web_url}" style="--c:${statusColor(p.status)}"
+       title="#${p.id} · ${esc(p.ref)} · ${p.status} · ${esc(p.source || '')} · ${relTime(p.updated_at)}">${esc(shortRef(p.ref))}</a>`).join('')}</span>`;
+}
+// copy-to-clipboard with an execCommand fallback (clipboard API can be denied
+// inside the konstruct iframe).
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  let ok = false; try { ok = document.execCommand('copy'); } catch {}
+  ta.remove(); return ok;
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('.copy'); if (!b) return;
+  const done = ok => { b.textContent = ok ? '✓' : '✗'; setTimeout(() => { b.textContent = '⧉'; }, 1200); };
+  if (navigator.clipboard && window.isSecureContext)
+    navigator.clipboard.writeText(b.dataset.sha).then(() => done(true), () => done(fallbackCopy(b.dataset.sha)));
+  else done(fallbackCopy(b.dataset.sha));
+});
 function stagesSlot(node) {
   return isRunning(node && node.pipeline)
     ? `<div class="stages" data-proj="${esc(node.project)}" data-pid="${node.pipeline.id}"></div>` : '';
@@ -244,8 +295,9 @@ function renderDelivery(d) {
         ${svcs.map(s => `<div class="ecard">
           <div class="ec-top"><a class="pname" target="_blank" href="${s.web_url}">${esc(s.name)}</a>${statusChip(s.pipeline)}<span class="spacer"></span>${avatarImg(s.pipeline)}</div>
           <div class="ec-ver mono">${verChip(s.base_version)}<span class="arrowlite">→</span>${verChip(s.bundled_version)}</div>
-          <div class="ec-when">${completedLabel(s.pipeline)}</div>
+          ${commitLine(s)}
           ${stagesSlot(s)}
+          ${actBtns(s.project)}
         </div>`).join('')}
       </div>
       <div class="eco-arrow">→</div>
@@ -255,8 +307,9 @@ function renderDelivery(d) {
           <div class="ec-top">${METAMARK}<a class="pname" target="_blank" href="${m.web_url}">${esc(m.name)}</a>${statusChip(m.pipeline)}<span class="spacer"></span>${avatarImg(m.pipeline)}</div>
           <div class="ec-big mono">${esc(m.published_rc || m.base_version || '—')}</div>
           <div class="mut">bundles ${svcs.length} microcharts · base <span class="mono">${esc(m.base_version || '—')}</span></div>
-          <div class="ec-when">${completedLabel(m.pipeline)}</div>
+          ${commitLine(m)}
           ${stagesSlot(m)}
+          ${actBtns(m.project)}
         </div>
       </div>
       <div class="eco-arrow">→</div>
@@ -335,6 +388,69 @@ async function loadMeta() {
   const a = $('#sig-url');
   if (a) { a.textContent = location.host + (location.pathname === '/' ? '' : location.pathname); a.href = location.href; }
 }
+
+// --- CI actions (bot-executed; acting-as carried as the trace) ---
+
+async function loadActions() {
+  try { state.act = await fetchJSON('/api/actions/status'); }
+  catch { state.act = { enabled: false }; }
+}
+// actBtns renders the two guarded actions when the write token is configured.
+function actBtns(project) {
+  if (!state.act || !state.act.enabled) return '';
+  return `<div class="ec-act">
+    <button class="abtn" data-act="trigger" data-proj="${esc(project)}" title="re-run the delivery pipeline on a fresh sha">↻ re-run</button>
+    <button class="abtn warn" data-act="release" data-proj="${esc(project)}" title="cut a clean release from the latest RC">⏫ release</button>
+  </div>`;
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('.abtn'); if (!b || !b.dataset.act) return;
+  openActionModal(b.dataset.act, b.dataset.proj);
+});
+function openActionModal(action, project) {
+  const short = project.split('/').pop();
+  const roster = (state.act && state.act.members) || [];
+  const saved = localStorage.getItem('mf_acting_as') || '';
+  const needsConfirm = action === 'release';
+  $('#actmodal').innerHTML = `
+    <div class="d-back"></div>
+    <div class="d-panel" role="dialog" aria-modal="true">
+      <div class="d-head">${METAMARK}<b>${action === 'release' ? 'Release' : 'Re-run pipeline'}</b>
+        <span class="mono mut">${esc(project)}</span><span class="spacer"></span>
+        <a href="#" id="act-x" aria-label="close">✕</a></div>
+      <p class="mut">${action === 'release'
+        ? 'Plays the manual <b>release</b> job on the latest main pipeline: cuts the clean tag from the current RC, retags artifacts (no rebuild), and opens the next dev cycle.'
+        : 'Plays the manual <b>trigger:manual</b> job: pushes an empty commit to main so the delivery pipeline runs end-to-end on a fresh SHA.'}</p>
+      <label for="act-who">acting as</label>
+      <select id="act-who">${roster.map(m =>
+        `<option value="${esc(m.username)}" ${m.username === saved ? 'selected' : ''}>${esc(m.name)} (@${esc(m.username)})</option>`).join('')}</select>
+      ${needsConfirm ? `<label for="act-confirm">type <b class="mono">${esc(short)}</b> to confirm</label>
+        <input id="act-confirm" autocomplete="off" placeholder="${esc(short)}">` : ''}
+      <div class="act-row">
+        <button id="act-go" class="abtn ${needsConfirm ? 'warn' : ''}">${action === 'release' ? '⏫ release' : '↻ re-run'}</button>
+        <span id="act-out" class="mono mut"></span>
+      </div>
+    </div>`;
+  $('#actmodal').style.display = 'block';
+  $('#act-x').onclick = e => { e.preventDefault(); closeActModal(); };
+  $('#actmodal .d-back').onclick = closeActModal;
+  $('#act-go').onclick = async () => {
+    const who = $('#act-who').value;
+    if (!who) { $('#act-out').textContent = '✗ pick who you are'; return; }
+    localStorage.setItem('mf_acting_as', who);
+    const confirm = needsConfirm ? $('#act-confirm').value.trim() : '';
+    $('#act-out').textContent = 'starting…';
+    try {
+      const res = await fetch('/api/actions/run', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project, action, acting_as: who, confirm }) });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw body;
+      $('#act-out').innerHTML = `✓ started — <a target="_blank" href="${body.job_url}">job</a> · <a target="_blank" href="${body.pipeline_url}">pipeline</a>`;
+      setTimeout(() => { closeActModal(); refresh(); }, 2500);
+    } catch (err) { $('#act-out').textContent = '✗ ' + errMsg(err); }
+  };
+}
+function closeActModal() { $('#actmodal').style.display = 'none'; $('#actmodal').innerHTML = ''; }
 
 let pollTimer;
 function poll() {
@@ -462,7 +578,7 @@ function renderActivity(data) {
   }));
   $('#gfilter').addEventListener('change', e => { state.groupFilter = e.target.value; renderActivity(state.activity); });
 }
-loadMeta(); refresh(); poll();
+loadMeta(); loadActions().then(refresh); poll();
 </script>
 </body>
 </html>

@@ -25,10 +25,12 @@ type api struct {
 	groups []string // namespace prefixes; empty = all
 	c      *cache
 	topo   topology
+	act    *actions
 }
 
 func newAPI(gl *glClient, groups []string) http.Handler {
 	a := &api{gl: gl, groups: groups, c: newCache(), topo: defaultTopology()}
+	a.act = newActions(gl, a.topo, groups)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/overview", a.guard(a.overview))
 	mux.HandleFunc("GET /api/ecosystem", a.guard(a.ecosystem))
@@ -37,6 +39,9 @@ func newAPI(gl *glClient, groups []string) http.Handler {
 	mux.HandleFunc("GET /api/projects/{id}/pipelines", a.guard(a.projectPipelines))
 	mux.HandleFunc("GET /api/pipelines/{pid}/{plid}", a.guard(a.pipelineDetail))
 	mux.HandleFunc("GET /api/activity", a.guard(a.activity))
+	// Actions guard themselves on the separate write token, not the read token.
+	mux.HandleFunc("GET /api/actions/status", a.act.status)
+	mux.HandleFunc("POST /api/actions/run", a.act.run)
 	return mux
 }
 

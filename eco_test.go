@@ -116,6 +116,11 @@ func fakeEcoGitLab(t *testing.T) *httptest.Server {
 			w.Write([]byte(`[{"name":"metaphor-v0.2.0-rc.4"},{"name":"metaphor-v0.2.0-rc.3"}]`))
 		case strings.HasSuffix(p, "/pipelines/latest"):
 			w.Write([]byte(`{"id":99,"status":"success","ref":"main","sha":"deadbeefcafe","web_url":"http://gl/x/-/pipelines/99","created_at":"2026-08-25T00:00:00Z","updated_at":"2026-08-25T00:02:00Z","user":{"name":"John Dietz","username":"jd","avatar_url":"http://gl/avatar/jd.png"}}`))
+		case strings.Contains(p, "/repository/commits/deadbeefcafe"):
+			w.Write([]byte(`{"id":"deadbeefcafe0123","short_id":"deadbeef","title":"fix: keep the healthz contract honest","web_url":"http://gl/x/-/commit/deadbeefcafe","author_name":"John Dietz","authored_date":"2026-08-25T00:00:00Z"}`))
+		case strings.HasSuffix(p, "/pipelines") && r.URL.Query().Get("sha") != "":
+			// the SHA's full pipeline story: the branch run + its RC tag run
+			w.Write([]byte(`[{"id":99,"status":"success","ref":"main","source":"push","web_url":"http://gl/x/-/pipelines/99","updated_at":"2026-08-25T00:02:00Z"},{"id":100,"status":"failed","ref":"metaphor-v0.2.0-rc.4","source":"push","web_url":"http://gl/x/-/pipelines/100","updated_at":"2026-08-25T00:05:00Z"}]`))
 		default:
 			w.WriteHeader(404)
 		}
@@ -159,6 +164,13 @@ func TestEcosystem(t *testing.T) {
 	}
 	if s := byName["metaphor"]; s.BaseVer != "0.11.0" || s.Bundled != "0.11.0-rc.13" {
 		t.Fatalf("metaphor svc = %+v", s)
+	}
+	if s := byName["metaphor"]; s.Commit == nil || s.Commit.ShortSHA != "deadbeef" ||
+		s.Commit.Title != "fix: keep the healthz contract honest" {
+		t.Fatalf("metaphor commit = %+v", s.Commit)
+	}
+	if s := byName["metaphor"]; len(s.SHAPipes) != 2 || s.SHAPipes[1].Ref != "metaphor-v0.2.0-rc.4" {
+		t.Fatalf("metaphor sha pipelines = %+v", s.SHAPipes)
 	}
 	if s := byName["metaphor-dashboard-manager"]; s.Bundled != "0.12.0-rc.15" {
 		t.Fatalf("dashboard svc = %+v", s)

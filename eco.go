@@ -21,7 +21,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "1.1.2"
+const themeVersion = "1.2.0"
 
 const ttlEco = 45 * time.Second
 
@@ -219,6 +219,8 @@ type svcNode struct {
 	BaseVer  string        `json:"base_version"`
 	Bundled  string        `json:"bundled_version"`
 	Pipeline *pipelineJSON `json:"pipeline,omitempty"`
+	Commit   *commitJSON   `json:"commit,omitempty"`
+	SHAPipes []shaPipeJSON `json:"sha_pipelines,omitempty"`
 }
 
 type macroNode struct {
@@ -229,6 +231,29 @@ type macroNode struct {
 	PublishedRC  string        `json:"published_rc"`
 	PublishedTag string        `json:"published_tag"`
 	Pipeline     *pipelineJSON `json:"pipeline,omitempty"`
+	Commit       *commitJSON   `json:"commit,omitempty"`
+	SHAPipes     []shaPipeJSON `json:"sha_pipelines,omitempty"`
+}
+
+// commitJSON is the headline of the commit behind the latest pipeline — the
+// human story ("what changed") next to the version story.
+type commitJSON struct {
+	SHA        string    `json:"sha"`
+	ShortSHA   string    `json:"short_sha"`
+	Title      string    `json:"title"`
+	WebURL     string    `json:"web_url"`
+	AuthorName string    `json:"author_name"`
+	AuthoredAt time.Time `json:"authored_at"`
+}
+
+// shaPipeJSON is one run in the SHA's complete pipeline story.
+type shaPipeJSON struct {
+	ID        int       `json:"id"`
+	Status    string    `json:"status"`
+	Ref       string    `json:"ref"`
+	Source    string    `json:"source"`
+	WebURL    string    `json:"web_url"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type deliveryNode struct {
@@ -290,6 +315,64 @@ func (a *api) latestPipe(ctx context.Context, proj string) *pipelineJSON {
 	return &pj
 }
 
+func (a *api) cachedCommit(ctx context.Context, proj, sha string) *commitJSON {
+	if sha == "" {
+		return nil
+	}
+	v, err := a.c.do("ci:"+proj+":"+sha, ttlEco, func() (any, error) {
+		return a.gl.commitInfo(ctx, proj, sha)
+	})
+	if err != nil {
+		return nil
+	}
+	c := v.(glCommit)
+	if c.ID == "" {
+		return nil
+	}
+	return &commitJSON{SHA: c.ID, ShortSHA: c.ShortID, Title: c.Title,
+		WebURL: c.WebURL, AuthorName: c.AuthorName, AuthoredAt: c.AuthoredDate}
+}
+
+func (a *api) cachedSHAPipes(ctx context.Context, proj, sha string) []shaPipeJSON {
+	if sha == "" {
+		return nil
+	}
+	v, err := a.c.do("shapl:"+proj+":"+sha, ttlEco, func() (any, error) {
+		return a.gl.pipelinesForSHA(ctx, proj, sha, 8)
+	})
+	if err != nil {
+		return nil
+	}
+	pls := v.([]glSHAPipeline)
+	out := make([]shaPipeJSON, 0, len(pls))
+	for _, p := range pls {
+		out = append(out, shaPipeJSON{ID: p.ID, Status: p.Status, Ref: p.Ref,
+			Source: p.Source, WebURL: p.WebURL, UpdatedAt: p.UpdatedAt})
+	}
+	return out
+}
+
+// pipeBundle is a project's latest pipeline plus that SHA's commit headline and
+// full pipeline story. The commit/story fetches depend on the pipeline's SHA,
+// so they chain after it — but run against the cache, so steady-state is free.
+type pipeBundle struct {
+	Pipe   *pipelineJSON
+	Commit *commitJSON
+	Pipes  []shaPipeJSON
+}
+
+func (a *api) pipeBundleFor(ctx context.Context, proj string) pipeBundle {
+	pb := pipeBundle{Pipe: a.latestPipe(ctx, proj)}
+	if pb.Pipe != nil && pb.Pipe.SHA != "" {
+		done := make(chan struct{}, 2)
+		go func() { pb.Commit = a.cachedCommit(ctx, proj, pb.Pipe.SHA); done <- struct{}{} }()
+		go func() { pb.Pipes = a.cachedSHAPipes(ctx, proj, pb.Pipe.SHA); done <- struct{}{} }()
+		<-done
+		<-done
+	}
+	return pb
+}
+
 // ecosystem renders the metaphor supply chain: services → umbrella → delivered.
 // Every GitLab call fires concurrently — the handler's wall-clock is one slow
 // call, not the sum — so a sluggish GitLab can't push it past the ingress
@@ -303,9 +386,9 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 
 	var (
 		macroRaw, publishedTag string
-		macroPipe              *pipelineJSON
+		macroPB                pipeBundle
 		svcRaw                 = make([]string, len(t.Services))
-		svcPipe                = make([]*pipelineJSON, len(t.Services))
+		svcPB                  = make([]pipeBundle, len(t.Services))
 		delRaw                 = make([]string, len(t.Delivery))
 	)
 
@@ -323,11 +406,11 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 	ch := make(chan slot, total)
 	go func() { ch <- slot{"macroRaw", 0, a.rawFile(ctx, t.MacroProj, t.MacroFile)} }()
 	go func() { ch <- slot{"tag", 0, newestTag(a.cachedTags(ctx, t.MacroProj), t.MacroTag)} }()
-	go func() { ch <- slot{"macroPipe", 0, a.latestPipe(ctx, t.MacroProj)} }()
+	go func() { ch <- slot{"macroPipe", 0, a.pipeBundleFor(ctx, t.MacroProj)} }()
 	for i, s := range t.Services {
 		i, s := i, s
 		go func() { ch <- slot{"svcRaw", i, a.rawFile(ctx, s.Project, s.Chart)} }()
-		go func() { ch <- slot{"svcPipe", i, a.latestPipe(ctx, s.Project)} }()
+		go func() { ch <- slot{"svcPipe", i, a.pipeBundleFor(ctx, s.Project)} }()
 	}
 	for i, d := range t.Delivery {
 		i, d := i, d
@@ -345,11 +428,11 @@ collect:
 			case "tag":
 				publishedTag = s.v.(string)
 			case "macroPipe":
-				macroPipe = s.v.(*pipelineJSON)
+				macroPB = s.v.(pipeBundle)
 			case "svcRaw":
 				svcRaw[s.i] = s.v.(string)
 			case "svcPipe":
-				svcPipe[s.i] = s.v.(*pipelineJSON)
+				svcPB[s.i] = s.v.(pipeBundle)
 			case "delRaw":
 				delRaw[s.i] = s.v.(string)
 			}
@@ -364,7 +447,7 @@ collect:
 		Name: t.MacroName, Project: t.MacroProj,
 		WebURL:  a.gl.base + "/" + t.MacroProj,
 		BaseVer: chartVersion(macroRaw), PublishedRC: publishedRC, PublishedTag: publishedTag,
-		Pipeline: macroPipe,
+		Pipeline: macroPB.Pipe, Commit: macroPB.Commit, SHAPipes: macroPB.Pipes,
 	}
 
 	services := make([]svcNode, len(t.Services))
@@ -372,7 +455,8 @@ collect:
 		services[i] = svcNode{
 			Name: s.Name, Project: s.Project,
 			WebURL:  a.gl.base + "/" + s.Project,
-			BaseVer: chartVersion(svcRaw[i]), Bundled: deps[s.Name], Pipeline: svcPipe[i],
+			BaseVer: chartVersion(svcRaw[i]), Bundled: deps[s.Name],
+			Pipeline: svcPB[i].Pipe, Commit: svcPB[i].Commit, SHAPipes: svcPB[i].Pipes,
 		}
 	}
 

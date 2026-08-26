@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -52,6 +54,7 @@ type glPipelineDetail struct {
 }
 
 type glJob struct {
+	ID         int        `json:"id"`
 	Name       string     `json:"name"`
 	Stage      string     `json:"stage"`
 	Status     string     `json:"status"`
@@ -231,5 +234,117 @@ func (c *glClient) latestPipeline(ctx context.Context, projectPath string) (glLa
 	var out glLatestPipeline
 	p := fmt.Sprintf("/projects/%s/pipelines/latest", url.QueryEscape(projectPath))
 	_, err := c.get(ctx, p, nil, &out)
+	return out, err
+}
+
+// --- commit + per-SHA pipeline story (rich delivery tiles) ---
+
+type glCommit struct {
+	ID           string    `json:"id"`
+	ShortID      string    `json:"short_id"`
+	Title        string    `json:"title"`
+	WebURL       string    `json:"web_url"`
+	AuthorName   string    `json:"author_name"`
+	AuthoredDate time.Time `json:"authored_date"`
+}
+
+// commitInfo returns one commit's headline for a project addressed by path.
+func (c *glClient) commitInfo(ctx context.Context, projectPath, sha string) (glCommit, error) {
+	var out glCommit
+	p := fmt.Sprintf("/projects/%s/repository/commits/%s", url.QueryEscape(projectPath), url.PathEscape(sha))
+	_, err := c.get(ctx, p, nil, &out)
+	return out, err
+}
+
+// glSHAPipeline is a pipeline in a ?sha= listing; Source separates the branch
+// run from tag/trigger runs of the same commit.
+type glSHAPipeline struct {
+	ID        int       `json:"id"`
+	Status    string    `json:"status"`
+	Ref       string    `json:"ref"`
+	Source    string    `json:"source"`
+	WebURL    string    `json:"web_url"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// pipelinesForSHA lists every pipeline that ran on one commit — the complete
+// build story of a SHA (branch run, RC tag run, re-runs).
+func (c *glClient) pipelinesForSHA(ctx context.Context, projectPath, sha string, limit int) ([]glSHAPipeline, error) {
+	var out []glSHAPipeline
+	p := fmt.Sprintf("/projects/%s/pipelines", url.QueryEscape(projectPath))
+	_, err := c.get(ctx, p, url.Values{"sha": {sha}, "per_page": {fmt.Sprint(limit)}}, &out)
+	return out, err
+}
+
+// --- write surface (bot-executed CI actions; see actions.go) ---
+
+// postJSON sends an authenticated POST and decodes the response. Non-2xx maps
+// to an error carrying GitLab's message so the UI can show the real reason.
+func (c *glClient) postJSON(ctx context.Context, path string, body, into any) error {
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/api/v4"+path, rdr)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := c.hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode > 299 {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 300))
+		return fmt.Errorf("gitlab %s: %s: %s", path, res.Status, strings.TrimSpace(string(b)))
+	}
+	if into != nil {
+		return json.NewDecoder(res.Body).Decode(into)
+	}
+	return nil
+}
+
+type glPlayedJob struct {
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Status   string `json:"status"`
+	WebURL   string `json:"web_url"`
+	Pipeline struct {
+		ID     int    `json:"id"`
+		WebURL string `json:"web_url"`
+	} `json:"pipeline"`
+}
+
+// playJob starts a manual job, passing job-level variables (the acting-as trace).
+func (c *glClient) playJob(ctx context.Context, projectPath string, jobID int, vars map[string]string) (glPlayedJob, error) {
+	attrs := make([]map[string]string, 0, len(vars))
+	for k, v := range vars {
+		attrs = append(attrs, map[string]string{"key": k, "value": v})
+	}
+	var out glPlayedJob
+	p := fmt.Sprintf("/projects/%s/jobs/%d/play", url.QueryEscape(projectPath), jobID)
+	err := c.postJSON(ctx, p, map[string]any{"job_variables_attributes": attrs}, &out)
+	return out, err
+}
+
+type glMember struct {
+	Username    string `json:"username"`
+	Name        string `json:"name"`
+	AccessLevel int    `json:"access_level"`
+}
+
+// members lists a group's effective membership (direct + inherited) — the
+// roster the acting-as picker offers.
+func (c *glClient) members(ctx context.Context, groupPath string) ([]glMember, error) {
+	var out []glMember
+	p := fmt.Sprintf("/groups/%s/members/all", url.QueryEscape(groupPath))
+	_, err := c.get(ctx, p, url.Values{"per_page": {"100"}}, &out)
 	return out, err
 }
