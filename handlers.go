@@ -167,6 +167,14 @@ func toPipelineJSON(p glPipeline) pipelineJSON {
 	}
 }
 
+type releaseJSON struct {
+	Tag        string    `json:"tag"`
+	Name       string    `json:"name,omitempty"`
+	ReleasedAt time.Time `json:"released_at"`
+	WebURL     string    `json:"web_url,omitempty"`
+	DaysAgo    int       `json:"days_ago"`
+}
+
 type projectJSON struct {
 	ID            int            `json:"id"`
 	Name          string         `json:"name"`
@@ -174,6 +182,12 @@ type projectJSON struct {
 	WebURL        string         `json:"web_url"`
 	DefaultBranch string         `json:"default_branch"`
 	Pipelines     []pipelineJSON `json:"pipelines"`
+	// LastActivityAt + LatestEvent + LatestRelease feed the fleet's
+	// activity-ordered view: what happened last, and how stale the release
+	// line is.
+	LastActivityAt time.Time     `json:"last_activity_at,omitempty"`
+	LatestEvent    *activityItem `json:"latest_event,omitempty"`
+	LatestRelease  *releaseJSON  `json:"latest_release,omitempty"`
 }
 
 type groupJSON struct {
@@ -204,9 +218,33 @@ func (a *api) overview(w http.ResponseWriter, r *http.Request) {
 				pls = nil // project row still renders; empty timeline is honest
 			}
 			pj := projectJSON{ID: p.ID, Name: p.Name, Path: p.PathWithNamespace,
-				WebURL: p.WebURL, DefaultBranch: p.DefaultBranch, Pipelines: []pipelineJSON{}}
+				WebURL: p.WebURL, DefaultBranch: p.DefaultBranch, Pipelines: []pipelineJSON{},
+				LastActivityAt: p.LastActivityAt}
 			for _, pl := range pls {
 				pj.Pipelines = append(pj.Pipelines, toPipelineJSON(pl))
+			}
+			// most recent human-readable happening (same cache the old
+			// activity feed used) + the release staleness signal
+			if evs, err := a.c.do(fmt.Sprintf("ev:%d", p.ID), ttlEvents, func() (any, error) {
+				return a.gl.events(ctx, p.ID, 50)
+			}); err == nil {
+				if list := evs.([]glEvent); len(list) > 0 {
+					it := eventItem(p, list[0])
+					pj.LatestEvent = &it
+				}
+			}
+			if rel, err := a.c.do(fmt.Sprintf("rel:%d", p.ID), 5*time.Minute, func() (any, error) {
+				r, err := a.gl.latestRelease(ctx, p.ID)
+				if err != nil {
+					return nil, err
+				}
+				return r, nil
+			}); err == nil {
+				if r, _ := rel.(*glRelease); r != nil {
+					pj.LatestRelease = &releaseJSON{Tag: r.TagName, Name: r.Name,
+						ReleasedAt: r.ReleasedAt, WebURL: r.Links.Self,
+						DaysAgo: int(time.Since(r.ReleasedAt).Hours() / 24)}
+				}
 			}
 			mu.Lock()
 			byGroup[p.Namespace.FullPath] = append(byGroup[p.Namespace.FullPath], pj)

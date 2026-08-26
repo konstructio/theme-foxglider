@@ -26,11 +26,12 @@ func newGLClient(base, token string) *glClient {
 }
 
 type glProject struct {
-	ID                int    `json:"id"`
-	Name              string `json:"name"`
-	PathWithNamespace string `json:"path_with_namespace"`
-	WebURL            string `json:"web_url"`
-	DefaultBranch     string `json:"default_branch"`
+	ID                int       `json:"id"`
+	Name              string    `json:"name"`
+	PathWithNamespace string    `json:"path_with_namespace"`
+	WebURL            string    `json:"web_url"`
+	DefaultBranch     string    `json:"default_branch"`
+	LastActivityAt    time.Time `json:"last_activity_at"`
 	Namespace         struct {
 		FullPath string `json:"full_path"`
 	} `json:"namespace"`
@@ -563,6 +564,28 @@ func (c *glClient) avatar(ctx context.Context, email string) (string, error) {
 	}
 	_, err := c.get(ctx, "/avatar", url.Values{"email": {email}, "size": {"48"}}, &out)
 	return out.AvatarURL, err
+}
+
+type glRelease struct {
+	TagName    string    `json:"tag_name"`
+	Name       string    `json:"name"`
+	ReleasedAt time.Time `json:"released_at"`
+	Links      struct {
+		Self string `json:"self"`
+	} `json:"_links"`
+}
+
+// latestRelease returns a project's newest release, or nil when none exist.
+func (c *glClient) latestRelease(ctx context.Context, projectID int) (*glRelease, error) {
+	var out []glRelease
+	p := fmt.Sprintf("/projects/%d/releases", projectID)
+	if _, err := c.get(ctx, p, url.Values{"per_page": {"1"}}, &out); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return &out[0], nil
 }
 
 // deleteBranch removes a branch ref. GitLab refuses protected branches (403)

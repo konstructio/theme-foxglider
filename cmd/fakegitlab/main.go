@@ -79,6 +79,14 @@ func main() {
 			json.NewEncoder(w).Encode(pipelines[id])
 		case len(parts) == 2 && parts[1] == "events":
 			json.NewEncoder(w).Encode(events(id, now))
+		case len(parts) == 2 && parts[1] == "releases":
+			if id == 4 { // charts: never released
+				fmt.Fprint(w, `[]`)
+				return
+			}
+			days := []int{0, 3, 11, 47, 0, 92, 8}[id%7]
+			fmt.Fprintf(w, `[{"tag_name":"v0.1%d.0","name":"v0.1%d.0","released_at":%q,"_links":{"self":"https://git.civo.com/x/-/releases/v0.1%d.0"}}]`,
+				id, id, now.Add(-time.Duration(days*24)*time.Hour).Format(time.RFC3339), id)
 		case len(parts) == 3 && parts[1] == "pipelines":
 			plid, _ := strconv.Atoi(parts[2])
 			json.NewEncoder(w).Encode(detail(pipelines[id], plid))
@@ -300,7 +308,8 @@ func proj(id int, name, group string) map[string]any {
 	return map[string]any{"id": id, "name": name,
 		"path_with_namespace": group + "/" + name,
 		"web_url":             "https://git.civo.com/" + group + "/" + name,
-		"default_branch":      "main", "namespace": map[string]any{"full_path": group}}
+		"default_branch":      "main", "namespace": map[string]any{"full_path": group},
+		"last_activity_at": time.Now().UTC().Add(-time.Duration(id*7) * time.Hour).Format(time.RFC3339)}
 }
 
 func detail(list []pl, plid int) map[string]any {

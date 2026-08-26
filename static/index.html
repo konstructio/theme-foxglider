@@ -136,6 +136,23 @@
   .tag-epic{color:var(--civo);border-color:var(--civo)}
   .br-name{color:var(--ink2)} .br-name:hover{color:var(--civo)}
   .br-act{padding:2px 6px;font-size:10px;gap:0}
+  a.br-ahead{text-decoration:none}
+  a.br-ahead:hover{filter:brightness(1.25)}
+  .fl-toggle{display:flex;gap:6px;margin:2px 0 14px}
+  .fl-mode{background:none;border:1px solid var(--line);border-radius:5px;color:var(--mut);font-size:12px;padding:4px 12px;cursor:pointer}
+  .fl-mode.on{color:var(--ink);border-color:var(--line2);background:var(--panel2)}
+  .fl-list{display:flex;flex-direction:column;gap:6px}
+  .fl-row{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:9px 14px;min-width:0}
+  .fl-row .tname{flex:none}
+  .fl-when{flex:none;font-size:11px;min-width:58px}
+  .fl-evwrap{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--ink2)}
+  .fl-ev{color:var(--ink2);text-decoration:none}
+  .fl-ev:hover{color:var(--ink)}
+  .rel-chip{display:inline-flex;align-items:center;gap:5px;flex:none;font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:3px 8px;text-decoration:none}
+  .rel-chip svg{width:10px;height:10px}
+  .rel-chip:hover{color:var(--ink2)}
+  .rel-stale{color:#fbbf24;border-color:#78560f}
+  .rel-none{opacity:.55}
   .br-act.danger:hover{color:#f87171;border-color:#b91c1c}
   .avstack{display:inline-flex;align-items:center}
   .avi{width:16px;height:16px;border-radius:50%;border:1px solid var(--line2);margin-left:-5px;background:var(--panel2);vertical-align:middle}
@@ -515,7 +532,9 @@ function laneRow(repo, list, lane) {
     <span class="br-chip">
       <a class="mono br-name" target="_blank" href="${b.web_url}" title="${esc(b.title || '')} — ${esc(b.author || '')}">${esc(b.name)}</a>
       <span class="mut">${b.when ? relTime(b.when) : ''}</span>
-      ${b.ahead > 0 ? `<span class="br-ahead" title="${b.ahead} commit(s) not yet merged back to main">↑${b.ahead} not in main</span>` : ''}
+      ${b.ahead > 0 ? (b.compare_url
+        ? `<a class="br-ahead" target="_blank" href="${b.compare_url}" title="${b.ahead} commit(s) not yet merged back to main — open the compare">↑${b.ahead} not in main</a>`
+        : `<span class="br-ahead" title="${b.ahead} commit(s) not yet merged back to main">↑${b.ahead} not in main</span>`) : ''}
       ${avs ? `<span class="avstack" title="wrote the commits not yet in main">${avs}</span>` : ''}
       ${b.ahead === 0 ? `<span class="br-merged" title="everything merged back">✓ merged</span>` : ''}
       ${b.macro_ver ? `<a class="br-macro mono" target="_blank" href="${b.macro_url}" title="the umbrella version this branch's line publishes">${ICON_SHIP} ${esc(b.macro_ver)}</a>` : ''}
@@ -562,12 +581,47 @@ function renderBranches(data) {
 // Fleet is a dense health wall: one status-colored tile per project + a compact
 // sparkline of its recent runs (oldest→newest). No time axis to trek across —
 // the read is "what's green/red/running across the fleet" at a glance.
+const EV_ICON = { push: '⇡', merge_request: '⛙', issue: '◔', pipeline: '▷', comment: '✎' };
+function evLine(ev) {
+  if (!ev) return '<span class="mut">no recent activity</span>';
+  const icon = EV_ICON[ev.type] || '·';
+  const who = ev.author ? ` — ${esc(ev.author)}` : '';
+  return `<a class="fl-ev" target="_blank" href="${ev.web_url}" title="${esc(ev.title)}">${icon} ${esc(ev.title.slice(0, 84))}</a><span class="mut">${who} · ${relTime(ev.at)}</span>`;
+}
+function relChip(rel) {
+  if (!rel) return `<span class="rel-chip rel-none mono">no releases yet</span>`;
+  const d = rel.days_ago;
+  const when = d === 0 ? 'today' : d === 1 ? '1 day ago' : `${d} days ago`;
+  return `<a class="rel-chip mono ${d >= 30 ? 'rel-stale' : ''}" target="_blank" href="${rel.web_url || '#'}" title="last release ${esc(rel.tag)} · ${esc(rel.released_at)}">${ICON_ROCKET} ${esc(rel.tag)} · ${when}</a>`;
+}
 function renderFleet(data) {
   if (!data.groups || !data.groups.length) {
     $('#view').innerHTML = '<div class="empty"><h2>No projects visible to this token.</h2></div>';
     return;
   }
-  $('#view').innerHTML = data.groups.map(g => `
+  const mode = state.fleetMode || 'groups';
+  const toggle = `<div class="fl-toggle">
+    <button class="fl-mode ${mode === 'groups' ? 'on' : ''}" data-mode="groups">groups</button>
+    <button class="fl-mode ${mode === 'activity' ? 'on' : ''}" data-mode="activity">recent activity</button>
+  </div>`;
+  if (mode === 'activity') {
+    const all = data.groups.flatMap(g => g.projects);
+    all.sort((a, b) => new Date(b.last_activity_at || 0) - new Date(a.last_activity_at || 0));
+    $('#view').innerHTML = toggle + `<div class="fl-list">` + all.map(p => {
+      const latest = p.pipelines[0];
+      const c = latest ? statusColor(latest.status) : 'var(--mut2)';
+      return `<div class="fl-row">
+        <span class="tdot" style="background:${c}"></span>
+        <a class="tname" href="${p.web_url}" target="_blank">${esc(p.name)}</a>
+        <span class="mono mut fl-when">${p.last_activity_at ? relTime(p.last_activity_at) : ''}</span>
+        <span class="fl-evwrap">${evLine(p.latest_event)}</span>
+        <span class="spacer"></span>
+        ${relChip(p.latest_release)}
+      </div>`;
+    }).join('') + `</div>`;
+    return;
+  }
+  $('#view').innerHTML = toggle + data.groups.map(g => `
     <div class="section-h">${esc(g.path)}<span></span></div>
     <div class="fleet-grid">
     ${g.projects.map(p => {
@@ -723,6 +777,8 @@ function featureSlug(title) {
   return pick.slice(0, 16);
 }
 document.addEventListener('click', e => {
+  const m = e.target.closest('.fl-mode');
+  if (m) { state.fleetMode = m.dataset.mode; if (state.overview) renderFleet(state.overview); return; }
   const x = e.target.closest('#explain-t');
   if (x) { e.preventDefault(); const p = $('#explain'); if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none'; return; }
   const b = e.target.closest('.abtn'); if (!b || !b.dataset.act) return;

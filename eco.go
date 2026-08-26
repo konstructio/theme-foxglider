@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.5.1"
+const themeVersion = "2.6.0"
 
 const ttlEco = 45 * time.Second
 
@@ -722,6 +722,9 @@ type branchJSON struct {
 	Ahead *int `json:"ahead,omitempty"`
 	// Committers: who wrote the unmerged commits (hotfix lanes, newest first).
 	Committers []committerJSON `json:"committers,omitempty"`
+	// CompareURL: GitLab's main...branch compare page — the click-through for
+	// the ↑N badge.
+	CompareURL string `json:"compare_url,omitempty"`
 	// MacroVer/MacroURL: the end-result umbrella version this branch's line
 	// publishes (newest macro tag whose prerelease id matches the branch;
 	// main → the newest rc), with a link to that tag.
@@ -801,6 +804,7 @@ func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
 					}
 					ah := n
 					out[i].Ahead = &ah
+					out[i].CompareURL = a.gl.base + "/" + s.Project + "/-/compare/main..." + url.PathEscape(out[i].Name)
 					for _, p := range people {
 						out[i].Committers = append(out[i].Committers,
 							committerJSON{Name: p.AuthorName, Avatar: a.avatarFor(ctx, p.AuthorEmail)})
