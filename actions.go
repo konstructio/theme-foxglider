@@ -41,7 +41,11 @@ var actionJobs = map[string]string{
 type actions struct {
 	gl    *glClient // write-scoped bot client; nil = actions disabled
 	topo  topology
-	actor string // server-set attribution for every action
+	actor string // fallback attribution when no identity is communicated
+
+	// markHot flips the project onto the fast cache lane after a successful
+	// action, so the delivery tiles pick up the new commit/SHA quickly.
+	markHot func(project string)
 }
 
 func newActions(read *glClient, topo topology, groups []string) *actions {
@@ -163,6 +167,9 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, 502, "new pipeline: "+err.Error())
 				return
 			}
+			if x.markHot != nil {
+				x.markHot(req.Project)
+			}
 			log.Printf("ACTION %s project=%s mode=fresh-pipeline pipeline=%d actor=%s remote=%s",
 				req.Action, req.Project, pl.ID, actor, r.RemoteAddr)
 			writeJSON(w, map[string]any{
@@ -185,6 +192,9 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, 502, "play: "+err.Error())
 		return
+	}
+	if x.markHot != nil {
+		x.markHot(req.Project)
 	}
 	// One greppable audit line per action, in the platform runtime logs.
 	log.Printf("ACTION %s project=%s job=%s(%d) pipeline=%d actor=%s remote=%s",

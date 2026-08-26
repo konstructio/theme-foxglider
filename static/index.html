@@ -502,6 +502,8 @@ function openActionModal(action, project) {
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw body;
       $('#act-out').innerHTML = `✓ started — <a target="_blank" href="${body.job_url}">job</a> · <a target="_blank" href="${body.pipeline_url}">pipeline</a>`;
+      state.burstUntil = Date.now() + 120000; // fast refresh while the new SHA lands
+      poll();
       setTimeout(() => { closeActModal(); refresh(); }, 2500);
     } catch (err) { $('#act-out').textContent = '✗ ' + errMsg(err); }
   };
@@ -509,9 +511,13 @@ function openActionModal(action, project) {
 function closeActModal() { $('#actmodal').style.display = 'none'; $('#actmodal').innerHTML = ''; }
 
 let pollTimer;
+// After an action fires, poll fast for two minutes: the trigger job takes
+// ~30-40s to push its commit, and the backend fast-lanes the project's cache
+// over the same window — together the tile picks up the new SHA in seconds.
 function poll() {
   clearTimeout(pollTimer);
-  pollTimer = setTimeout(async () => { if (!document.hidden) await refresh(); poll(); }, 20000);
+  const burst = Date.now() < (state.burstUntil || 0);
+  pollTimer = setTimeout(async () => { if (!document.hidden) await refresh(); poll(); }, burst ? 5000 : 20000);
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', e => {

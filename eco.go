@@ -21,7 +21,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "1.4.1"
+const themeVersion = "1.4.2"
 
 const ttlEco = 45 * time.Second
 
@@ -288,7 +288,11 @@ func (a *api) cachedTags(ctx context.Context, proj string) []glTag {
 }
 
 func (a *api) latestPipe(ctx context.Context, proj string) *pipelineJSON {
-	v, err := a.c.do("lp:"+proj, ttlEco, func() (any, error) {
+	ttl := ttlEco
+	if a.isHot(proj) {
+		ttl = 5 * time.Second
+	}
+	v, err := a.c.do("lp:"+proj, ttl, func() (any, error) {
 		return a.gl.latestPipeline(ctx, proj)
 	})
 	if err != nil {
@@ -337,7 +341,11 @@ func (a *api) cachedSHAPipes(ctx context.Context, proj, sha string) []shaPipeJSO
 	if sha == "" {
 		return nil
 	}
-	v, err := a.c.do("shapl:"+proj+":"+sha, ttlEco, func() (any, error) {
+	ttl := ttlEco
+	if a.isHot(proj) {
+		ttl = 5 * time.Second
+	}
+	v, err := a.c.do("shapl:"+proj+":"+sha, ttl, func() (any, error) {
 		return a.gl.pipelinesForSHA(ctx, proj, sha, 8)
 	})
 	if err != nil {

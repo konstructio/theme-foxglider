@@ -26,11 +26,18 @@ type api struct {
 	c      *cache
 	topo   topology
 	act    *actions
+
+	// hot marks projects with a just-fired action: their pipeline reads take a
+	// 5s cache lane (instead of 45s) so the tile reflects the new commit/SHA
+	// as soon as the trigger job pushes it.
+	hotMu sync.Mutex
+	hot   map[string]time.Time
 }
 
 func newAPI(gl *glClient, groups []string) http.Handler {
-	a := &api{gl: gl, groups: groups, c: newCache(), topo: defaultTopology()}
+	a := &api{gl: gl, groups: groups, c: newCache(), topo: defaultTopology(), hot: map[string]time.Time{}}
 	a.act = newActions(gl, a.topo, groups)
+	a.act.markHot = a.markHot
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/overview", a.guard(a.overview))
 	mux.HandleFunc("GET /api/ecosystem", a.guard(a.ecosystem))
@@ -364,4 +371,27 @@ func (a *api) activity(w http.ResponseWriter, r *http.Request) {
 		items = []activityItem{}
 	}
 	writeJSON(w, map[string]any{"items": items})
+}
+
+// markHot puts a project on the fast cache lane for two minutes after an
+// action fires — long enough to cover the trigger job's push plus the new
+// pipeline's first stages.
+func (a *api) markHot(project string) {
+	a.hotMu.Lock()
+	a.hot[project] = time.Now().Add(2 * time.Minute)
+	a.hotMu.Unlock()
+}
+
+func (a *api) isHot(project string) bool {
+	a.hotMu.Lock()
+	defer a.hotMu.Unlock()
+	until, ok := a.hot[project]
+	if !ok {
+		return false
+	}
+	if time.Now().After(until) {
+		delete(a.hot, project)
+		return false
+	}
+	return true
 }
