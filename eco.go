@@ -21,7 +21,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "1.9.0"
+const themeVersion = "1.9.1"
 
 const ttlEco = 45 * time.Second
 
@@ -306,9 +306,11 @@ func (a *api) latestPipe(ctx context.Context, proj string) *pipelineJSON {
 			return pl, err
 		}
 		// [skip ci] version-set commits leave "skipped" as the newest pipeline —
-		// noise, not news. Surface the newest REAL run instead.
+		// noise, not news. Surface the newest REAL run instead, across ALL refs:
+		// the macro's true latest is usually its RC tag pipeline, and main can
+		// be an unbroken streak of skips.
 		if pl.Status == "skipped" {
-			if recent, err := a.gl.recentPipelines(ctx, proj, pl.Ref, "", 10); err == nil {
+			if recent, err := a.gl.recentPipelines(ctx, proj, "", "", 20); err == nil {
 				for _, r := range recent {
 					if r.Status == "skipped" {
 						continue
