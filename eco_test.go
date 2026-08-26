@@ -572,16 +572,20 @@ func TestMRStateLabel(t *testing.T) {
 func TestOrgLogo(t *testing.T) {
 	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasPrefix(r.URL.EscapedPath(), "/api/v4/groups/"):
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"name":"Metaphor","full_path":"civo/metaphor","avatar_url":"%s/logo.png","web_url":"http://gl/groups/civo/metaphor"}`, "http://"+r.Host)
-		case r.URL.Path == "/logo.png":
+		case strings.HasSuffix(r.URL.EscapedPath(), "/avatar") && strings.Contains(r.URL.EscapedPath(), "/groups/"):
 			if r.Header.Get("PRIVATE-TOKEN") != "tok" {
 				w.WriteHeader(401)
 				return
 			}
-			w.Header().Set("Content-Type", "image/png")
-			w.Write([]byte("PNGBYTES"))
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Write([]byte("\x89PNG\r\n\x1a\nrest"))
+		case strings.HasPrefix(r.URL.EscapedPath(), "/api/v4/groups/"):
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"name":"Metaphor","full_path":"civo/metaphor","avatar_url":"%s/logo.png","web_url":"http://gl/groups/civo/metaphor"}`, "http://"+r.Host)
+		case r.URL.Path == "/logo.png":
+			// the web-session route: token headers are ignored → 401 always,
+			// exactly like real GitLab /uploads paths
+			w.WriteHeader(401)
 		default:
 			w.WriteHeader(404)
 		}
@@ -602,7 +606,7 @@ func TestOrgLogo(t *testing.T) {
 	res, _ = http.Get(srv.URL + "/api/org-logo")
 	b := make([]byte, 8)
 	res.Body.Read(b)
-	if res.StatusCode != 200 || res.Header.Get("Content-Type") != "image/png" || string(b) != "PNGBYTES" {
-		t.Fatalf("logo = %d %s %q", res.StatusCode, res.Header.Get("Content-Type"), b)
+	if res.StatusCode != 200 || res.Header.Get("Content-Type") != "image/png" {
+		t.Fatalf("logo = %d %s (want sniffed image/png from octet-stream)", res.StatusCode, res.Header.Get("Content-Type"))
 	}
 }

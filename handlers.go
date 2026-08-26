@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -487,9 +488,15 @@ func (a *api) orgLogo(w http.ResponseWriter, r *http.Request) {
 		if g.AvatarURL == "" {
 			return nil, fmt.Errorf("group has no avatar")
 		}
-		b, ct, err := a.gl.fetchBytes(ctx, g.AvatarURL)
+		// NOT g.AvatarURL: /uploads/... is a web-session route that 401s
+		// token-header requests. The API's avatar endpoint honors the token,
+		// but answers octet-stream — sniff the real type from the bytes.
+		b, ct, err := a.gl.fetchBytes(ctx, a.gl.base+"/api/v4/groups/"+url.QueryEscape(a.orgGroup())+"/avatar")
 		if err != nil {
 			return nil, err
+		}
+		if ct == "" || ct == "application/octet-stream" {
+			ct = http.DetectContentType(b)
 		}
 		return img{b, ct}, nil
 	})
