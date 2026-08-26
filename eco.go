@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.5.0"
+const themeVersion = "2.5.1"
 
 const ttlEco = 45 * time.Second
 
@@ -810,6 +810,9 @@ func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
 			})
 			if err == nil {
 				for _, bj := range v.([]branchJSON) {
+					if a.branchDeleted(s.Project, bj.Name) {
+						continue
+					}
 					switch {
 					case bj.Name == "main":
 						rb.Main = append(rb.Main, bj)

@@ -395,6 +395,12 @@ func TestDeleteBranch(t *testing.T) {
 		case strings.Contains(p, "/repository/branches/") && r.Method == "DELETE":
 			deleted[p[strings.Index(p, "branches/")+len("branches/"):]] = true
 			w.WriteHeader(204)
+		case strings.HasSuffix(p, "/repository/branches"):
+			// deliberately STALE: still lists hotfix-done after its delete —
+			// GitLab's branch list lags DELETEs by a few seconds.
+			w.Write([]byte(`[{"name":"main","web_url":"http://gl/t/m","commit":{"short_id":"aa","title":"x","author_name":"jd","committed_date":"2026-08-26T10:00:00Z"}},{"name":"hotfix-done","web_url":"http://gl/t/hd","commit":{"short_id":"bb","title":"y","author_name":"jd","committed_date":"2026-08-26T09:00:00Z"}}]`))
+		case strings.HasSuffix(p, "/repository/tags"):
+			w.Write([]byte(`[]`))
 		default:
 			w.WriteHeader(404)
 		}
@@ -421,6 +427,26 @@ func TestDeleteBranch(t *testing.T) {
 	}
 	if !deleted["hotfix-done"] {
 		t.Fatal("merged branch was not deleted upstream")
+	}
+
+	// upstream still lists it (stale) — the view must not resurrect it
+	bres, err := http.Get(srv.URL + "/api/branches")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bout struct {
+		Repos []repoBranches `json:"repos"`
+	}
+	json.NewDecoder(bres.Body).Decode(&bout)
+	for _, rb := range bout.Repos {
+		if rb.Project != "civo/metaphor/metaphor" {
+			continue
+		}
+		for _, b := range rb.Hotfix {
+			if b.Name == "hotfix-done" {
+				t.Fatal("deleted branch resurrected by stale upstream list")
+			}
+		}
 	}
 
 	// unmerged branch without confirm: 409 with the live ahead count

@@ -52,6 +52,9 @@ type actions struct {
 	// dropBranches invalidates the branches cache for a project after a
 	// mutation (branch deleted), so the next Branches render is honest.
 	dropBranches func(project string)
+	// noteDeleted tombstones a deleted branch so renders skip it while
+	// GitLab's branch list catches up (it can lag the DELETE by seconds).
+	noteDeleted func(project, branch string)
 }
 
 func newActions(read *glClient, topo topology, groups []string) *actions {
@@ -275,6 +278,9 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 		if err := x.gl.deleteBranch(ctx, req.Project, br); err != nil {
 			writeErr(w, 502, "delete failed: "+err.Error())
 			return
+		}
+		if x.noteDeleted != nil {
+			x.noteDeleted(req.Project, br)
 		}
 		if x.dropBranches != nil {
 			x.dropBranches(req.Project)

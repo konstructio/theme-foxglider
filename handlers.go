@@ -39,10 +39,16 @@ type api struct {
 	// (running → success) can hot-lane the macro: the finished run's dep-bump
 	// job is already pushing the next macro RC tag.
 	lastSvc map[string]string
+	// recentDel tombstones just-deleted branches: GitLab's branch list can
+	// serve a stale copy for a few seconds after a DELETE, and re-caching
+	// that would resurrect the branch on screen for a minute. We KNOW it's
+	// gone (the DELETE returned 2xx) — renders skip it while upstream
+	// catches up.
+	recentDel map[string]time.Time
 }
 
 func newAPI(gl *glClient, groups []string) http.Handler {
-	a := &api{gl: gl, groups: groups, c: newCache(), topo: loadTopology(), hot: map[string]time.Time{}, lastSvc: map[string]string{}}
+	a := &api{gl: gl, groups: groups, c: newCache(), topo: loadTopology(), hot: map[string]time.Time{}, lastSvc: map[string]string{}, recentDel: map[string]time.Time{}}
 	// Cross-group delivery files (e.g. konstruct's internal targetRevision in
 	// civo/platform/civo-gitops) may need their own read credential.
 	if tok := os.Getenv("GITLAB_TOKEN_DELIVERY"); tok != "" {
@@ -51,6 +57,7 @@ func newAPI(gl *glClient, groups []string) http.Handler {
 	a.act = newActions(gl, a.topo, groups)
 	a.act.markHot = a.markHot
 	a.act.dropBranches = func(project string) { a.c.drop("br:" + project) }
+	a.act.noteDeleted = a.noteBranchDeleted
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/overview", a.guard(a.overview))
 	mux.HandleFunc("GET /api/ecosystem", a.guard(a.ecosystem))
@@ -388,6 +395,28 @@ func (a *api) activity(w http.ResponseWriter, r *http.Request) {
 		items = []activityItem{}
 	}
 	writeJSON(w, map[string]any{"items": items})
+}
+
+// noteBranchDeleted / branchDeleted implement the delete tombstone (2 min —
+// far past any upstream list staleness).
+func (a *api) noteBranchDeleted(project, branch string) {
+	a.hotMu.Lock()
+	a.recentDel[project+"\x00"+branch] = time.Now().Add(2 * time.Minute)
+	a.hotMu.Unlock()
+}
+
+func (a *api) branchDeleted(project, branch string) bool {
+	a.hotMu.Lock()
+	defer a.hotMu.Unlock()
+	until, ok := a.recentDel[project+"\x00"+branch]
+	if !ok {
+		return false
+	}
+	if time.Now().After(until) {
+		delete(a.recentDel, project+"\x00"+branch)
+		return false
+	}
+	return true
 }
 
 // markHot puts a project on the fast cache lane for two minutes after an
