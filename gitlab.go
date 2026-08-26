@@ -377,10 +377,12 @@ func (c *glClient) createPipeline(ctx context.Context, projectPath, ref string, 
 // --- merge-request surface (the deliver action merges the dev bump MR) ---
 
 type glMR struct {
-	IID    int    `json:"iid"`
-	Title  string `json:"title"`
-	State  string `json:"state"`
-	WebURL string `json:"web_url"`
+	IID            int    `json:"iid"`
+	Title          string `json:"title"`
+	State          string `json:"state"`
+	WebURL         string `json:"web_url"`
+	Draft          bool   `json:"draft"`
+	UserNotesCount int    `json:"user_notes_count"`
 }
 
 // openMRs lists a project's open merge requests, newest first.

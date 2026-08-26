@@ -148,8 +148,13 @@
   .fs-upd{color:#34d399;border-color:#14532d;background:rgba(52,211,153,.07)}
   .fs-join{color:var(--mut);border-color:var(--line2)}
   .fs-main{color:var(--mut2);border-color:var(--line)}
-  .fs-mr{color:#93c5fd;text-decoration:none;font-size:11px}
-  .fs-mr:hover{text-decoration:underline}
+  .fs-mr{color:#93c5fd;text-decoration:none;font-size:10.5px;border:1px solid var(--line2);border-radius:3px;padding:1px 7px}
+  .fs-mr:hover{filter:brightness(1.2)}
+  .mr-draft{color:var(--mut);border-color:var(--line2)}
+  .mr-ready{color:#34d399;border-color:#14532d}
+  .mr-feedback{color:#fbbf24;border-color:#78560f}
+  .mr-merged{color:#c4b5fd;border-color:#4c3a8f}
+  .mr-closed{color:var(--mut2);border-color:var(--line)}
   .term{position:relative;margin-top:10px;background:#0d1117;border:1px solid var(--line);border-radius:6px;padding:9px 12px;font-size:12px}
   .term-c{color:var(--mut2);font-family:var(--mono)}
   .term-l{color:#7ee787;margin-top:2px;user-select:all}
@@ -602,6 +607,9 @@ function laneRow(repo, list, lane) {
 // separate features even though both are epic-* — grouping is by branch name.
 function featureGroup(f) {
   const act = state.act && state.act.enabled;
+  // the feature action is idempotent (join + ensure charts branch + draft MR
+  // if missing) — so every convenience button here is the same safe call
+  const joined = (f.services || []).find(sv => sv.state !== 'main');
   const stBadge = st => st === 'updated'
     ? '<span class="fs-b fs-upd" title="the feature\'s charts branch pins this service at a feature version">updated by feature</span>'
     : st === 'joined'
@@ -611,20 +619,26 @@ function featureGroup(f) {
     <div class="fs-row">
       <span class="mono fs-name">${sv.web_url ? `<a target="_blank" href="${sv.web_url}">${esc(sv.name)}</a>` : esc(sv.name)}</span>
       ${stBadge(sv.state)}
-      ${sv.mr_iid ? `<a class="fs-mr mono" target="_blank" href="${sv.mr_url}" title="the carrying merge request">!${sv.mr_iid}</a>` : ''}
+      ${sv.mr_iid ? `<a class="fs-mr mono mr-${esc(sv.mr_state || 'ready')}" target="_blank" href="${sv.mr_url}" title="the carrying merge request — ${esc(sv.mr_state || 'ready')}">!${sv.mr_iid} · ${esc(sv.mr_state || 'ready')}</a>`
+        : act && sv.state !== 'main' ? `<button class="abtn br-act featfix" data-proj="${esc(sv.project)}" data-branch="${esc(f.branch)}" title="draft the carrying merge request for ${esc(sv.name)}">${ICON_MR} draft MR</button>` : ''}
       <span class="mut">${sv.when ? relTime(sv.when) : ''}</span>
       <span class="spacer"></span>
       ${act && sv.state !== 'main' ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(sv.project)}" data-ref="${esc(f.branch)}" title="run ${esc(f.branch)}'s CI on ${esc(sv.name)}">${ICON_SCOPE}</button>
-      <button class="abtn warn br-act" data-act="release" data-proj="${esc(sv.project)}" data-ref="${esc(f.branch)}" title="release from ${esc(f.branch)}">${ICON_ROCKET}</button>` : ''}
+      <button class="abtn warn br-act" data-act="release" data-proj="${esc(sv.project)}" data-ref="${esc(f.branch)}" title="release from ${esc(f.branch)}">${ICON_ROCKET}</button>`
+      : act && sv.state === 'main' ? `<button class="abtn br-act featfix" data-proj="${esc(sv.project)}" data-branch="${esc(f.branch)}" title="join ${esc(sv.name)} to this feature (creates its branch + drafts the MR)">${ICON_BRANCH} join</button>` : ''}
     </div>`).join('');
   return `<div class="feat-g">
     <div class="feat-h">
       <span class="tf-ic">${ICON_BRANCH}</span>
       <span class="mono feat-name">${esc(f.branch)}</span>
+      <button class="copy" data-sha="git fetch origin ${esc(f.branch)} && git checkout ${esc(f.branch)}" title="copy the fetch+checkout commands for any of these repos">⧉</button>
       ${f.epic_iid ? `<a class="pv-epic" target="_blank" href="${f.epic_url}">&${f.epic_iid}</a>` : ''}
       ${f.macro_ver ? `<a class="br-macro mono" target="_blank" href="${f.macro_url}" title="the feature umbrella this branch publishes">${ICON_SHIP} ${esc(f.macro_ver)}</a>` : ''}
       <span class="mut">${f.when ? relTime(f.when) : ''}</span>
-      ${f.charts ? '' : '<span class="mut" style="font-size:10.5px">· no charts branch yet</span>'}
+      ${f.charts ? ''
+        : act && joined ? `<button class="abtn br-act featfix" data-proj="${esc(joined.project)}" data-branch="${esc(f.branch)}" title="late-create the same-named charts branch so the feature umbrella line exists">${ICON_BRANCH} create charts branch</button>`
+        : '<span class="mut" style="font-size:10.5px">· no charts branch yet (created on first publish)</span>'}
+      <span class="fs-out mono mut"></span>
     </div>
     ${rows}
   </div>`;
@@ -819,6 +833,7 @@ window.addEventListener('message', e => {
 })(0);
 // actBtns renders the two guarded actions when the write token is configured.
 const ICON_SCOPE = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M22 12h-4M6 12H2M12 6V2M12 22v-4"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>';
+const ICON_MR = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg>';
 const ICON_TRASH = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>';
 const ICON_ROCKET = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>';
 // watchChip shows, on the actioned card, that the theme is actively polling
@@ -877,7 +892,23 @@ function featureSlug(title) {
   const pick = words.find(w => !SLUG_STOP.has(w) && w.length > 2) || words[0] || '';
   return pick.slice(0, 16);
 }
-document.addEventListener('click', e => {
+document.addEventListener('click', async e => {
+  const ff = e.target.closest('.featfix');
+  if (ff) {
+    const g = ff.closest('.feat-g'), out = g?.querySelector('.fs-out');
+    ff.disabled = true; if (out) out.textContent = 'working…';
+    try {
+      const hdrs = { 'Content-Type': 'application/json' };
+      if (state.konstructUser) hdrs['X-Konstruct-Actor'] = state.konstructUser;
+      const res = await fetch('/api/actions/run', { method: 'POST', headers: hdrs,
+        body: JSON.stringify({ action: 'feature', project: ff.dataset.proj, branch: ff.dataset.branch }) });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw body;
+      if (out) out.innerHTML = `✓ done${body.mr ? ` · <a target="_blank" href="${body.mr.web_url}">!${body.mr.iid}</a>` : ''}`;
+      setTimeout(refresh, 1200);
+    } catch (err) { ff.disabled = false; if (out) out.textContent = '✗ ' + errMsg(err); }
+    return;
+  }
   const m = e.target.closest('.fl-mode');
   if (m) { state.fleetMode = m.dataset.mode; if (state.overview) renderFleet(state.overview); return; }
   const x = e.target.closest('#explain-t');

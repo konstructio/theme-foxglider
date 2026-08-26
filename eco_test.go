@@ -535,3 +535,33 @@ func TestOverviewActivity(t *testing.T) {
 		t.Fatalf("latest_release = %+v", p.LatestRelease)
 	}
 }
+
+// TestMRStateLabel pins the chip vocabulary: merged/closed outrank draft,
+// draft outranks feedback, comments flip ready→feedback.
+func TestMRStateLabel(t *testing.T) {
+	cases := []struct {
+		mr   glMR
+		want string
+	}{
+		{glMR{State: "merged", Draft: true}, "merged"},
+		{glMR{State: "closed"}, "closed"},
+		{glMR{State: "opened", Draft: true, UserNotesCount: 3}, "draft"},
+		{glMR{State: "opened", Title: "Draft: epic-x"}, "draft"},
+		{glMR{State: "opened", UserNotesCount: 2}, "feedback"},
+		{glMR{State: "opened"}, "ready"},
+	}
+	for _, c := range cases {
+		if got := mrStateLabel(c.mr); got != c.want {
+			t.Fatalf("%+v → %q (want %q)", c.mr, got, c.want)
+		}
+	}
+	// bestMR: an open MR beats a newer merged one; merged beats closed
+	open := glMR{IID: 2, State: "opened"}
+	merged := glMR{IID: 1, State: "merged"}
+	if m := bestMR([]glMR{merged, open}); m.IID != 2 {
+		t.Fatalf("bestMR = %+v", m)
+	}
+	if m := bestMR([]glMR{{IID: 3, State: "closed"}, merged}); m.IID != 1 {
+		t.Fatalf("bestMR merged-over-closed = %+v", m)
+	}
+}

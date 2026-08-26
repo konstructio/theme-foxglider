@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.8.0"
+const themeVersion = "2.9.0"
 
 const ttlEco = 45 * time.Second
 
@@ -889,11 +889,12 @@ type featSvcJSON struct {
 	// State: "updated" — the feature's charts branch pins this service at a
 	// feature version; "joined" — the branch exists but the pin is still
 	// stable; "main" — no branch, the service rides main inside this feature.
-	State  string `json:"state"`
-	When   string `json:"when,omitempty"`
-	WebURL string `json:"web_url,omitempty"`
-	MRIID  int    `json:"mr_iid,omitempty"`
-	MRURL  string `json:"mr_url,omitempty"`
+	State   string `json:"state"`
+	When    string `json:"when,omitempty"`
+	WebURL  string `json:"web_url,omitempty"`
+	MRIID   int    `json:"mr_iid,omitempty"`
+	MRURL   string `json:"mr_url,omitempty"`
+	MRState string `json:"mr_state,omitempty"`
 }
 
 type featureJSON struct {
@@ -905,6 +906,39 @@ type featureJSON struct {
 	MacroURL string        `json:"macro_url,omitempty"`
 	When     string        `json:"when,omitempty"`
 	Services []featSvcJSON `json:"services"`
+}
+
+// mrStateLabel maps an MR to the human read on the chip: merged/closed win,
+// then draft, then "feedback" once anyone has commented, else ready.
+func mrStateLabel(m glMR) string {
+	switch {
+	case m.State == "merged":
+		return "merged"
+	case m.State == "closed":
+		return "closed"
+	case m.Draft || strings.HasPrefix(m.Title, "Draft:"):
+		return "draft"
+	case m.UserNotesCount > 0:
+		return "feedback"
+	default:
+		return "ready"
+	}
+}
+
+// bestMR picks the MR that best represents a branch: an open one beats a
+// merged one beats anything else; ties go to the newest (list order).
+func bestMR(list []glMR) *glMR {
+	for _, st := range []string{"opened", "merged"} {
+		for i := range list {
+			if list[i].State == st {
+				return &list[i]
+			}
+		}
+	}
+	if len(list) > 0 {
+		return &list[0]
+	}
+	return nil
 }
 
 // assembleFeatures groups epic-* branches into features: one entry per branch
@@ -996,7 +1030,9 @@ func (a *api) assembleFeatures(ctx context.Context, t topology, repos []repoBran
 					return a.gl.mrsBySource(bctx, svc.Project, name)
 				}); err == nil {
 					if list, _ := v.([]glMR); len(list) > 0 {
-						fs.MRIID, fs.MRURL = list[0].IID, list[0].WebURL
+						if m := bestMR(list); m != nil {
+							fs.MRIID, fs.MRURL, fs.MRState = m.IID, m.WebURL, mrStateLabel(*m)
+						}
 					}
 				}
 			}

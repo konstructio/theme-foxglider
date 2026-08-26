@@ -251,7 +251,7 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"iid":88,"title":%q,"state":"opened","web_url":"https://git.civo.com/x/-/merge_requests/88"}`, body["title"])
 	case strings.HasSuffix(p, "/merge_requests") && r.Method == "GET" && r.URL.Query().Get("source_branch") != "":
 		if r.URL.Query().Get("source_branch") == "epic-101-aurora" {
-			fmt.Fprint(w, `[{"iid":12,"title":"Draft: epic-101-aurora","state":"opened","web_url":"https://git.civo.com/x/-/merge_requests/12"}]`)
+			fmt.Fprint(w, `[{"iid":12,"title":"Draft: epic-101-aurora","state":"opened","draft":true,"user_notes_count":2,"web_url":"https://git.civo.com/x/-/merge_requests/12"}]`)
 			return
 		}
 		fmt.Fprint(w, `[]`)
