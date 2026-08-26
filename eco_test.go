@@ -115,6 +115,12 @@ func fakeEcoGitLab(t *testing.T) *httptest.Server {
 			w.Write([]byte("spec:\n  source:\n    targetRevision: 0.2.0-rc.2\n"))
 		case strings.HasSuffix(p, "/repository/tags"):
 			w.Write([]byte(`[{"name":"metaphor-v0.2.0-rc.4"},{"name":"metaphor-v0.2.0-rc.3"}]`))
+		case strings.HasSuffix(p, "/pipelines/latest") && strings.Contains(p, "dashboard-manager"):
+			w.Write([]byte(`{"id":150,"status":"skipped","ref":"main","sha":"deadbeefcafe","web_url":"http://gl/x/-/pipelines/150","created_at":"2026-08-25T00:03:00Z","updated_at":"2026-08-25T00:03:00Z"}`))
+		case strings.HasSuffix(p, "/pipelines/98"):
+			w.Write([]byte(`{"id":98,"status":"success","ref":"main","sha":"deadbeefcafe","web_url":"http://gl/x/-/pipelines/98","created_at":"2026-08-25T00:00:00Z","updated_at":"2026-08-25T00:01:30Z","user":{"name":"Jared Edwards","username":"jared","avatar_url":"http://gl/avatar/jared.png"}}`))
+		case strings.HasSuffix(p, "/pipelines") && r.URL.Query().Get("sha") == "" && strings.Contains(p, "dashboard-manager"):
+			w.Write([]byte(`[{"id":150,"status":"skipped","ref":"main","web_url":"http://gl/x/-/pipelines/150","updated_at":"2026-08-25T00:03:00Z"},{"id":98,"status":"success","ref":"main","web_url":"http://gl/x/-/pipelines/98","updated_at":"2026-08-25T00:01:30Z"}]`))
 		case strings.HasSuffix(p, "/pipelines/latest"):
 			w.Write([]byte(`{"id":99,"status":"success","ref":"main","sha":"deadbeefcafe","web_url":"http://gl/x/-/pipelines/99","created_at":"2026-08-25T00:00:00Z","updated_at":"2026-08-25T00:02:00Z","user":{"name":"John Dietz","username":"jd","avatar_url":"http://gl/avatar/jd.png"}}`))
 		case strings.Contains(p, "/repository/commits/deadbeefcafe"):
@@ -175,6 +181,14 @@ func TestEcosystem(t *testing.T) {
 	}
 	if s := byName["metaphor-dashboard-manager"]; s.Bundled != "0.12.0-rc.15" {
 		t.Fatalf("dashboard svc = %+v", s)
+	}
+	if s := byName["metaphor-dashboard-manager"]; s.Pipeline == nil || s.Pipeline.Status != "success" || s.Pipeline.ID != 98 {
+		t.Fatalf("skipped latest must fall back to the newest real run, got %+v", s.Pipeline)
+	}
+	for _, sp := range byName["metaphor"].SHAPipes {
+		if sp.Status == "skipped" {
+			t.Fatalf("skipped runs must not appear in sha chips: %+v", sp)
+		}
 	}
 	if len(eco.Delivery) != 1 {
 		t.Fatalf("delivery = %+v", eco.Delivery)

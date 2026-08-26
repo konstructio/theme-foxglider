@@ -21,7 +21,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "1.8.0"
+const themeVersion = "1.9.0"
 
 const ttlEco = 45 * time.Second
 
@@ -301,7 +301,26 @@ func (a *api) latestPipe(ctx context.Context, proj string) *pipelineJSON {
 		ttl = 5 * time.Second
 	}
 	v, err := a.c.do("lp:"+proj, ttl, func() (any, error) {
-		return a.gl.latestPipeline(ctx, proj)
+		pl, err := a.gl.latestPipeline(ctx, proj)
+		if err != nil {
+			return pl, err
+		}
+		// [skip ci] version-set commits leave "skipped" as the newest pipeline —
+		// noise, not news. Surface the newest REAL run instead.
+		if pl.Status == "skipped" {
+			if recent, err := a.gl.recentPipelines(ctx, proj, pl.Ref, "", 10); err == nil {
+				for _, r := range recent {
+					if r.Status == "skipped" {
+						continue
+					}
+					if full, err := a.gl.pipelineByPath(ctx, proj, r.ID); err == nil && full.ID != 0 {
+						return full, nil
+					}
+					break
+				}
+			}
+		}
+		return pl, nil
 	})
 	if err != nil {
 		return nil
@@ -362,6 +381,9 @@ func (a *api) cachedSHAPipes(ctx context.Context, proj, sha string) []shaPipeJSO
 	pls := v.([]glSHAPipeline)
 	out := make([]shaPipeJSON, 0, len(pls))
 	for _, p := range pls {
+		if p.Status == "skipped" {
+			continue // [skip ci] noise
+		}
 		out = append(out, shaPipeJSON{ID: p.ID, Status: p.Status, Ref: p.Ref,
 			Source: p.Source, WebURL: p.WebURL, UpdatedAt: p.UpdatedAt})
 	}

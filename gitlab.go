@@ -334,6 +334,15 @@ func (c *glClient) playJob(ctx context.Context, projectPath string, jobID int, v
 	return out, err
 }
 
+// pipelineByPath fetches one pipeline (with its user) for a path-addressed
+// project — used to upgrade a fallback list entry to full card data.
+func (c *glClient) pipelineByPath(ctx context.Context, projectPath string, id int) (glLatestPipeline, error) {
+	var out glLatestPipeline
+	p := fmt.Sprintf("/projects/%s/pipelines/%d", url.QueryEscape(projectPath), id)
+	_, err := c.get(ctx, p, nil, &out)
+	return out, err
+}
+
 // recentPipelines lists pipelines for a path-addressed project filtered by
 // ref/status — used to find the previous successful run for progress baselines.
 func (c *glClient) recentPipelines(ctx context.Context, projectPath, ref, status string, limit int) ([]glSHAPipeline, error) {

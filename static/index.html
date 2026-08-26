@@ -87,11 +87,15 @@
   .vchip{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:11px;color:var(--ink2)}
   .vchip.mut{color:var(--mut)}
   .avatar{width:22px;height:22px;border-radius:50%;border:1px solid var(--line2);vertical-align:middle;flex:none;background:var(--panel2)}
-  .stages{display:flex;gap:3px;margin-top:9px}
-  .stg{flex:1;height:6px;border-radius:3px;position:relative;overflow:hidden;
-    background:color-mix(in srgb, var(--c,var(--mut2)) 20%, transparent)}
-  .stg-fill{position:absolute;top:0;bottom:0;left:0;background:var(--c,var(--mut2));border-radius:3px;transition:width .9s linear}
-  .stg.run{animation:pulse 1.4s ease-in-out infinite}
+  .stages{margin-top:9px}
+  .pbar{height:8px;position:relative;border:1px solid var(--line);border-radius:5px;overflow:hidden;background:var(--panel2)}
+  .pbar-fill{position:absolute;top:0;bottom:0;left:0;width:0;border-radius:4px;
+    background:linear-gradient(90deg,#028a4b,var(--civo2) 60%,var(--civo));transition:width 1s linear}
+  .pbar-fill.failed{background:linear-gradient(90deg,#7a1f12,var(--gl-red))}
+  .pbar.indet .pbar-fill{width:26%;animation:slide 1.6s ease-in-out infinite alternate}
+  @keyframes slide{from{left:0}to{left:74%}}
+  .pbar-meta{display:flex;justify-content:space-between;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--mut);margin-top:4px}
+  .pbar-meta .pj{color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
   .ec-msg{font-size:12px;margin-top:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ec-msg a{color:var(--ink2)} .ec-msg a:hover{color:var(--civo)}
   .ec-sha{display:flex;align-items:center;gap:6px;margin-top:5px;font-size:11px;flex-wrap:wrap}
@@ -269,11 +273,21 @@ document.addEventListener('click', e => {
   else done(fallbackCopy(b.dataset.sha));
 });
 function stagesSlot(node) {
-  return isRunning(node && node.pipeline)
-    ? `<div class="stages" data-proj="${esc(node.project)}" data-pid="${node.pipeline.id}"></div>` : '';
+  const pl = node && node.pipeline;
+  if (!pl) return '';
+  const key = `${node.project}:${pl.id}`;
+  const recent = progCache.has(key) && (Date.now() - (progCache.get(key)._at || 0)) < 25000;
+  if (!isRunning(pl) && !recent) return '';
+  return `<div class="stages" data-proj="${esc(node.project)}" data-pid="${pl.id}"></div>`;
 }
 let progressGen = 0;
 const progCache = new Map(); // "proj:pid" → last progress snapshot
+const progMax = new Map();   // "proj:pid" → high-water pct: a progress bar only climbs
+function monoPct(key, pct) {
+  const hi = Math.max(progMax.get(key) || 0, pct);
+  progMax.set(key, hi);
+  return hi;
+}
 function startProgressPollers() {
   const gen = ++progressGen; // supersede pollers from any previous render
   document.querySelectorAll('.stages[data-pid]').forEach(el => {
@@ -283,34 +297,56 @@ function startProgressPollers() {
   });
 }
 function paintStages(el, d) {
-  el.innerHTML = (d.stages || []).map(st => {
-    const done = STG_DONE.includes(st.status);
-    let pct = done ? 100 : 0;
-    const hasBaseline = st.running && st.running.started_at && st.running.expected_s > 0;
-    if (hasBaseline) pct = Math.min(96, (Date.now() - new Date(st.running.started_at)) / 1000 / st.running.expected_s * 100);
-    const anim = hasBaseline
-      ? ` data-start="${st.running.started_at}" data-exp="${st.running.expected_s}" data-run="${esc(st.running.name)}" data-stage="${esc(st.name)}"`
-      : '';
-    const pulse = st.status === 'running' && !hasBaseline ? ' run' : '';
-    return `<span class="stg${pulse}" style="--c:${statusColor(st.status)}" title="${esc(stageTitle(st))}"${anim}><span class="stg-fill" style="width:${pct}%"></span></span>`;
-  }).join('');
+  const m = computeProgress(d);
+  const b = barState(m);
+  const key = `${el.dataset.proj}:${el.dataset.pid}`;
+  if (m.running) { b.pct = monoPct(key, b.pct); b.right = `${b.pct | 0}%${b.right.slice(b.right.indexOf(' ·'))}`; }
+  const failed = d.status === 'failed';
+  el.innerHTML = `
+    <div class="pbar${b.indet ? ' indet' : ''}" title="${esc(barTitle(d))}">
+      <div class="pbar-fill${failed ? ' failed' : ''}" style="width:${b.indet ? '' : b.pct + '%'}"></div>
+    </div>
+    <div class="pbar-meta"><span class="pj">${esc(b.label)}</span><span>${esc(b.right)}</span></div>`;
+  el.dataset.key = `${el.dataset.proj}:${el.dataset.pid}`;
 }
-// Each stage segment is a real progress bar: fill = elapsed vs the same
-// job's duration in the previous successful run. Hover names the jobs.
-const STG_DONE = ['success', 'failed', 'canceled', 'skipped']; // manual/queued stay empty — nothing ran
-function stageTitle(st) {
-  const jobsTxt = (st.jobs || []).map(j => j.name + (j.duration_s ? ` ${fmtDur(j.duration_s)}` : '')).join(', ');
-  if (st.running) {
-    const exp = st.running.expected_s > 0 ? ` of ~${fmtDur(st.running.expected_s)}` : '';
-    const el = st.running.started_at ? fmtDur((Date.now() - new Date(st.running.started_at)) / 1000) : '';
-    return `${st.name} ▸ ${st.running.name} — ${el}${exp}`;
+// ONE progress bar per running pipeline: 0→100 against the previous
+// successful run's timings. Done stages bank their actual time, the running
+// job advances against its own baseline, queued stages are known runway.
+const STG_DONE = ['success', 'failed', 'canceled', 'skipped'];
+function computeProgress(d) {
+  let doneS = 0, totalS = 0, running = null, blind = false;
+  for (const st of (d.stages || [])) {
+    if (st.status === 'manual' || st.status === 'skipped') continue; // gates + [skip ci] noise aren't runway
+    const jobs = st.jobs || [];
+    const exp = Math.max(0, ...jobs.map(j => j.expected_s || 0), st.running?.expected_s || 0);
+    const act = Math.max(0, ...jobs.map(j => j.duration_s || 0));
+    if (STG_DONE.includes(st.status)) { const v = act || exp; doneS += v; totalS += v; }
+    else if (st.running) { running = { ...st.running, exp }; totalS += exp; if (!exp) blind = true; }
+    else { totalS += exp; if (!exp) blind = true; }
   }
-  return `${st.name} · ${st.status}${jobsTxt ? ` — ${jobsTxt}` : ''}`;
+  return { doneS, totalS, running, blind, status: d.status };
+}
+function barState(m) {
+  if (!m.running) {
+    const done = m.status === 'success' || m.status === 'failed';
+    return { pct: done ? 100 : 0, label: m.status, right: m.totalS ? fmtDur(m.totalS) : '' };
+  }
+  const el = m.running.started_at ? (Date.now() - new Date(m.running.started_at)) / 1000 : 0;
+  const num = m.doneS + Math.min(el, m.running.exp || el);
+  const den = m.totalS + (m.running.exp ? 0 : el);
+  const pct = den > 0 ? Math.min(97, num / den * 100) : 0;
+  const eta = m.blind || !den ? '' : ` / ~${fmtDur(den)}`;
+  return { pct, label: `▸ ${m.running.name}`, right: `${pct | 0}% · ${fmtDur(m.doneS + el)}${eta}`, indet: m.blind && !m.running.exp };
+}
+function barTitle(d) {
+  return (d.stages || []).map(st => `${st.name}: ${st.status}` +
+    ((st.jobs || []).length ? ` (${st.jobs.map(j => j.name + (j.duration_s ? ` ${fmtDur(j.duration_s)}` : '')).join(', ')})` : '')).join('  ·  ');
 }
 async function pollProgress(el, gen) {
   if (gen !== progressGen || !el.isConnected) return;
   try {
     const d = await fetchJSON(`/api/pipeline-progress?project=${encodeURIComponent(el.dataset.proj)}&id=${el.dataset.pid}`);
+    d._at = Date.now();
     progCache.set(`${el.dataset.proj}:${el.dataset.pid}`, d);
     if (el.isConnected) paintStages(el, d);
     // keep polling while the PIPELINE runs (the tile status says so) — the
@@ -318,15 +354,20 @@ async function pollProgress(el, gen) {
     if (gen === progressGen) setTimeout(() => pollProgress(el, gen), 5000);
   } catch { if (gen === progressGen) setTimeout(() => pollProgress(el, gen), 8000); }
 }
-// animate running fills between polls — smooth progress, zero extra requests
+// animate the bar between polls — recompute from the cached snapshot every
+// second so it increments smoothly with zero extra requests
 setInterval(() => {
-  document.querySelectorAll('.stg[data-exp]').forEach(s => {
-    const elapsed = (Date.now() - new Date(s.dataset.start)) / 1000;
-    const exp = +s.dataset.exp;
-    const pct = Math.min(96, elapsed / exp * 100);
-    const f = s.querySelector('.stg-fill');
-    if (f) f.style.width = pct + '%';
-    s.title = `${s.dataset.stage} ▸ ${s.dataset.run} — ${fmtDur(elapsed)} of ~${fmtDur(exp)} (${pct | 0}%)`;
+  document.querySelectorAll('.stages[data-key]').forEach(el => {
+    const d = progCache.get(el.dataset.key);
+    if (!d) return;
+    const m = computeProgress(d);
+    if (!m.running) return; // terminal states don't tick
+    const b = barState(m);
+    b.pct = monoPct(el.dataset.key, b.pct);
+    const fill = el.querySelector('.pbar-fill');
+    const meta = el.querySelectorAll('.pbar-meta span');
+    if (fill && !b.indet) fill.style.width = b.pct + '%';
+    if (meta.length === 2) { meta[0].textContent = b.label; meta[1].textContent = `${b.pct | 0}%${b.right.slice(b.right.indexOf(' ·'))}`; }
   });
 }, 1000);
 function driftChip(d) {

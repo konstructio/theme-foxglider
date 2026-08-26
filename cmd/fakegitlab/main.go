@@ -24,6 +24,10 @@ type pl struct {
 
 var statuses = []string{"success", "success", "failed", "success", "canceled", "success", "running"}
 
+// bootStarted anchors the demo's running job: a fixed instant ~45s before the
+// fake booted, so client-side elapsed/progress advances in real time.
+var bootStarted = time.Now().UTC().Add(-45 * time.Second).Format(time.RFC3339)
+
 func main() {
 	now := time.Now().UTC()
 	projects := []map[string]any{
@@ -167,8 +171,9 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(p, "/jobs"):
 		// canned running pipeline: earlier stages done, build running, publish
 		// queued — plus the two playable manual jobs the action layer targets.
+		// started is FIXED at process boot so elapsed grows like real GitLab.
 		w.Header().Set("Content-Type", "application/json")
-		started := time.Now().UTC().Add(-45 * time.Second).Format(time.RFC3339)
+		started := bootStarted
 		fmt.Fprintf(w, `[{"id":1,"name":"lint","stage":"validate","status":"success","duration":9.4},{"id":2,"name":"test","stage":"validate","status":"success","duration":24.8},{"id":3,"name":"build","stage":"build","status":"running","started_at":%q},{"id":4,"name":"publish-chart","stage":"publish","status":"created"},{"id":5,"name":"publish-image","stage":"publish","status":"created"},{"id":6,"name":"release","stage":"release","status":"manual"},{"id":7,"name":"trigger:manual","stage":"toolbelt","status":"manual"}]`, started)
 	case strings.HasSuffix(p, "/pipelines/latest"):
 		w.Header().Set("Content-Type", "application/json")
