@@ -147,6 +147,15 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 		proj := ecoProjFromPath(p)
 		fmt.Fprintf(w, `{"id":"feedfacecafe0000deadbeef","short_id":"feedface","title":"feat: sharpen the delivery story on the tiles","web_url":"https://git.civo.com/%s/-/commit/feedfacecafe0000","author_name":"John Dietz","authored_date":%q}`,
 			proj, time.Now().UTC().Add(-25*time.Minute).Format(time.RFC3339))
+	case strings.HasSuffix(p, "/pipeline"): // deliver: create pipeline on a tag
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":701,"status":"created","ref":"metaphor-v0.2.0-rc.4","sha":"feedfacecafe0000","web_url":"https://git.civo.com/civo/metaphor/charts/-/pipelines/701","created_at":"2026-08-26T00:00:00Z","updated_at":"2026-08-26T00:00:00Z"}`)
+	case strings.HasSuffix(p, "/merge_requests") && r.Method == "GET":
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"iid":55,"title":"chore: bump metaphor-macro to 0.2.0-rc.4 (release_preview)","state":"opened","web_url":"https://git.civo.com/civo/metaphor/metaphor-gitops/-/merge_requests/55"}]`)
+	case strings.HasSuffix(p, "/approve"), strings.HasSuffix(p, "/merge"):
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"iid":55,"state":"merged"}`)
 	case strings.Contains(p, "/play"):
 		// answers like GitLab so the action modal flow completes in dev
 		w.Header().Set("Content-Type", "application/json")

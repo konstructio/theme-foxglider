@@ -356,7 +356,7 @@ function renderDelivery(d) {
           <div class="mut">bundles ${svcs.length} microcharts · base <span class="mono">${esc(m.base_version || '—')}</span></div>
           ${commitLine(m)}
           ${stagesSlot(m)}
-          ${actBtns(m.project)}${watchChip(m)}
+          ${actBtns(m.project, true)}${watchChip(m)}
         </div>
       </div>
       <div class="eco-arrow">→</div>
@@ -471,6 +471,13 @@ const ICON_ROCKET = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none"
 function watchChip(n) {
   const w = state.watch;
   if (!w || !n || n.project !== w.project || Date.now() > w.until) return '';
+  if (w.mode === 'deliver') {
+    const delivered = (state.eco?.delivery || [])[0]?.delivered_version;
+    if (delivered === w.target && !w.done) { w.done = true; w.until = Date.now() + 15000; }
+    return w.done
+      ? `<span class="wchip ok">✓ ${esc(w.target)} delivered to dev-33</span>`
+      : `<span class="wchip"><span class="wspin"></span>delivering ${esc(w.target)} to dev-33…</span>`;
+  }
   const pl = n.pipeline;
   const arrived = pl && (pl.id !== w.sinceId || (isRunning(pl) && !['running','pending'].includes(w.sinceStatus)));
   if (arrived && !w.done) { w.done = true; w.until = Date.now() + 12000; } // linger briefly, then fade
@@ -478,11 +485,13 @@ function watchChip(n) {
     ? `<span class="wchip ok">✓ new run picked up</span>`
     : `<span class="wchip"><span class="wspin"></span>watching for the new run…</span>`;
 }
-function actBtns(project) {
+const ICON_SHIP = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>';
+function actBtns(project, isMacro) {
   if (!state.act || !state.act.enabled) return '';
   return `<div class="ec-act">
     <button class="abtn" data-act="trigger" data-proj="${esc(project)}" title="trigger the delivery pipeline on a fresh sha">${ICON_SCOPE} trigger</button>
     <button class="abtn warn" data-act="release" data-proj="${esc(project)}" title="cut a clean release from the latest RC">${ICON_ROCKET} release</button>
+    ${isMacro ? `<button class="abtn warn" data-act="deliver" data-proj="${esc(project)}" title="deliver the latest published RC to dev-33">${ICON_SHIP} deliver</button>` : ''}
   </div>`;
 }
 document.addEventListener('click', e => {
@@ -491,21 +500,25 @@ document.addEventListener('click', e => {
 });
 function openActionModal(action, project) {
   const short = project.split('/').pop();
-  const needsConfirm = action === 'release';
+  const needsConfirm = action === 'release' || action === 'deliver';
+  const verb = action === 'deliver' ? 'delivering' : 'releasing';
+  const rc = (state.eco && state.eco.macro && (state.eco.macro.published_rc || '')) || '';
   // Attribution is communicated by the konstruct shell — nothing to pick,
   // nothing to impersonate. The modal just states who it runs as.
   const actor = state.konstructUser || (state.act && state.act.actor) || 'konstruct';
   $('#actmodal').innerHTML = `
     <div class="d-back"></div>
     <div class="d-panel" role="dialog" aria-modal="true">
-      <div class="d-head">${METAMARK}<b>${action === 'release' ? 'Release' : 'Trigger pipeline'}</b>
+      <div class="d-head">${METAMARK}<b>${action === 'release' ? 'Release' : action === 'deliver' ? 'Deliver to dev-33' : 'Trigger pipeline'}</b>
         <span class="mono mut">${esc(project)}</span><span class="spacer"></span>
         <a href="#" id="act-x" aria-label="close">✕</a></div>
       <p class="mut">${action === 'release'
         ? 'Plays the manual <b>release</b> job on the latest main pipeline: cuts the clean tag from the current RC, retags artifacts (no rebuild), and opens the next dev cycle.'
+        : action === 'deliver'
+        ? `Runs the tag pipeline for <b class="mono">${esc(rc || 'the latest RC')}</b>: republishes it (idempotent), writes the dev-33 bump MR, and auto-merges it — ArgoCD takes it from there.`
         : 'Plays the manual <b>trigger:manual</b> job: pushes an empty commit to main so the delivery pipeline runs end-to-end on a fresh SHA.'}</p>
       <div class="act-row">
-        <button id="act-go" class="abtn ${needsConfirm ? 'warn' : ''}">${action === 'release' ? ICON_ROCKET + ' <span class="cd-txt">release</span><span class="cd"></span>' : ICON_SCOPE + ' trigger'}</button>
+        <button id="act-go" class="abtn ${needsConfirm ? 'warn' : ''}">${action === 'release' ? ICON_ROCKET + ' <span class="cd-txt">release</span><span class="cd"></span>' : action === 'deliver' ? ICON_SHIP + ' <span class="cd-txt">deliver</span><span class="cd"></span>' : ICON_SCOPE + ' trigger'}</button>
         <span class="act-id mono mut" title="attribution is set by the server — the signed-in konstruct session">as @${esc(actor)}</span>
         <span id="act-out" class="mono mut"></span>
       </div>
@@ -528,7 +541,11 @@ function openActionModal(action, project) {
       // waking back up) — keyed on the pipeline, not the SHA: a re-run of the
       // same commit is still a new run.
       const node = [ ...(state.eco?.services || []), state.eco?.macro ].find(n => n && n.project === project);
-      state.watch = { project, sinceId: node?.pipeline?.id ?? 0, sinceStatus: node?.pipeline?.status ?? '', at: Date.now(), until: Date.now() + 180000, done: false };
+      if (action === 'deliver') {
+        state.watch = { mode: 'deliver', project, target: body.version, at: Date.now(), until: Date.now() + 420000, done: false };
+      } else {
+        state.watch = { project, sinceId: node?.pipeline?.id ?? 0, sinceStatus: node?.pipeline?.status ?? '', at: Date.now(), until: Date.now() + 180000, done: false };
+      }
       state.burstUntil = Date.now() + 180000; // fast refresh while the new run lands
       poll();
       refresh(); // instant repaint: the watching chip appears immediately
@@ -539,30 +556,30 @@ function openActionModal(action, project) {
   const disarm = (msg) => {
     cancelCountdown();
     btn.classList.remove('arming');
-    const t = btn.querySelector('.cd-txt'); if (t) t.textContent = 'release';
+    const t = btn.querySelector('.cd-txt'); if (t) t.textContent = action === 'deliver' ? 'deliver' : 'release';
     const b = btn.querySelector('.cd'); if (b) b.style.width = '0%';
     if (msg) $('#act-out').textContent = msg;
   };
   btn.onclick = () => {
     if (!needsConfirm) { fire(''); return; }
-    if (actCountdown) { disarm('no worries — nothing released.'); return; }
+    if (actCountdown) { disarm(action === 'deliver' ? 'no worries — nothing delivered.' : 'no worries — nothing released.'); return; }
     // arm: five seconds to change your mind, then it flies
     let left = 5;
     btn.classList.add('arming');
     const txt = btn.querySelector('.cd-txt'), bar = btn.querySelector('.cd');
-    txt.textContent = `releasing in ${left} — click to cancel`;
+    txt.textContent = `${verb} in ${left} — click to cancel`;
     bar.style.width = '100%';
     requestAnimationFrame(() => { bar.style.transition = 'width 1s linear'; bar.style.width = `${(left - 1) / 5 * 100}%`; });
     $('#act-out').textContent = '';
     actCountdown = setInterval(() => {
       left--;
       if (left <= 0) { disarm(); fire(short); return; }
-      txt.textContent = `releasing in ${left} — click to cancel`;
+      txt.textContent = `${verb} in ${left} — click to cancel`;
       bar.style.width = `${(left - 1) / 5 * 100}%`;
     }, 1000);
   };
   // Esc is also a calm way out
-  document.onkeydown = (e) => { if (e.key === 'Escape') { if (actCountdown) disarm('no worries — nothing released.'); else closeActModal(); } };
+  document.onkeydown = (e) => { if (e.key === 'Escape') { if (actCountdown) disarm(action === 'deliver' ? 'no worries — nothing delivered.' : 'no worries — nothing released.'); else closeActModal(); } };
 }
 let actCountdown = null;
 function cancelCountdown() { if (actCountdown) { clearInterval(actCountdown); actCountdown = null; } }

@@ -30,9 +30,11 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
-// actionJobs maps an action to the one manual job it may play.
+// actionJobs maps an action to the one manual job it may play. "deliver" is
+// not job-based: it runs the tag pipeline for the newest published RC.
 var actionJobs = map[string]string{
 	"trigger": "trigger:manual",
 	"release": "release",
@@ -98,7 +100,7 @@ func (x *actions) status(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{
 		"enabled": true,
-		"actions": []string{"trigger", "release"},
+		"actions": []string{"trigger", "release", "deliver"},
 		"actor":   x.actorFor(r),
 	})
 }
@@ -119,8 +121,8 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad request body")
 		return
 	}
-	jobName, ok := actionJobs[req.Action]
-	if !ok {
+	jobName, isJob := actionJobs[req.Action]
+	if !isJob && req.Action != "deliver" {
 		writeErr(w, 400, "unknown action")
 		return
 	}
@@ -130,8 +132,53 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 	}
 	actor := x.actorFor(r)
 	short := req.Project[strings.LastIndex(req.Project, "/")+1:]
-	if req.Action == "release" && req.Confirm != short {
-		writeErr(w, 400, fmt.Sprintf("confirmation mismatch: type %q to release", short))
+	if (req.Action == "release" || req.Action == "deliver") && req.Confirm != short {
+		writeErr(w, 400, fmt.Sprintf("confirmation mismatch: %q required", short))
+		return
+	}
+
+	// deliver: run the tag pipeline for the newest published RC — GitLab's
+	// canonical "deliver this version" front door. deploy:tag-dev then writes
+	// the dev bump MR, which a background watcher auto-merges (dev
+	// auto-delivers by policy; staging/prod stay human).
+	if req.Action == "deliver" {
+		if req.Project != x.topo.MacroProj {
+			writeErr(w, 400, "deliver applies to the umbrella only")
+			return
+		}
+		ctx := context.Background()
+		tags, err := x.gl.tags(ctx, x.topo.MacroProj, 100)
+		if err != nil {
+			writeErr(w, 502, "tags: "+err.Error())
+			return
+		}
+		tag := newestTag(tags, x.topo.MacroTag)
+		if tag == "" {
+			writeErr(w, 409, "no published RC tag to deliver yet")
+			return
+		}
+		version := strings.TrimPrefix(tag, x.topo.MacroTag)
+		pl, err := x.gl.createPipeline(ctx, x.topo.MacroProj, tag, map[string]string{
+			"INITIATED_BY": actor,
+		})
+		if err != nil {
+			writeErr(w, 502, "tag pipeline: "+err.Error())
+			return
+		}
+		if x.markHot != nil {
+			x.markHot(x.topo.MacroProj)
+			if len(x.topo.Delivery) > 0 {
+				x.markHot(x.topo.Delivery[0].Project)
+			}
+		}
+		go x.mergeDevBump(version, actor)
+		log.Printf("ACTION deliver project=%s tag=%s pipeline=%d actor=%s remote=%s",
+			req.Project, tag, pl.ID, actor, r.RemoteAddr)
+		writeJSON(w, map[string]any{
+			"ok": true, "action": "deliver", "actor": actor,
+			"version": version, "tag": tag,
+			"job_url": pl.WebURL, "pipeline_url": pl.WebURL,
+		})
 		return
 	}
 
@@ -203,4 +250,42 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 		"ok": true, "action": req.Action, "actor": actor,
 		"job_url": played.WebURL, "pipeline_url": lp.WebURL,
 	})
+}
+
+// mergeDevBump watches the gitops repo for the dev bump MR this delivery
+// produces and merges it — dev auto-delivers; anything not matching this one
+// version's bump title is never touched. Gives the deploy bridge ~7 minutes.
+func (x *actions) mergeDevBump(version, actor string) {
+	if len(x.topo.Delivery) == 0 {
+		return
+	}
+	gitops := x.topo.Delivery[0].Project
+	needle := fmt.Sprintf("bump %s to %s", x.topo.MacroName, version)
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
+	defer cancel()
+	for {
+		mrs, err := x.gl.openMRs(ctx, gitops)
+		if err == nil {
+			for _, mr := range mrs {
+				if !strings.Contains(mr.Title, needle) {
+					continue
+				}
+				if merged, err := x.gl.mergeMR(ctx, gitops, mr.IID); err == nil {
+					log.Printf("ACTION deliver-merge project=%s mr=%d version=%s actor=%s state=%s",
+						gitops, mr.IID, version, actor, merged.State)
+					if x.markHot != nil {
+						x.markHot(gitops)
+					}
+					return
+				}
+				// not mergeable yet (pipeline running etc.) — retry next tick
+			}
+		}
+		select {
+		case <-ctx.Done():
+			log.Printf("ACTION deliver-merge timeout version=%s (no bump MR merged)", version)
+			return
+		case <-time.After(10 * time.Second):
+		}
+	}
 }

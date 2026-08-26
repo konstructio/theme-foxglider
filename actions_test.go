@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeActionsGitLab serves the minimum action surface: a latest pipeline, its
@@ -178,5 +179,98 @@ func TestActionsDisabledWithoutToken(t *testing.T) {
 	res2, _ := http.Post(srv.URL+"/api/actions/run", "application/json", strings.NewReader(`{}`))
 	if res2.StatusCode != 503 {
 		t.Fatalf("run without token = %d, want 503", res2.StatusCode)
+	}
+}
+
+// deliver: runs the tag pipeline for the newest RC and auto-merges the dev
+// bump MR the deploy bridge produces — and only that MR.
+func TestDeliver(t *testing.T) {
+	var createdRef string
+	var createdVars []byte
+	merged := map[int]bool{}
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(p, "/repository/tags"):
+			w.Write([]byte(`[{"name":"metaphor-v0.2.0-rc.9"},{"name":"metaphor-v0.2.0-rc.8"}]`))
+		case strings.HasSuffix(p, "/pipeline"): // create on tag
+			var body struct {
+				Ref       string `json:"ref"`
+				Variables []struct{ Key, Value string }
+			}
+			raw, _ := json.Marshal(func() any { var v map[string]any; json.NewDecoder(r.Body).Decode(&v); return v }())
+			createdVars = raw
+			var v map[string]any
+			json.Unmarshal(raw, &v)
+			body.Ref, _ = v["ref"].(string)
+			createdRef = body.Ref
+			w.Write([]byte(`{"id":700,"status":"created","ref":"` + body.Ref + `","sha":"t","web_url":"http://gl/charts/-/pipelines/700","created_at":"2026-08-26T00:00:00Z","updated_at":"2026-08-26T00:00:00Z"}`))
+		case strings.HasSuffix(p, "/merge_requests") && r.Method == "GET":
+			w.Write([]byte(`[{"iid":55,"title":"chore: bump metaphor-macro to 0.2.0-rc.9 (release_preview)","state":"opened","web_url":"http://gl/gitops/-/merge_requests/55"},{"iid":56,"title":"chore: bump metaphor-macro to 0.9.9-rc.1 (release_preview)","state":"opened","web_url":"http://gl/gitops/-/merge_requests/56"}]`))
+		case strings.HasSuffix(p, "/approve"):
+			w.Write([]byte(`{}`))
+		case strings.HasSuffix(p, "/merge"):
+			for _, seg := range strings.Split(p, "/") {
+				if seg == "55" {
+					merged[55] = true
+				}
+				if seg == "56" {
+					merged[56] = true
+				}
+			}
+			w.Write([]byte(`{"iid":55,"state":"merged"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	t.Setenv("GITLAB_ACTION_TOKEN", "act-tok")
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	// wrong project refused
+	res, _ := http.Post(srv.URL+"/api/actions/run", "application/json",
+		strings.NewReader(`{"project":"civo/metaphor/metaphor","action":"deliver","confirm":"metaphor"}`))
+	if res.StatusCode != 400 {
+		t.Fatalf("deliver on service = %d, want 400", res.StatusCode)
+	}
+	// no confirm refused
+	res, _ = http.Post(srv.URL+"/api/actions/run", "application/json",
+		strings.NewReader(`{"project":"civo/metaphor/charts","action":"deliver"}`))
+	if res.StatusCode != 400 {
+		t.Fatalf("deliver without confirm = %d, want 400", res.StatusCode)
+	}
+	// the real thing
+	res, err := http.Post(srv.URL+"/api/actions/run", "application/json",
+		strings.NewReader(`{"project":"civo/metaphor/charts","action":"deliver","confirm":"charts"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		OK      bool   `json:"ok"`
+		Version string `json:"version"`
+		Tag     string `json:"tag"`
+	}
+	json.NewDecoder(res.Body).Decode(&out)
+	if res.StatusCode != 200 || !out.OK || out.Tag != "metaphor-v0.2.0-rc.9" || out.Version != "0.2.0-rc.9" {
+		t.Fatalf("deliver = %d %+v", res.StatusCode, out)
+	}
+	if createdRef != "metaphor-v0.2.0-rc.9" {
+		t.Fatalf("pipeline ref = %q, want the newest RC tag", createdRef)
+	}
+	if !strings.Contains(string(createdVars), "INITIATED_BY") {
+		t.Fatalf("tag pipeline missing INITIATED_BY: %s", createdVars)
+	}
+	// the watcher merges the matching bump MR — and never the other one
+	deadline := time.Now().Add(3 * time.Second)
+	for !merged[55] && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !merged[55] {
+		t.Fatal("dev bump MR !55 was not merged")
+	}
+	if merged[56] {
+		t.Fatal("unrelated MR !56 must not be touched")
 	}
 }

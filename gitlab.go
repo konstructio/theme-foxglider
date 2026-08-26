@@ -363,3 +363,60 @@ func (c *glClient) createPipeline(ctx context.Context, projectPath, ref string, 
 	err := c.postJSON(ctx, p, map[string]any{"ref": ref, "variables": vv}, &out)
 	return out, err
 }
+
+// --- merge-request surface (the deliver action merges the dev bump MR) ---
+
+type glMR struct {
+	IID    int    `json:"iid"`
+	Title  string `json:"title"`
+	State  string `json:"state"`
+	WebURL string `json:"web_url"`
+}
+
+// openMRs lists a project's open merge requests, newest first.
+func (c *glClient) openMRs(ctx context.Context, projectPath string) ([]glMR, error) {
+	var out []glMR
+	p := fmt.Sprintf("/projects/%s/merge_requests", url.QueryEscape(projectPath))
+	_, err := c.get(ctx, p, url.Values{"state": {"opened"}, "per_page": {"20"}, "order_by": {"created_at"}}, &out)
+	return out, err
+}
+
+// mergeMR merges one MR; best-effort approve first (repos differ on rules).
+func (c *glClient) mergeMR(ctx context.Context, projectPath string, iid int) (glMR, error) {
+	base := fmt.Sprintf("/projects/%s/merge_requests/%d", url.QueryEscape(projectPath), iid)
+	_ = c.postJSON(ctx, base+"/approve", nil, nil) // best-effort
+	var out glMR
+	err := c.putJSON(ctx, base+"/merge", nil, &out)
+	return out, err
+}
+
+// putJSON mirrors postJSON for PUT endpoints.
+func (c *glClient) putJSON(ctx context.Context, path string, body, into any) error {
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.base+"/api/v4"+path, rdr)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := c.hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode > 299 {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 300))
+		return fmt.Errorf("gitlab %s: %s: %s", path, res.Status, strings.TrimSpace(string(b)))
+	}
+	if into != nil {
+		return json.NewDecoder(res.Body).Decode(into)
+	}
+	return nil
+}

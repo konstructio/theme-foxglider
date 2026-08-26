@@ -21,7 +21,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "1.5.0"
+const themeVersion = "1.6.0"
 
 const ttlEco = 45 * time.Second
 
@@ -268,7 +268,11 @@ type deliveryNode struct {
 // --- cached fetch helpers ---
 
 func (a *api) rawFile(ctx context.Context, proj, file string) string {
-	v, err := a.c.do("file:"+proj+":"+file, ttlEco, func() (any, error) {
+	ttl := ttlEco
+	if a.isHot(proj) {
+		ttl = 5 * time.Second
+	}
+	v, err := a.c.do("file:"+proj+":"+file, ttl, func() (any, error) {
 		return a.gl.fileRaw(ctx, proj, file, "main")
 	})
 	if err != nil {
