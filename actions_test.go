@@ -274,3 +274,61 @@ func TestDeliver(t *testing.T) {
 		t.Fatal("unrelated MR !56 must not be touched")
 	}
 }
+
+// feature: creates the branch on the micro AND the macro repo; an existing
+// branch means joining, not failing.
+func TestFeatureAction(t *testing.T) {
+	created := map[string]int{}
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(p, "/repository/branches") && r.Method == "POST":
+			// charts already has the branch (join case); micro creates fresh
+			if strings.Contains(p, "%2Fcharts") {
+				created["charts"]++
+				w.WriteHeader(400)
+				w.Write([]byte(`{"message":"Branch already exists"}`))
+				return
+			}
+			created["micro"]++
+			w.Write([]byte(`{"name":"epic-20-pink","web_url":"http://gl/x/-/tree/epic-20-pink"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	t.Setenv("GITLAB_ACTION_TOKEN", "act-tok")
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	res, err := http.Post(srv.URL+"/api/actions/run", "application/json",
+		strings.NewReader(`{"project":"civo/metaphor/metaphor","action":"feature","branch":"epic-20-pink","epic_iid":20}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		OK            bool `json:"ok"`
+		MicroCreated  bool `json:"micro_created"`
+		ChartsCreated bool `json:"charts_created"`
+	}
+	json.NewDecoder(res.Body).Decode(&out)
+	if res.StatusCode != 200 || !out.OK || !out.MicroCreated || out.ChartsCreated {
+		t.Fatalf("feature = %d %+v (want micro created, charts joined)", res.StatusCode, out)
+	}
+	if created["micro"] != 1 || created["charts"] != 1 {
+		t.Fatalf("branch calls = %+v", created)
+	}
+	// bad names refused
+	res, _ = http.Post(srv.URL+"/api/actions/run", "application/json",
+		strings.NewReader(`{"project":"civo/metaphor/metaphor","action":"feature","branch":"Bad Name!!"}`))
+	if res.StatusCode != 400 {
+		t.Fatalf("bad branch name = %d, want 400", res.StatusCode)
+	}
+	// macro refused
+	res, _ = http.Post(srv.URL+"/api/actions/run", "application/json",
+		strings.NewReader(`{"project":"civo/metaphor/charts","action":"feature","branch":"epic-20-pink"}`))
+	if res.StatusCode != 400 {
+		t.Fatalf("feature on macro = %d, want 400", res.StatusCode)
+	}
+}

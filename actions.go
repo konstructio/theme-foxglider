@@ -64,6 +64,54 @@ func newActions(read *glClient, topo topology, groups []string) *actions {
 
 func (x *actions) enabled() bool { return x.gl != nil }
 
+// reBranch: epic-shaped or sane free-form — the UI nudges epic-N-slug, the
+// engineer may type anything reasonable.
+var reBranch = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{1,60}$`)
+
+// epicsList feeds the feature modal's picker.
+func (x *actions) epicsList(w http.ResponseWriter, r *http.Request) {
+	if !x.enabled() {
+		writeJSON(w, []any{})
+		return
+	}
+	group := x.group()
+	eps, err := x.gl.epics(context.Background(), group)
+	if err != nil {
+		writeJSON(w, []any{})
+		return
+	}
+	writeJSON(w, eps)
+}
+
+// featuresList = epic-* branches on the macro repo: the join list.
+func (x *actions) featuresList(w http.ResponseWriter, r *http.Request) {
+	if !x.enabled() {
+		writeJSON(w, []any{})
+		return
+	}
+	brs, err := x.gl.branches(context.Background(), x.topo.MacroProj, "epic-")
+	if err != nil {
+		writeJSON(w, []any{})
+		return
+	}
+	out := []map[string]any{}
+	for _, b := range brs {
+		if strings.HasPrefix(b.Name, "epic-") {
+			out = append(out, map[string]any{"name": b.Name, "web_url": b.WebURL})
+		}
+	}
+	writeJSON(w, out)
+}
+
+// group derives the org group from the macro project path.
+func (x *actions) group() string {
+	p := x.topo.MacroProj
+	if i := strings.LastIndex(p, "/"); i > 0 {
+		return p[:i]
+	}
+	return p
+}
+
 // reActor keeps communicated identities to sane username shapes.
 var reActor = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
@@ -100,7 +148,7 @@ func (x *actions) status(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{
 		"enabled": true,
-		"actions": []string{"trigger", "release", "deliver"},
+		"actions": []string{"trigger", "release", "deliver", "feature"},
 		"actor":   x.actorFor(r),
 	})
 }
@@ -112,6 +160,10 @@ type runReq struct {
 	// Version: deliver-only override — any PUBLISHED version (upgrade or
 	// rollback). Empty means the newest RC tag.
 	Version string `json:"version"`
+	// Branch + EpicIID: feature action — the branch to start/join, and the
+	// epic it came from (trace only; naming is the UI's job).
+	Branch  string `json:"branch"`
+	EpicIID int    `json:"epic_iid"`
 }
 
 // reVersionArg keeps typed version overrides to sane semver-ish shapes.
@@ -128,7 +180,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jobName, isJob := actionJobs[req.Action]
-	if !isJob && req.Action != "deliver" {
+	if !isJob && req.Action != "deliver" && req.Action != "feature" {
 		writeErr(w, 400, "unknown action")
 		return
 	}
@@ -140,6 +192,50 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 	short := req.Project[strings.LastIndex(req.Project, "/")+1:]
 	if (req.Action == "release" || req.Action == "deliver") && req.Confirm != short {
 		writeErr(w, 400, fmt.Sprintf("confirmation mismatch: %q required", short))
+		return
+	}
+
+	// feature: start (or join) an epic feature branch — created on the micro
+	// AND mirrored on the macro repo, so the feature umbrella line exists from
+	// the first moment. Creating is idempotent: an existing branch means the
+	// app is JOINING a feature already in flight.
+	if req.Action == "feature" {
+		if req.Project == x.topo.MacroProj {
+			writeErr(w, 400, "start features from a service card — the macro branch follows automatically")
+			return
+		}
+		branch := strings.TrimSpace(req.Branch)
+		if !reBranch.MatchString(branch) {
+			writeErr(w, 400, "branch name must be lowercase letters, digits, dots, dashes (e.g. epic-20-pink)")
+			return
+		}
+		ctx := context.Background()
+		created := map[string]bool{}
+		urls := map[string]string{}
+		for _, proj := range []string{req.Project, x.topo.MacroProj} {
+			b, err := x.gl.createBranch(ctx, proj, branch, "main")
+			if err != nil {
+				if strings.Contains(err.Error(), "already exists") {
+					created[proj] = false // joining
+					continue
+				}
+				writeErr(w, 502, "branch on "+proj+": "+err.Error())
+				return
+			}
+			created[proj] = true
+			urls[proj] = b.WebURL
+		}
+		if x.markHot != nil {
+			x.markHot(req.Project)
+			x.markHot(x.topo.MacroProj)
+		}
+		log.Printf("ACTION feature project=%s branch=%s epic=%d micro_created=%v charts_created=%v actor=%s remote=%s",
+			req.Project, branch, req.EpicIID, created[req.Project], created[x.topo.MacroProj], actor, r.RemoteAddr)
+		writeJSON(w, map[string]any{
+			"ok": true, "action": "feature", "actor": actor, "branch": branch,
+			"micro_created": created[req.Project], "charts_created": created[x.topo.MacroProj],
+			"urls": urls,
+		})
 		return
 	}
 

@@ -429,3 +429,52 @@ func (c *glClient) putJSON(ctx context.Context, path string, body, into any) err
 	}
 	return nil
 }
+
+// --- epics + branches (feature-branch workflow) ---
+
+type glEpic struct {
+	IID    int    `json:"iid"`
+	Title  string `json:"title"`
+	State  string `json:"state"`
+	WebURL string `json:"web_url"`
+}
+
+// epics lists a group's open epics — the feature picker's source.
+func (c *glClient) epics(ctx context.Context, groupPath string) ([]glEpic, error) {
+	var out []glEpic
+	p := fmt.Sprintf("/groups/%s/epics", url.QueryEscape(groupPath))
+	_, err := c.get(ctx, p, url.Values{"state": {"opened"}, "per_page": {"50"}, "order_by": {"created_at"}}, &out)
+	return out, err
+}
+
+type glBranch struct {
+	Name   string `json:"name"`
+	WebURL string `json:"web_url"`
+	Commit *struct {
+		ShortID       string    `json:"short_id"`
+		Title         string    `json:"title"`
+		AuthorName    string    `json:"author_name"`
+		CommittedDate time.Time `json:"committed_date"`
+	} `json:"commit"`
+}
+
+// branches lists a project's branches, optionally filtered by search term.
+func (c *glClient) branches(ctx context.Context, projectPath, search string) ([]glBranch, error) {
+	var out []glBranch
+	q := url.Values{"per_page": {"100"}}
+	if search != "" {
+		q.Set("search", search)
+	}
+	p := fmt.Sprintf("/projects/%s/repository/branches", url.QueryEscape(projectPath))
+	_, err := c.get(ctx, p, q, &out)
+	return out, err
+}
+
+// createBranch creates a branch from ref; GitLab 400s when it already exists.
+func (c *glClient) createBranch(ctx context.Context, projectPath, branch, ref string) (glBranch, error) {
+	var out glBranch
+	p := fmt.Sprintf("/projects/%s/repository/branches?branch=%s&ref=%s",
+		url.QueryEscape(projectPath), url.QueryEscape(branch), url.QueryEscape(ref))
+	err := c.postJSON(ctx, p, nil, &out)
+	return out, err
+}

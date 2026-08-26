@@ -594,12 +594,22 @@ function watchChip(n) {
       : `<span class="wchip"><span class="wspin"></span>watching for the new run…</span>`;
 }
 const ICON_SHIP = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>';
+const ICON_BRANCH = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>';
 function actBtns(project, isMacro) {
   if (!state.act || !state.act.enabled) return '';
   return `<div class="ec-act">
     <button class="abtn" data-act="trigger" data-proj="${esc(project)}" title="trigger the delivery pipeline on a fresh sha">${ICON_SCOPE} trigger</button>
     <button class="abtn warn" data-act="release" data-proj="${esc(project)}" title="cut a clean release from the latest RC">${ICON_ROCKET} release</button>
+    ${isMacro ? '' : `<button class="abtn" data-act="feature" data-proj="${esc(project)}" title="start or join an epic feature branch (app + charts)">${ICON_BRANCH} feature</button>`}
   </div>`;
+}
+// featureSlug: the shortest meaningful word from an epic title — strip filler
+// verbs, articles, and product words; first survivor wins. Always editable.
+const SLUG_STOP = new Set(['the','a','an','to','of','for','and','or','on','in','with','from','into','turn','make','add','new','create','implement','update','fix','enable','support','redesign','improve','allow','use','build','feature','epic','metaphor','konstruct','chart','charts','theme','macro','app','repo','screen']);
+function featureSlug(title) {
+  const words = (title || '').toLowerCase().replace(/[^a-z0-9\s-]/g, '').split(/[\s-]+/).filter(Boolean);
+  const pick = words.find(w => !SLUG_STOP.has(w) && w.length > 2) || words[0] || '';
+  return pick.slice(0, 16);
 }
 document.addEventListener('click', e => {
   const b = e.target.closest('.abtn'); if (!b || !b.dataset.act) return;
@@ -609,6 +619,7 @@ document.addEventListener('click', e => {
   openActionModal(b.dataset.act, b.dataset.proj, ver);
 });
 function openActionModal(action, project, version) {
+  if (action === 'feature') return openFeatureModal(project);
   const short = project.split('/').pop();
   const needsConfirm = action === 'release' || action === 'deliver';
   const verb = action === 'deliver' ? 'delivering' : 'releasing';
@@ -694,6 +705,69 @@ function openActionModal(action, project, version) {
   // Esc is also a calm way out
   document.onkeydown = (e) => { if (e.key === 'Escape') { if (actCountdown) disarm(action === 'deliver' ? 'no worries — nothing delivered.' : 'no worries — nothing released.'); else closeActModal(); } };
 }
+// Feature modal: pick an epic (suggested branch name follows), join an
+// existing feature, or type any branch name — then one click creates the
+// branch on this app AND the charts repo.
+async function openFeatureModal(project) {
+  const short = project.split('/').pop();
+  $('#actmodal').innerHTML = `
+    <div class="d-back"></div>
+    <div class="d-panel" role="dialog" aria-modal="true">
+      <div class="d-head">${METAMARK}<b>Start a feature</b>
+        <span class="mono mut">${esc(project)}</span><span class="spacer"></span>
+        <a href="#" id="act-x" aria-label="close">✕</a></div>
+      <p class="mut">Creates the branch from <b>main</b> on <b class="mono">${esc(short)}</b> and mirrors it on the charts repo — the feature's umbrella line starts as a copy of main and evolves as apps join. Pushes to the branch publish <span class="mono">-&lt;branch&gt;.N</span> versions automatically.</p>
+      <label for="feat-join">join an existing feature</label>
+      <select id="feat-join"><option value="">— start a new one —</option></select>
+      <label for="feat-epic">epic (recommended)</label>
+      <select id="feat-epic"><option value="">no epic</option></select>
+      <label for="feat-branch">branch name</label>
+      <input id="feat-branch" class="mono" autocomplete="off" spellcheck="false" placeholder="epic-20-pink">
+      <div class="act-row">
+        <button id="feat-go" class="abtn">${ICON_BRANCH} create feature branch</button>
+        <span class="act-id mono mut">as @${esc(state.konstructUser || (state.act && state.act.actor) || 'konstruct')}</span>
+        <span id="act-out" class="mono mut"></span>
+      </div>
+    </div>`;
+  $('#actmodal').style.display = 'block';
+  $('#act-x').onclick = e => { e.preventDefault(); closeActModal(); };
+  $('#actmodal .d-back').onclick = closeActModal;
+  // fill pickers (parallel; failures degrade to empty lists)
+  const [epics, feats] = await Promise.all([
+    fetchJSON('/api/actions/epics').catch(() => []),
+    fetchJSON('/api/actions/features').catch(() => []),
+  ]);
+  const je = $('#feat-join');
+  for (const f of feats) je.insertAdjacentHTML('beforeend', `<option value="${esc(f.name)}">${esc(f.name)}</option>`);
+  const ee = $('#feat-epic');
+  for (const ep of epics) ee.insertAdjacentHTML('beforeend', `<option value="${ep.iid}" data-title="${esc(ep.title)}">&${ep.iid} ${esc(ep.title.slice(0, 56))}</option>`);
+  ee.onchange = () => {
+    const opt = ee.selectedOptions[0];
+    if (!ee.value) { $('#feat-branch').value = ''; return; }
+    $('#feat-branch').value = `epic-${ee.value}-${featureSlug(opt.dataset.title)}`;
+    je.value = '';
+  };
+  je.onchange = () => { if (je.value) { $('#feat-branch').value = je.value; ee.value = ''; } };
+  $('#feat-go').onclick = async () => {
+    const branch = $('#feat-branch').value.trim();
+    if (!branch) { $('#act-out').textContent = '✗ name the branch (or pick an epic)'; return; }
+    $('#act-out').textContent = 'creating…';
+    try {
+      const hdrs = { 'Content-Type': 'application/json' };
+      if (state.konstructUser) hdrs['X-Konstruct-Actor'] = state.konstructUser;
+      const res = await fetch('/api/actions/run', { method: 'POST', headers: hdrs,
+        body: JSON.stringify({ project, action: 'feature', branch, epic_iid: +($('#feat-epic').value || 0) }) });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw body;
+      const verb = body.micro_created ? 'created' : 'joined';
+      $('#act-out').innerHTML = `✓ ${esc(branch)} ${verb} on app${body.charts_created ? ' + charts' : ' (charts already had it)'}`;
+      state.burstUntil = Date.now() + 120000;
+      poll();
+      setTimeout(() => { closeActModal(); refresh(); }, 3000);
+    } catch (err) { $('#act-out').textContent = '✗ ' + errMsg(err); }
+  };
+}
+
 let actCountdown = null;
 function cancelCountdown() { if (actCountdown) { clearInterval(actCountdown); actCountdown = null; } }
 function closeActModal() { cancelCountdown(); document.onkeydown = null; $('#actmodal').style.display = 'none'; $('#actmodal').innerHTML = ''; }

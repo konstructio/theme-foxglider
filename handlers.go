@@ -52,6 +52,8 @@ func newAPI(gl *glClient, groups []string) http.Handler {
 	mux.HandleFunc("GET /api/activity", a.guard(a.activity))
 	// Actions guard themselves on the separate write token, not the read token.
 	mux.HandleFunc("GET /api/actions/status", a.act.status)
+	mux.HandleFunc("GET /api/actions/epics", a.act.epicsList)
+	mux.HandleFunc("GET /api/actions/features", a.act.featuresList)
 	mux.HandleFunc("POST /api/actions/run", a.act.run)
 	return mux
 }

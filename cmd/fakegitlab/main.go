@@ -143,6 +143,17 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(p, "/repository/tags"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `[{"name":"metaphor-v0.2.0-rc.4"},{"name":"metaphor-v0.2.0-rc.3"},{"name":"metaphor-v0.2.0-rc.2"}]`)
+	case strings.HasSuffix(p, "/epics"):
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"iid":101,"title":"Redesign opening screen with aurora green background","state":"opened","web_url":"https://git.civo.com/groups/civo/metaphor/-/epics/101"},{"iid":20,"title":"Turn metaphor pink","state":"opened","web_url":"https://git.civo.com/groups/civo/metaphor/-/epics/20"}]`)
+	case strings.HasSuffix(p, "/repository/branches") && r.Method == "POST":
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"name":"epic-20-pink","web_url":"https://git.civo.com/x/-/tree/epic-20-pink"}`)
+	case strings.HasSuffix(p, "/repository/branches"):
+		w.Header().Set("Content-Type", "application/json")
+		now2 := time.Now().UTC()
+		fmt.Fprintf(w, `[{"name":"main","web_url":"https://git.civo.com/x/-/tree/main","commit":{"short_id":"feedface","title":"feat: latest","author_name":"John Dietz","committed_date":%q}},{"name":"epic-101-aurora","web_url":"https://git.civo.com/x/-/tree/epic-101-aurora","commit":{"short_id":"abc12345","title":"ci: bump dep","author_name":"kbot","committed_date":%q}},{"name":"hotfix/0.2","web_url":"https://git.civo.com/x/-/tree/hotfix-0.2","commit":{"short_id":"def67890","title":"fix: patch","author_name":"Jared Edwards","committed_date":%q}}]`,
+			now2.Add(-30*time.Minute).Format(time.RFC3339), now2.Add(-2*time.Hour).Format(time.RFC3339), now2.Add(-26*time.Hour).Format(time.RFC3339))
 	case strings.HasSuffix(p, "/members/all"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `[{"username":"john.dietz","name":"John Dietz","access_level":50},{"username":"jared","name":"Jared Edwards","access_level":50},{"username":"group_1642_bot_x","name":"token bot","access_level":40}]`)
