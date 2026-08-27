@@ -134,7 +134,8 @@
   .br-chip .mut{font-size:10.5px}
   .lane-epic{color:var(--civo)} .lane-hot{color:var(--gl-orange)}
   .br-tags{display:flex;gap:6px;flex-wrap:wrap}
-  .tag-epic{color:var(--civo);border-color:var(--civo)}
+  .tag-main{color:var(--civo);border-color:var(--civo)}
+  .tag-epic{color:var(--mut);border-color:var(--line2)}
   .br-name{color:var(--ink2)} .br-name:hover{color:var(--civo)}
   .br-act{padding:2px 6px;font-size:10px;gap:0}
   a.br-ahead{text-decoration:none}
@@ -712,7 +713,7 @@ function renderBranches(data) {
     ${feats || '<div class="mut" style="padding:4px 2px 14px;font-size:12px">no active features — start one from any microservice tile</div>'}` + `
     <div class="section-h">macro tags<span></span></div>
     <div class="br-tags">${(data.macro_tags || []).map(t =>
-      `<span class="vchip mono${t.includes('-epic-') ? ' tag-epic' : ''}">${esc(t)}</span>`).join('')}</div>` +
+      `<span class="vchip mono${t.includes('-epic-') ? ' tag-epic' : ' tag-main'}" title="${t.includes('-epic-') ? 'feature umbrella' : 'main-line rc'}">${esc(t)}</span>`).join('')}</div>` +
     (staleRows ? `
     <div class="section-h lane-stale">stale · 30d+ quiet<span></span></div>
     <div class="mut" style="font-size:11px;margin:-4px 0 10px">branches with no commits in a month — merge back, delete, or revive with a trigger</div>
