@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.14.0"
+const themeVersion = "2.14.1"
 
 const ttlEco = 45 * time.Second
 
@@ -1227,6 +1227,18 @@ func (a *api) assembleFeatures(ctx context.Context, t topology, repos []repoBran
 			}
 		}
 		needle := "-" + reBranchID.ReplaceAllString(strings.ToLower(name), "-") + "."
+		lookupMR := func(project string) *glMR {
+			v, err := a.c.do("mrs:"+project+"@"+name, ttlBranches, func() (any, error) {
+				bctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+				return a.gl.mrsBySource(bctx, project, name)
+			})
+			if err != nil {
+				return nil
+			}
+			list, _ := v.([]glMR)
+			return bestMR(list)
+		}
 		for _, svc := range t.Services {
 			fs := featSvcJSON{Name: svc.Name, Project: svc.Project, State: "main"}
 			if p, ok := found[name][svc.Project]; ok {
@@ -1234,40 +1246,37 @@ func (a *api) assembleFeatures(ctx context.Context, t topology, repos []repoBran
 				if strings.Contains(pins[svc.Name], needle) {
 					fs.State = "updated"
 				}
-				// the MR carrying this work (draft or open)
-				if v, err := a.c.do("mrs:"+svc.Project+"@"+name, ttlBranches, func() (any, error) {
-					bctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-					defer cancel()
-					return a.gl.mrsBySource(bctx, svc.Project, name)
-				}); err == nil {
-					if list, _ := v.([]glMR); len(list) > 0 {
-						if m := bestMR(list); m != nil {
-							fs.MRIID, fs.MRURL, fs.MRState = m.IID, m.WebURL, mrStateLabel(*m)
-							if m.State == "merged" {
-								fs.MRMergedAt = m.MergedAt
-							}
-						}
+				if m := lookupMR(svc.Project); m != nil {
+					fs.MRIID, fs.MRURL, fs.MRState = m.IID, m.WebURL, mrStateLabel(*m)
+					if m.State == "merged" {
+						fs.MRMergedAt = m.MergedAt
 					}
 				}
+			} else if m := lookupMR(svc.Project); m != nil && m.State == "merged" {
+				// merging deletes the source branch — the work still happened
+				// here, and it MUST count or the epic never closes as Done
+				fs.State = "merged"
+				fs.MRIID, fs.MRURL, fs.MRState = m.IID, m.WebURL, "merged"
+				fs.MRMergedAt = m.MergedAt
 			}
 			f.Services = append(f.Services, fs)
 		}
-		// merged = every UPDATED service's MR is merged (joined-but-untouched
-		// services have nothing to merge and don't block)
-		updated, merged := 0, 0
+		// merged = at least one carrying MR is merged AND no in-flight work
+		// remains open. Post-merge branch deletion turns rows into state
+		// "merged", which counts — joined-but-untouched rows never block.
+		mergedN, openN := 0, 0
 		for _, fs := range f.Services {
-			if fs.State != "updated" {
-				continue
-			}
-			updated++
-			if fs.MRState == "merged" {
-				merged++
+			switch {
+			case fs.MRState == "merged":
+				mergedN++
 				if fs.MRMergedAt != nil && (f.MergedAt == nil || fs.MRMergedAt.After(*f.MergedAt)) {
 					f.MergedAt = fs.MRMergedAt
 				}
+			case fs.State == "updated":
+				openN++
 			}
 		}
-		f.Merged = updated > 0 && merged == updated
+		f.Merged = mergedN > 0 && openN == 0
 		out = append(out, f)
 	}
 	return out

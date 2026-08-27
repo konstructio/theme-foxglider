@@ -487,6 +487,63 @@ func TestFeaturesGrouping(t *testing.T) {
 	}
 }
 
+// TestMergedBranchDeleted: merging deletes the source branch — the feature
+// must still read merged (or the epic never closes as Done).
+func TestMergedBranchDeleted(t *testing.T) {
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(p, "/repository/tags"):
+			w.Write([]byte(`[]`))
+		case strings.HasSuffix(p, "/merge_requests") && r.URL.Query().Get("source_branch") == "epic-9-gone":
+			w.Write([]byte(`[{"iid":21,"state":"merged","merged_at":"2026-08-27T08:00:00Z","source_branch":"epic-9-gone","web_url":"http://gl/x/-/merge_requests/21"}]`))
+		case strings.HasSuffix(p, "/merge_requests"):
+			w.Write([]byte(`[]`))
+		case strings.HasSuffix(p, "/repository/branches") && strings.Contains(p, "%2Fcharts"):
+			// only the charts twin survives the merge
+			w.Write([]byte(`[{"name":"main","web_url":"u","commit":{"short_id":"aa","title":"x","author_name":"jd","committed_date":"2026-08-27T07:00:00Z"}},{"name":"epic-9-gone","web_url":"u","commit":{"short_id":"bb","title":"y","author_name":"jd","committed_date":"2026-08-27T07:30:00Z"}}]`))
+		case strings.HasSuffix(p, "/repository/branches"):
+			w.Write([]byte(`[{"name":"main","web_url":"u","commit":{"short_id":"aa","title":"x","author_name":"jd","committed_date":"2026-08-27T07:00:00Z"}}]`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	res, err := http.Get(srv.URL + "/api/branches")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Features []featureJSON `json:"features"`
+	}
+	json.NewDecoder(res.Body).Decode(&out)
+	var f *featureJSON
+	for i := range out.Features {
+		if out.Features[i].Branch == "epic-9-gone" {
+			f = &out.Features[i]
+		}
+	}
+	if f == nil {
+		t.Fatalf("feature missing: %+v", out.Features)
+	}
+	if !f.Merged || f.MergedAt == nil {
+		t.Fatalf("merged rollup = %+v", f)
+	}
+	found := false
+	for _, sv := range f.Services {
+		if sv.State == "merged" && sv.MRIID == 21 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no merged service row: %+v", f.Services)
+	}
+}
+
 // TestOverviewActivity pins the fleet's activity-view payload: per-project
 // last_activity_at, the latest human-readable event, and release staleness.
 func TestOverviewActivity(t *testing.T) {

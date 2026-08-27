@@ -169,6 +169,7 @@
   .fs-upd{color:#34d399;border-color:#14532d;background:rgba(52,211,153,.07)}
   .fs-join{color:var(--mut);border-color:var(--line2)}
   .fs-main{color:var(--mut2);border-color:var(--line)}
+  .fs-merged{color:#c4b5fd;border-color:#4c3a8f}
   .fs-mr{color:#93c5fd;text-decoration:none;font-size:10.5px;border:1px solid var(--line2);border-radius:3px;padding:1px 7px}
   .fs-mr:hover{filter:brightness(1.2)}
   .mr-draft{color:var(--mut);border-color:var(--line2)}
@@ -695,7 +696,9 @@ function featureGroup(f) {
   // the feature action is idempotent (join + ensure charts branch + draft MR
   // if missing) — so every convenience button here is the same safe call
   const joined = (f.services || []).find(sv => sv.state !== 'main');
-  const stBadge = st => st === 'updated'
+  const stBadge = st => st === 'merged'
+    ? '<span class="fs-b fs-merged" title="the carrying MR is merged — this work rides main now">merged</span>'
+    : st === 'updated'
     ? '<span class="fs-b fs-upd" title="the feature\'s charts branch pins this service at a feature version">updated by feature</span>'
     : st === 'joined'
     ? '<span class="fs-b fs-join" title="branch exists but its chart pin is still the stable one — no feature publish yet">joined · tracking main</span>'
