@@ -73,11 +73,11 @@ func TestVersionCompareAndNewestTag(t *testing.T) {
 	}
 	// tags arrive ordered by update time (newest first) — positional pick
 	// works for numeric counters AND sha-suffixed rc styles (konstruct)
-	tags := []glTag{{"unrelated-1.0.0"}, {"metaphor-v0.2.0-rc.4"}, {"metaphor-v0.2.0-rc.3"}, {"metaphor-v0.2.0-rc.2"}}
+	tags := []glTag{{Name: "unrelated-1.0.0"}, {Name: "metaphor-v0.2.0-rc.4"}, {Name: "metaphor-v0.2.0-rc.3"}, {Name: "metaphor-v0.2.0-rc.2"}}
 	if got := newestTag(tags, "metaphor-v"); got != "metaphor-v0.2.0-rc.4" {
 		t.Fatalf("newestTag = %q, want metaphor-v0.2.0-rc.4", got)
 	}
-	sha := []glTag{{"konstruct-v0.7.8-rc.57f3903b"}, {"konstruct-v0.6.5-rc.44372335"}}
+	sha := []glTag{{Name: "konstruct-v0.7.8-rc.57f3903b"}, {Name: "konstruct-v0.6.5-rc.44372335"}}
 	if got := newestTag(sha, "konstruct-v"); got != "konstruct-v0.7.8-rc.57f3903b" {
 		t.Fatalf("sha-rc newestTag = %q — all-digit shas must not outrank by fake semver", got)
 	}
@@ -292,9 +292,9 @@ func TestEpicVersionsNeverOutrankRCs(t *testing.T) {
 		t.Fatalf("epic version parsed as ordered semver: %+v", v)
 	}
 	tags := []glTag{
-		{"metaphor-v0.2.0-epic-20-pink.9"},
-		{"metaphor-v0.2.0-rc.19"},
-		{"metaphor-v0.2.0-rc.4"},
+		{Name: "metaphor-v0.2.0-epic-20-pink.9"},
+		{Name: "metaphor-v0.2.0-rc.19"},
+		{Name: "metaphor-v0.2.0-rc.4"},
 	}
 	if got := newestTag(tags, "metaphor-v"); got != "metaphor-v0.2.0-rc.19" {
 		t.Fatalf("newestTag = %q — epic tags must never win even when newer", got)
@@ -608,5 +608,49 @@ func TestOrgLogo(t *testing.T) {
 	res.Body.Read(b)
 	if res.StatusCode != 200 || res.Header.Get("Content-Type") != "image/png" {
 		t.Fatalf("logo = %d %s (want sniffed image/png from octet-stream)", res.StatusCode, res.Header.Get("Content-Type"))
+	}
+}
+
+// TestPromotionRows pins the in-env rules: direct beats everything, merged
+// features ride rcs cut AFTER the merge, everything else is missing.
+func TestPromotionRows(t *testing.T) {
+	mergedAt := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	afterMerge := mergedAt.Add(30 * time.Minute)
+	beforeMerge := mergedAt.Add(-30 * time.Minute)
+	tags := []glTag{
+		{Name: "metaphor-v0.2.0-rc.31", Commit: struct {
+			CreatedAt *time.Time `json:"created_at"`
+		}{&afterMerge}},
+		{Name: "metaphor-v0.2.0-rc.30", Commit: struct {
+			CreatedAt *time.Time `json:"created_at"`
+		}{&beforeMerge}},
+	}
+	feats := []featureJSON{
+		{Branch: "epic-7-live", Merged: false},
+		{Branch: "epic-8-done", Merged: true, MergedAt: &mergedAt},
+	}
+	envs := func(delivered string) []deliveryNode {
+		return []deliveryNode{{Env: "dev-33", Delivered: delivered}}
+	}
+
+	// unmerged + env runs its own umbrella → direct
+	out := promotionRows([]featureJSON{feats[0]}, envs("0.2.0-epic-7-live.3"), tags, "metaphor-v")
+	if out[0].Envs[0].State != "direct" {
+		t.Fatalf("direct = %+v", out[0].Envs[0])
+	}
+	// unmerged + env on an rc → missing
+	out = promotionRows([]featureJSON{feats[0]}, envs("0.2.0-rc.31"), tags, "metaphor-v")
+	if out[0].Envs[0].State != "missing" {
+		t.Fatalf("unmerged rc = %+v", out[0].Envs[0])
+	}
+	// merged + rc cut AFTER the merge → via-rc (the rc carries it)
+	out = promotionRows([]featureJSON{feats[1]}, envs("0.2.0-rc.31"), tags, "metaphor-v")
+	if out[0].Envs[0].State != "via-rc" {
+		t.Fatalf("via-rc = %+v", out[0].Envs[0])
+	}
+	// merged + rc cut BEFORE the merge → missing (that rc predates the work)
+	out = promotionRows([]featureJSON{feats[1]}, envs("0.2.0-rc.30"), tags, "metaphor-v")
+	if out[0].Envs[0].State != "missing" {
+		t.Fatalf("old rc = %+v", out[0].Envs[0])
 	}
 }

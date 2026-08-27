@@ -184,7 +184,11 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "spec:\n  source:\n    targetRevision: 0.2.0-rc.2\n")
 	case strings.HasSuffix(p, "/repository/tags"):
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `[{"name":"metaphor-v0.2.0-epic-101-aurora.2"},{"name":"metaphor-v0.2.0-rc.4"},{"name":"metaphor-v0.2.0-rc.3"},{"name":"metaphor-v0.2.0-rc.2"}]`)
+		now3 := time.Now().UTC()
+		fmt.Fprintf(w, `[{"name":"metaphor-v0.2.0-epic-101-aurora.2","commit":{"created_at":%q}},{"name":"metaphor-v0.2.0-rc.4","commit":{"created_at":%q}},{"name":"metaphor-v0.2.0-rc.3","commit":{"created_at":%q}},{"name":"metaphor-v0.2.0-rc.2","commit":{"created_at":%q}}]`,
+			now3.Add(-2*time.Hour).Format(time.RFC3339), now3.Add(-10*time.Minute).Format(time.RFC3339), now3.Add(-20*time.Minute).Format(time.RFC3339), now3.Add(-30*time.Minute).Format(time.RFC3339))
+	case (strings.Contains(p, "%2Fepics%2F") || strings.Contains(p, "/epics/")) && r.Method == "PUT":
+		fmt.Fprint(w, `{"iid":101,"state":"closed"}`)
 	case strings.Contains(p, "%2Fepics%2F"), strings.Contains(p, "/epics/"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"iid":101,"title":"Redesign opening screen with aurora green background","state":"opened","web_url":"https://git.civo.com/groups/civo/metaphor/-/epics/101"}`)
@@ -269,13 +273,20 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"iid":88,"title":%q,"state":"opened","web_url":"https://git.civo.com/x/-/merge_requests/88"}`, body["title"])
 	case strings.HasSuffix(p, "/merge_requests") && r.Method == "GET" && r.URL.Query().Get("source_branch") != "":
 		if r.URL.Query().Get("source_branch") == "epic-101-aurora" {
-			fmt.Fprint(w, `[{"iid":12,"title":"Draft: epic-101-aurora","state":"opened","draft":true,"user_notes_count":2,"web_url":"https://git.civo.com/x/-/merge_requests/12"}]`)
+			fmt.Fprintf(w, `[{"iid":12,"title":"feat: aurora","state":"merged","merged_at":%q,"source_branch":"epic-101-aurora","web_url":"https://git.civo.com/x/-/merge_requests/12"}]`,
+				time.Now().UTC().Add(-1*time.Hour).Format(time.RFC3339))
+			return
+		}
+		if r.URL.Query().Get("source_branch") == "epic-showrishi" {
+			fmt.Fprint(w, `[{"iid":9,"title":"feat: show rishi","state":"opened","source_branch":"epic-showrishi","web_url":"https://git.civo.com/x/-/merge_requests/9"}]`)
 			return
 		}
 		fmt.Fprint(w, `[]`)
 	case strings.HasSuffix(p, "/merge_requests") && r.Method == "GET":
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `[{"iid":55,"title":"chore: bump metaphor-macro to 0.2.0-rc.4 (release_preview)","state":"opened","web_url":"https://git.civo.com/civo/metaphor/metaphor-gitops/-/merge_requests/55"}]`)
+	case strings.Contains(p, "/merge_requests/9") && r.Method == "GET":
+		fmt.Fprint(w, `{"iid":9,"title":"feat: show rishi","state":"opened","source_branch":"epic-showrishi","web_url":"https://git.civo.com/x/-/merge_requests/9"}`)
 	case strings.HasSuffix(p, "/approve"), strings.HasSuffix(p, "/merge"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"iid":55,"state":"merged"}`)

@@ -46,10 +46,13 @@ type api struct {
 	// gone (the DELETE returned 2xx) — renders skip it while upstream
 	// catches up.
 	recentDel map[string]time.Time
+	// epicClosed: one-shot memory for the merge observer — an epic is closed
+	// as Done exactly once per process (verified against live state first).
+	epicClosed map[int]bool
 }
 
 func newAPI(gl *glClient, groups []string) http.Handler {
-	a := &api{gl: gl, groups: groups, c: newCache(), topo: loadTopology(), hot: map[string]time.Time{}, lastSvc: map[string]string{}, recentDel: map[string]time.Time{}}
+	a := &api{gl: gl, groups: groups, c: newCache(), topo: loadTopology(), hot: map[string]time.Time{}, lastSvc: map[string]string{}, recentDel: map[string]time.Time{}, epicClosed: map[int]bool{}}
 	// Cross-group delivery files (e.g. konstruct's internal targetRevision in
 	// civo/platform/civo-gitops) may need their own read credential.
 	if tok := os.Getenv("GITLAB_TOKEN_DELIVERY"); tok != "" {
@@ -59,6 +62,7 @@ func newAPI(gl *glClient, groups []string) http.Handler {
 	a.act.markHot = a.markHot
 	a.act.dropBranches = func(project string) { a.c.drop("br:" + project) }
 	a.act.noteDeleted = a.noteBranchDeleted
+	a.act.dropMRs = func(project, branch string) { a.c.drop("mrs:" + project + "@" + branch) }
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/overview", a.guard(a.overview))
 	mux.HandleFunc("GET /api/ecosystem", a.guard(a.ecosystem))

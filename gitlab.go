@@ -157,7 +157,10 @@ func (c *glClient) events(ctx context.Context, projectID, limit int) ([]glEvent,
 // --- delivery-ecosystem access (projects addressed by URL-encoded path) ---
 
 type glTag struct {
-	Name string `json:"name"`
+	Name   string `json:"name"`
+	Commit struct {
+		CreatedAt *time.Time `json:"created_at"`
+	} `json:"commit"`
 }
 
 // getRaw fetches one non-JSON endpoint and returns the body as a string.
@@ -377,12 +380,14 @@ func (c *glClient) createPipeline(ctx context.Context, projectPath, ref string, 
 // --- merge-request surface (the deliver action merges the dev bump MR) ---
 
 type glMR struct {
-	IID            int    `json:"iid"`
-	Title          string `json:"title"`
-	State          string `json:"state"`
-	WebURL         string `json:"web_url"`
-	Draft          bool   `json:"draft"`
-	UserNotesCount int    `json:"user_notes_count"`
+	IID            int        `json:"iid"`
+	Title          string     `json:"title"`
+	State          string     `json:"state"`
+	WebURL         string     `json:"web_url"`
+	Draft          bool       `json:"draft"`
+	UserNotesCount int        `json:"user_notes_count"`
+	MergedAt       *time.Time `json:"merged_at"`
+	SourceBranch   string     `json:"source_branch"`
 }
 
 // openMRs lists a project's open merge requests, newest first.
@@ -430,6 +435,14 @@ func (c *glClient) fetchBytes(ctx context.Context, rawURL string) ([]byte, strin
 		return nil, "", err
 	}
 	return b, res.Header.Get("Content-Type"), nil
+}
+
+// mr fetches one merge request by iid.
+func (c *glClient) mr(ctx context.Context, projectPath string, iid int) (glMR, error) {
+	var out glMR
+	p := fmt.Sprintf("/projects/%s/merge_requests/%d", url.QueryEscape(projectPath), iid)
+	_, err := c.get(ctx, p, nil, &out)
+	return out, err
 }
 
 // mrsBySource lists MRs (any state) whose source is the given branch — the
@@ -540,6 +553,23 @@ func (c *glClient) createBranch(ctx context.Context, projectPath, branch, ref st
 		url.QueryEscape(projectPath), url.QueryEscape(branch), url.QueryEscape(ref))
 	err := c.postJSON(ctx, p, nil, &out)
 	return out, err
+}
+
+// epicUpdate flips an epic's lifecycle labels and (optionally) closes it —
+// the delivery-driven status transitions. Empty args are omitted.
+func (c *glClient) epicUpdate(ctx context.Context, groupPath string, iid int, addLabels, removeLabels, stateEvent string) error {
+	body := map[string]any{}
+	if addLabels != "" {
+		body["add_labels"] = addLabels
+	}
+	if removeLabels != "" {
+		body["remove_labels"] = removeLabels
+	}
+	if stateEvent != "" {
+		body["state_event"] = stateEvent
+	}
+	p := fmt.Sprintf("/groups/%s/epics/%d", url.QueryEscape(groupPath), iid)
+	return c.putJSON(ctx, p, body, nil)
 }
 
 // epicByIID fetches one epic regardless of state (preview resolution).

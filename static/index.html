@@ -139,6 +139,14 @@
   .br-act{padding:2px 6px;font-size:10px;gap:0}
   a.br-ahead{text-decoration:none}
   a.br-ahead:hover{filter:brightness(1.25)}
+  .prom-wrap{margin-top:18px}
+  .prom-row{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px 14px;margin-bottom:6px;flex-wrap:wrap}
+  .prom-name{color:var(--ink)}
+  .pe{font-size:10.5px;border:1px solid;border-radius:3px;padding:1px 8px}
+  .pe-direct{color:#34d399;border-color:#14532d;background:rgba(52,211,153,.07)}
+  .pe-rc{color:#67e8f9;border-color:#155e63}
+  .pe-miss{color:var(--mut2);border-color:var(--line)}
+  .pe-none{color:#fbbf24;border-color:#78560f;background:rgba(251,191,36,.06)}
   .feat-g{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 14px;margin:0 0 10px}
   .feat-h{display:flex;align-items:center;gap:9px;margin-bottom:7px}
   .feat-name{font-size:13px;color:var(--ink)}
@@ -565,8 +573,37 @@ function renderDelivery(d) {
         <div class="eco-h">Desired state</div>
         ${del.length ? del.map(e => envCard(e, m)).join('') : '<div class="ecard mut">no delivery targets</div>'}
       </div>
-    </div>`;
+    </div>` + promotionPanel(d.promotions);
   startProgressPollers();
+}
+// promotionPanel: which features are in which environments — and which are
+// in NONE. direct = the env runs the feature's own umbrella; via-rc = the
+// feature merged and the env's rc was cut after the merge (the rc carries it).
+function promotionPanel(proms) {
+  if (!proms || !proms.length) return '';
+  const chip = e => e.state === 'direct'
+    ? `<span class="pe pe-direct" title="running this feature's own umbrella (${esc(e.version)})">✓ ${esc(e.env)}</span>`
+    : e.state === 'via-rc'
+    ? `<span class="pe pe-rc" title="merged — carried by ${esc(e.version)}">✓ ${esc(e.env)} · via rc</span>`
+    : `<span class="pe pe-miss" title="this environment does not contain the feature">— ${esc(e.env)}</span>`;
+  const rows = proms.map(f => {
+    const nowhere = (f.envs || []).every(e => e.state === 'missing');
+    return `<div class="prom-row">
+      <span class="tf-ic">${ICON_BRANCH}</span>
+      <span class="mono prom-name">${esc(f.branch)}</span>
+      ${f.epic_iid ? `<a class="pv-epic" target="_blank" href="${f.epic_url}">&${f.epic_iid}</a>` : ''}
+      ${f.merged ? '<span class="fs-b fs-upd" title="every carrying MR is merged — the content rides main">merged</span>' : ''}
+      ${(f.envs || []).map(chip).join('')}
+      ${nowhere ? '<span class="pe pe-none">not yet in any environment</span>' : ''}
+      <span class="spacer"></span>
+      ${f.macro_ver ? `<span class="mono mut" style="font-size:10.5px">${esc(f.macro_ver)}</span>` : ''}
+    </div>`;
+  }).join('');
+  return `<div class="prom-wrap">
+    <div class="section-h">features · promotion<span></span></div>
+    <div class="mut" style="font-size:11px;margin:-4px 0 8px">deliver a feature version from the environment card's upgrade box — merged features ride the next rc</div>
+    ${rows}
+  </div>`;
 }
 
 // Branches: swimlanes of the delivery lines — main, hotfix-*, epic-* —
@@ -625,7 +662,7 @@ function featureGroup(f) {
     <div class="fs-row">
       <span class="mono fs-name">${sv.web_url ? `<a target="_blank" href="${sv.web_url}">${esc(sv.name)}</a>` : esc(sv.name)}</span>
       ${stBadge(sv.state)}
-      ${sv.mr_iid ? `<a class="fs-mr mono mr-${esc(sv.mr_state || 'ready')}" target="_blank" href="${sv.mr_url}" title="the carrying merge request — ${esc(sv.mr_state || 'ready')}">!${sv.mr_iid} · ${esc(sv.mr_state || 'ready')}</a>`
+      ${sv.mr_iid ? `<a class="fs-mr mono mr-${esc(sv.mr_state || 'ready')}" target="_blank" href="${sv.mr_url}" title="the carrying merge request — ${esc(sv.mr_state || 'ready')}">!${sv.mr_iid} · ${esc(sv.mr_state || 'ready')}</a>${act && (sv.mr_state === 'ready' || sv.mr_state === 'feedback') ? `<button class="abtn warn br-act" data-act="merge-mr" data-proj="${esc(sv.project)}" data-mriid="${sv.mr_iid}" data-branch="${esc(f.branch)}" title="merge !${sv.mr_iid} into main">${ICON_MR} merge</button>` : ''}`
         : act && sv.state !== 'main' ? `<button class="abtn br-act featfix" data-proj="${esc(sv.project)}" data-branch="${esc(f.branch)}" title="draft the carrying merge request for ${esc(sv.name)}">${ICON_MR} draft MR</button>` : ''}
       <span class="mut">${sv.when ? relTime(sv.when) : ''}</span>
       <span class="spacer"></span>
@@ -969,6 +1006,7 @@ document.addEventListener('click', async e => {
   if (b.classList.contains('upbtn')) { opts.version = (b.closest('.up-row')?.querySelector('.upin')?.value || '').trim(); opts.env = b.dataset.env; }
   if (b.dataset.ref) opts.ref = b.dataset.ref;
   if (b.dataset.ahead !== undefined && b.dataset.ahead !== '') opts.ahead = parseInt(b.dataset.ahead, 10);
+  if (b.dataset.mriid) { opts.mriid = parseInt(b.dataset.mriid, 10); opts.branch = b.dataset.branch; }
   openActionModal(b.dataset.act, b.dataset.proj, opts);
 });
 function openActionModal(action, project, opts) {
@@ -979,8 +1017,8 @@ function openActionModal(action, project, opts) {
   const short = project.split('/').pop();
   // delete: a fully-merged branch (ahead === 0) is loss-free — no countdown.
   const mergedDelete = action === 'delete' && opts.ahead === 0;
-  const needsConfirm = action === 'release' || action === 'deliver' || (action === 'delete' && !mergedDelete);
-  const verb = action === 'deliver' ? 'delivering' : action === 'delete' ? 'deleting' : 'releasing';
+  const needsConfirm = action === 'release' || action === 'deliver' || action === 'merge-mr' || (action === 'delete' && !mergedDelete);
+  const verb = action === 'deliver' ? 'delivering' : action === 'delete' ? 'deleting' : action === 'merge-mr' ? 'merging' : 'releasing';
   const rc = version || (state.eco && state.eco.macro && (state.eco.macro.published_rc || '')) || '';
   // Attribution is communicated by the konstruct shell — nothing to pick,
   // nothing to impersonate. The modal just states who it runs as.
@@ -988,10 +1026,12 @@ function openActionModal(action, project, opts) {
   $('#actmodal').innerHTML = `
     <div class="d-back"></div>
     <div class="d-panel" role="dialog" aria-modal="true">
-      <div class="d-head">${METAMARK}<b>${action === 'release' ? 'Release' : action === 'deliver' ? `Deliver to ${esc(opts.env || (state.eco?.delivery?.[0]?.environment ?? 'the environment'))}` : action === 'delete' ? 'Delete branch' : 'Trigger pipeline'}</b>
+      <div class="d-head">${METAMARK}<b>${action === 'release' ? 'Release' : action === 'deliver' ? `Deliver to ${esc(opts.env || (state.eco?.delivery?.[0]?.environment ?? 'the environment'))}` : action === 'delete' ? 'Delete branch' : action === 'merge-mr' ? 'Merge to main' : 'Trigger pipeline'}</b>
         <span class="mono mut">${esc(project)}</span><span class="spacer"></span>
         <a href="#" id="act-x" aria-label="close">✕</a></div>
-      <p class="mut">${action === 'delete'
+      <p class="mut">${action === 'merge-mr'
+        ? `Merges <b class="mono">!${opts.mriid}</b> — <b class="mono">${esc(opts.branch || '')}</b>'s work joins main and rides the next RC. Once every carrying MR of this feature is merged, its epic closes as <b>Done</b>.`
+        : action === 'delete'
         ? mergedDelete
           ? `<b class="mono">${esc(ref)}</b> is fully merged — every commit already lives in main. Deleting removes only the branch pointer; nothing is lost.`
           : opts.ahead > 0
@@ -1008,7 +1048,7 @@ function openActionModal(action, project, opts) {
         : 'Plays the manual <b>trigger:manual</b> job: pushes an empty commit to main so the delivery pipeline runs end-to-end on a fresh SHA.'}</p>
       ${action === 'deliver' ? `<div id="act-preview" class="mut" style="font-size:12px;margin:2px 0 12px">checking what this introduces…</div>` : ''}
       <div class="act-row">
-        <button id="act-go" class="abtn ${needsConfirm ? 'warn' : ''}">${action === 'release' ? ICON_ROCKET + ' <span class="cd-txt">release</span><span class="cd"></span>' : action === 'deliver' ? ICON_SHIP + ' <span class="cd-txt">deliver</span><span class="cd"></span>' : action === 'delete' ? ICON_TRASH + ' <span class="cd-txt">delete</span><span class="cd"></span>' : ICON_SCOPE + ' trigger'}</button>
+        <button id="act-go" class="abtn ${needsConfirm ? 'warn' : ''}">${action === 'release' ? ICON_ROCKET + ' <span class="cd-txt">release</span><span class="cd"></span>' : action === 'deliver' ? ICON_SHIP + ' <span class="cd-txt">deliver</span><span class="cd"></span>' : action === 'delete' ? ICON_TRASH + ' <span class="cd-txt">delete</span><span class="cd"></span>' : action === 'merge-mr' ? ICON_MR + ' <span class="cd-txt">merge</span><span class="cd"></span>' : ICON_SCOPE + ' trigger'}</button>
         <span class="act-id mono mut" title="attribution is set by the server — the signed-in konstruct session">as @${esc(actor)}</span>
         <span id="act-out" class="mono mut"></span>
       </div>
@@ -1037,7 +1077,7 @@ function openActionModal(action, project, opts) {
       const hdrs = { 'Content-Type': 'application/json' };
       if (state.konstructUser) hdrs['X-Konstruct-Actor'] = state.konstructUser;
       const res = await fetch('/api/actions/run', { method: 'POST', headers: hdrs,
-        body: JSON.stringify({ project, action, confirm, ref: ref || undefined, version: action === 'deliver' ? (version || '') : undefined }) });
+        body: JSON.stringify({ project, action, confirm, ref: ref || undefined, mr_iid: opts.mriid || undefined, version: action === 'deliver' ? (version || '') : undefined }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         // stale "merged" view: the server re-checked and found unmerged work —
@@ -1047,6 +1087,13 @@ function openActionModal(action, project, opts) {
           return;
         }
         throw body;
+      }
+      if (action === 'merge-mr') {
+        $('#act-out').innerHTML = `✓ merged — <a target="_blank" href="${body.web_url}">!${body.mr}</a>`;
+        state.burstUntil = Date.now() + 120000;
+        refresh();
+        setTimeout(() => { closeActModal(); }, 2200);
+        return;
       }
       if (action === 'delete') {
         $('#act-out').textContent = `✓ ${ref} deleted`;
@@ -1077,7 +1124,7 @@ function openActionModal(action, project, opts) {
     // the cursor is still on the button — read neutral NOW, not on mouseout
     btn.classList.add('calm');
     btn.addEventListener('mouseleave', () => btn.classList.remove('calm'), { once: true });
-    const t = btn.querySelector('.cd-txt'); if (t) t.textContent = action === 'deliver' ? 'deliver' : action === 'delete' ? 'delete' : 'release';
+    const t = btn.querySelector('.cd-txt'); if (t) t.textContent = action === 'deliver' ? 'deliver' : action === 'delete' ? 'delete' : action === 'merge-mr' ? 'merge' : 'release';
     const b = btn.querySelector('.cd'); if (b) b.style.width = '0%';
     if (msg) $('#act-out').textContent = msg;
   };

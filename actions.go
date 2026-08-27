@@ -55,6 +55,9 @@ type actions struct {
 	// noteDeleted tombstones a deleted branch so renders skip it while
 	// GitLab's branch list catches up (it can lag the DELETE by seconds).
 	noteDeleted func(project, branch string)
+	// dropMRs invalidates the cached MR lookup for a branch after a merge so
+	// the feature view reflects it immediately.
+	dropMRs func(project, branch string)
 }
 
 func newActions(read *glClient, topo topology, groups []string) *actions {
@@ -155,7 +158,7 @@ func (x *actions) status(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{
 		"enabled": true,
-		"actions": []string{"trigger", "release", "deliver", "feature", "delete"},
+		"actions": []string{"trigger", "release", "deliver", "feature", "delete", "merge-mr"},
 		"actor":   x.actorFor(r),
 	})
 }
@@ -174,6 +177,8 @@ type runReq struct {
 	// Ref: trigger/release on a specific branch (epic-*, hotfix/*) instead of
 	// the default branch — branch CI from the Branches page.
 	Ref string `json:"ref"`
+	// MRIID: merge-mr — the carrying MR to merge from the feature view.
+	MRIID int `json:"mr_iid"`
 }
 
 // reVersionArg keeps typed version overrides to sane semver-ish shapes.
@@ -190,7 +195,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jobName, isJob := actionJobs[req.Action]
-	if !isJob && req.Action != "deliver" && req.Action != "feature" && req.Action != "delete" {
+	if !isJob && req.Action != "deliver" && req.Action != "feature" && req.Action != "delete" && req.Action != "merge-mr" {
 		writeErr(w, 400, "unknown action")
 		return
 	}
@@ -200,7 +205,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 	}
 	actor := x.actorFor(r)
 	short := req.Project[strings.LastIndex(req.Project, "/")+1:]
-	if (req.Action == "release" || req.Action == "deliver") && req.Confirm != short {
+	if (req.Action == "release" || req.Action == "deliver" || req.Action == "merge-mr") && req.Confirm != short {
 		writeErr(w, 400, fmt.Sprintf("confirmation mismatch: %q required", short))
 		return
 	}
@@ -269,6 +274,48 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			resp["mr"] = map[string]any{"iid": mr.IID, "web_url": mr.WebURL}
 		}
 		writeJSON(w, resp)
+		return
+	}
+
+	// merge-mr: merge a feature's carrying MR into main — the user's act, by
+	// design (the worker parks at CI green and never merges). Only MRs whose
+	// source is an epic-* branch are mergeable from here; the epic close
+	// (Done) follows via the merge observer once every carrying MR is in.
+	if req.Action == "merge-mr" {
+		if req.MRIID <= 0 {
+			writeErr(w, 400, "mr_iid required")
+			return
+		}
+		ctx := context.Background()
+		m, err := x.gl.mr(ctx, req.Project, req.MRIID)
+		if err != nil {
+			writeErr(w, 502, "MR lookup failed: "+err.Error())
+			return
+		}
+		if !strings.HasPrefix(m.SourceBranch, "epic-") {
+			writeErr(w, 400, "only feature (epic-*) MRs merge from here")
+			return
+		}
+		if m.State != "opened" {
+			writeErr(w, 409, "MR is "+m.State+", not open")
+			return
+		}
+		merged, err := x.gl.mergeMR(ctx, req.Project, req.MRIID)
+		if err != nil {
+			writeErr(w, 502, "merge failed: "+err.Error())
+			return
+		}
+		if x.dropMRs != nil {
+			x.dropMRs(req.Project, m.SourceBranch)
+		}
+		if x.markHot != nil {
+			x.markHot(req.Project)
+			x.markHot(x.topo.MacroProj)
+		}
+		log.Printf("ACTION merge-mr project=%s mr=%d branch=%s actor=%s state=%s remote=%s",
+			req.Project, req.MRIID, m.SourceBranch, actor, merged.State, r.RemoteAddr)
+		writeJSON(w, map[string]any{"ok": true, "action": "merge-mr", "actor": actor,
+			"mr": req.MRIID, "state": merged.State, "web_url": m.WebURL})
 		return
 	}
 
@@ -517,6 +564,18 @@ func (x *actions) mergeDevBump(version, actor string) {
 				if merged, err := x.gl.mergeMR(ctx, gitops, mr.IID); err == nil {
 					log.Printf("ACTION deliver-merge project=%s mr=%d version=%s actor=%s state=%s",
 						gitops, mr.IID, version, actor, merged.State)
+					// a FEATURE landing in dev flips its epic to In Review —
+					// the delivery IS the review request (John's lifecycle)
+					if m := reEpicRef.FindStringSubmatch(version); m != nil {
+						if iid, err := strconv.Atoi(m[1]); err == nil && iid > 0 {
+							if err := x.gl.epicUpdate(ctx, x.group(), iid,
+								"status::In Review", "status::In Progress,status::Ready for Queue", ""); err == nil {
+								log.Printf("LIFECYCLE epic=%d delivered→In Review version=%s actor=%s", iid, version, actor)
+							} else {
+								log.Printf("LIFECYCLE epic=%d In Review flip failed: %v", iid, err)
+							}
+						}
+					}
 					if x.markHot != nil {
 						x.markHot(gitops)
 					}

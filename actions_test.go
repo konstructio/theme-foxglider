@@ -505,3 +505,65 @@ func TestDeleteBranch(t *testing.T) {
 		t.Fatalf("off-topology delete = %d (want 400)", res.StatusCode)
 	}
 }
+
+// TestMergeMRAction: only open epic-* MRs merge, with the repo-name confirm.
+func TestMergeMRAction(t *testing.T) {
+	merged := map[string]bool{}
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(p, "/merge_requests/9") && r.Method == "GET":
+			w.Write([]byte(`{"iid":9,"state":"opened","source_branch":"epic-70-pink","web_url":"http://gl/x/-/merge_requests/9"}`))
+		case strings.HasSuffix(p, "/merge_requests/10") && r.Method == "GET":
+			w.Write([]byte(`{"iid":10,"state":"opened","source_branch":"fix/oops","web_url":"http://gl/x/-/merge_requests/10"}`))
+		case strings.HasSuffix(p, "/merge_requests/11") && r.Method == "GET":
+			w.Write([]byte(`{"iid":11,"state":"merged","source_branch":"epic-70-pink","web_url":"http://gl/x/-/merge_requests/11"}`))
+		case strings.HasSuffix(p, "/approve"):
+			w.Write([]byte(`{}`))
+		case strings.HasSuffix(p, "/merge"):
+			merged[p] = true
+			w.Write([]byte(`{"iid":9,"state":"merged","web_url":"http://gl/x/-/merge_requests/9"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	t.Setenv("GITLAB_ACTION_TOKEN", "act-tok")
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	post := func(body string) (*http.Response, map[string]any) {
+		res, err := http.Post(srv.URL+"/api/actions/run", "application/json", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out map[string]any
+		json.NewDecoder(res.Body).Decode(&out)
+		return res, out
+	}
+
+	// no confirm → refused before any lookup
+	res, _ := post(`{"action":"merge-mr","project":"civo/metaphor/metaphor","mr_iid":9}`)
+	if res.StatusCode != 400 {
+		t.Fatalf("no confirm = %d", res.StatusCode)
+	}
+	// non-epic source branch → refused
+	res, _ = post(`{"action":"merge-mr","project":"civo/metaphor/metaphor","mr_iid":10,"confirm":"metaphor"}`)
+	if res.StatusCode != 400 {
+		t.Fatalf("non-epic = %d", res.StatusCode)
+	}
+	// already merged → honest 409
+	res, _ = post(`{"action":"merge-mr","project":"civo/metaphor/metaphor","mr_iid":11,"confirm":"metaphor"}`)
+	if res.StatusCode != 409 {
+		t.Fatalf("already merged = %d", res.StatusCode)
+	}
+	// the good path
+	res, out := post(`{"action":"merge-mr","project":"civo/metaphor/metaphor","mr_iid":9,"confirm":"metaphor"}`)
+	if res.StatusCode != 200 || out["state"] != "merged" {
+		t.Fatalf("merge = %d %+v", res.StatusCode, out)
+	}
+	if len(merged) != 1 {
+		t.Fatalf("merge calls = %+v", merged)
+	}
+}

@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.11.0"
+const themeVersion = "2.12.0"
 
 const ttlEco = 45 * time.Second
 
@@ -602,6 +602,7 @@ collect:
 		"services":     services,
 		"delivery":     delivery,
 		"summary":      ecoSummary(t, macro, delivery, a.cachedTags(ctx, t.MacroProj)),
+		"promotions":   a.promotions(ctx, t, delivery),
 	})
 }
 
@@ -900,12 +901,22 @@ type featSvcJSON struct {
 	// State: "updated" — the feature's charts branch pins this service at a
 	// feature version; "joined" — the branch exists but the pin is still
 	// stable; "main" — no branch, the service rides main inside this feature.
+	State      string     `json:"state"`
+	When       string     `json:"when,omitempty"`
+	WebURL     string     `json:"web_url,omitempty"`
+	MRIID      int        `json:"mr_iid,omitempty"`
+	MRURL      string     `json:"mr_url,omitempty"`
+	MRState    string     `json:"mr_state,omitempty"`
+	MRMergedAt *time.Time `json:"mr_merged_at,omitempty"`
+}
+
+// featEnvJSON: one feature's presence in one delivery environment.
+// State: "direct" (env runs the feature's own -branch. umbrella), "via-rc"
+// (feature merged and the env runs an rc cut after the merge), "missing".
+type featEnvJSON struct {
+	Env     string `json:"env"`
 	State   string `json:"state"`
-	When    string `json:"when,omitempty"`
-	WebURL  string `json:"web_url,omitempty"`
-	MRIID   int    `json:"mr_iid,omitempty"`
-	MRURL   string `json:"mr_url,omitempty"`
-	MRState string `json:"mr_state,omitempty"`
+	Version string `json:"version,omitempty"`
 }
 
 type featureJSON struct {
@@ -917,6 +928,12 @@ type featureJSON struct {
 	MacroURL string        `json:"macro_url,omitempty"`
 	When     string        `json:"when,omitempty"`
 	Services []featSvcJSON `json:"services"`
+	// Merged: every service the feature actually updated has its carrying MR
+	// merged (and at least one exists). MergedAt is the latest of them — the
+	// instant the feature's content started riding main.
+	Merged   bool          `json:"merged,omitempty"`
+	MergedAt *time.Time    `json:"merged_at,omitempty"`
+	Envs     []featEnvJSON `json:"envs,omitempty"`
 }
 
 // mrStateLabel maps an MR to the human read on the chip: merged/closed win,
@@ -1043,22 +1060,69 @@ func (a *api) assembleFeatures(ctx context.Context, t topology, repos []repoBran
 					if list, _ := v.([]glMR); len(list) > 0 {
 						if m := bestMR(list); m != nil {
 							fs.MRIID, fs.MRURL, fs.MRState = m.IID, m.WebURL, mrStateLabel(*m)
+							if m.State == "merged" {
+								fs.MRMergedAt = m.MergedAt
+							}
 						}
 					}
 				}
 			}
 			f.Services = append(f.Services, fs)
 		}
+		// merged = every UPDATED service's MR is merged (joined-but-untouched
+		// services have nothing to merge and don't block)
+		updated, merged := 0, 0
+		for _, fs := range f.Services {
+			if fs.State != "updated" {
+				continue
+			}
+			updated++
+			if fs.MRState == "merged" {
+				merged++
+				if fs.MRMergedAt != nil && (f.MergedAt == nil || fs.MRMergedAt.After(*f.MergedAt)) {
+					f.MergedAt = fs.MRMergedAt
+				}
+			}
+		}
+		f.Merged = updated > 0 && merged == updated
 		out = append(out, f)
 	}
 	return out
 }
 
+// promotionRows answers "which features are not yet in an environment": for
+// every feature × delivery env — direct (the env runs the feature's own
+// umbrella), via-rc (merged, and the env's rc tag was cut after the merge —
+// the rc carries it), or missing.
+func promotionRows(features []featureJSON, delivery []deliveryNode, tags []glTag, tagPrefix string) []featureJSON {
+	tagTime := map[string]*time.Time{}
+	for _, t := range tags {
+		tagTime[t.Name] = t.Commit.CreatedAt
+	}
+	for fi := range features {
+		f := &features[fi]
+		needle := "-" + reBranchID.ReplaceAllString(strings.ToLower(f.Branch), "-") + "."
+		for _, d := range delivery {
+			e := featEnvJSON{Env: d.Env, State: "missing", Version: d.Delivered}
+			switch {
+			case strings.Contains(d.Delivered, needle):
+				e.State = "direct"
+			case f.Merged && f.MergedAt != nil:
+				if ct := tagTime[tagPrefix+d.Delivered]; ct != nil && ct.After(*f.MergedAt) {
+					e.State = "via-rc"
+				}
+			}
+			f.Envs = append(f.Envs, e)
+		}
+	}
+	return features
+}
+
 // branchesView lists every topology repo's branches grouped into lanes, plus
 // the macro repo's newest tags — the release/feature timeline in one payload.
-func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
-	ctx := context.Background()
-	t := a.topo
+// repoBranchesAll assembles every topology repo's lane-grouped branches —
+// shared by the Branches tab and the ecosystem's promotion summary.
+func (a *api) repoBranchesAll(ctx context.Context, t topology) []repoBranches {
 	repos := append([]svcSpec{}, t.Services...)
 	repos = append(repos, svcSpec{Name: t.MacroName, Project: t.MacroProj})
 	out := make([]repoBranches, len(repos))
@@ -1091,16 +1155,9 @@ func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
 	for range repos {
 		<-done
 	}
-	allTags := a.cachedTags(ctx, t.MacroProj)
-	tags := []string{}
-	for _, tg := range allTags {
-		tags = append(tags, tg.Name)
-		if len(tags) >= 12 {
-			break
-		}
-	}
 	// every branch gets its end-result umbrella version: the newest macro tag
 	// whose prerelease id matches the branch (main → the newest rc).
+	allTags := a.cachedTags(ctx, t.MacroProj)
 	for ri := range out {
 		for _, lane := range [][]branchJSON{out[ri].Main, out[ri].Hotfix, out[ri].Epic} {
 			for bi := range lane {
@@ -1111,9 +1168,75 @@ func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	return out
+}
+
+func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
+	ctx := context.Background()
+	t := a.topo
+	out := a.repoBranchesAll(ctx, t)
+	allTags := a.cachedTags(ctx, t.MacroProj)
+	tags := []string{}
+	for _, tg := range allTags {
+		tags = append(tags, tg.Name)
+		if len(tags) >= 12 {
+			break
+		}
+	}
 	writeJSON(w, map[string]any{"repos": out, "macro_tags": tags,
 		"features": a.assembleFeatures(ctx, t, out, allTags),
 		"group":    strings.TrimSuffix(t.MacroProj, "/"+t.MacroProj[strings.LastIndex(t.MacroProj, "/")+1:])})
+}
+
+// promotions builds the feature→environment matrix and runs the merge
+// observer: a feature whose every carrying MR is merged closes its epic as
+// Done (John's lifecycle — merge means the content rides main; promotion is
+// tracked HERE from then on, not on the epic).
+func (a *api) promotions(ctx context.Context, t topology, delivery []deliveryNode) []featureJSON {
+	tags := a.cachedTags(ctx, t.MacroProj)
+	feats := a.assembleFeatures(ctx, t, a.repoBranchesAll(ctx, t), tags)
+	feats = promotionRows(feats, delivery, tags, t.MacroTag)
+	a.observeMerged(ctx, feats)
+	return feats
+}
+
+// observeMerged closes fully-merged features' epics (Done) exactly once —
+// whether the merge happened through foxglider's button or raw GitLab.
+func (a *api) observeMerged(ctx context.Context, feats []featureJSON) {
+	if a.act == nil || !a.act.enabled() {
+		return
+	}
+	group := a.orgGroup()
+	for _, f := range feats {
+		if f.EpicIID == 0 || !f.Merged {
+			continue
+		}
+		a.hotMu.Lock()
+		seen := a.epicClosed[f.EpicIID]
+		a.hotMu.Unlock()
+		if seen {
+			continue
+		}
+		ep, err := a.act.gl.epicByIID(ctx, group, f.EpicIID)
+		if err != nil {
+			continue
+		}
+		if ep.State != "opened" {
+			a.hotMu.Lock()
+			a.epicClosed[f.EpicIID] = true
+			a.hotMu.Unlock()
+			continue
+		}
+		if err := a.act.gl.epicUpdate(ctx, group, f.EpicIID,
+			"status::Done", "status::In Review,status::In Progress", "close"); err == nil {
+			log.Printf("LIFECYCLE epic=%d merged→Done+closed branch=%s", f.EpicIID, f.Branch)
+			a.hotMu.Lock()
+			a.epicClosed[f.EpicIID] = true
+			a.hotMu.Unlock()
+		} else {
+			log.Printf("LIFECYCLE epic=%d Done+close failed: %v", f.EpicIID, err)
+		}
+	}
 }
 
 // cachedRelease fetches a repo's newest release (5-min cache; nil when the
