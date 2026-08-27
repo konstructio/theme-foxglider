@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.12.1"
+const themeVersion = "2.13.0"
 
 const ttlEco = 45 * time.Second
 
@@ -264,6 +264,11 @@ type svcNode struct {
 	Features []branchJSON `json:"features,omitempty"`
 	// LatestRelease feeds the tile's "main release" section.
 	LatestRelease *releaseJSON `json:"latest_release,omitempty"`
+	// Hotfixes: fresh hotfix branches on this repo — the tile's hotfix section.
+	Hotfixes []branchJSON `json:"hotfixes,omitempty"`
+	// BranchPipes: latest pipeline per epic/hotfix branch shown on the tile —
+	// the "I pushed, where is it" answer, live.
+	BranchPipes map[string]*pipelineJSON `json:"branch_pipes,omitempty"`
 }
 
 type macroNode struct {
@@ -273,6 +278,11 @@ type macroNode struct {
 	BaseVer      string `json:"base_version"`
 	PublishedRC  string `json:"published_rc"`
 	PublishedTag string `json:"published_tag"`
+	// BuiltFrom: the line the displayed umbrella was built from — "main" for
+	// rc tags, the epic branch id for feature tags.
+	BuiltFrom string `json:"built_from,omitempty"`
+	// Tags: the newest published umbrella tags — the version picker's menu.
+	Tags []string `json:"tags,omitempty"`
 	// Bundle: the subchart pins inside the PUBLISHED umbrella (deps at the
 	// tag ref; falls back to main's tip when the tag read misses — BundleRef
 	// says which one you're looking at).
@@ -491,7 +501,11 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 		i    int
 		v    any
 	}
-	svcFeats := make([][]branchJSON, len(t.Services))
+	type tileBranches struct {
+		feats, hots []branchJSON
+		pipes       map[string]*pipelineJSON
+	}
+	svcTB := make([]tileBranches, len(t.Services))
 	svcRels := make([]*releaseJSON, len(t.Services))
 	var macroRel *releaseJSON
 	total := 4 + len(t.Services)*4 + len(t.Delivery)
@@ -504,7 +518,10 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 		i, s := i, s
 		go func() { ch <- slot{"svcRaw", i, a.rawFile(ctx, s.Project, s.Chart)} }()
 		go func() { ch <- slot{"svcPipe", i, a.pipeBundleFor(ctx, s.Project)} }()
-		go func() { ch <- slot{"svcFeat", i, a.activeFeatures(ctx, s.Project)} }()
+		go func() {
+			f, h, p := a.tileBranchData(ctx, s.Project)
+			ch <- slot{"svcFeat", i, tileBranches{f, h, p}}
+		}()
 		go func() { ch <- slot{"svcRel", i, a.cachedRelease(ctx, s.Project)} }()
 	}
 	for i, d := range t.Delivery {
@@ -531,7 +548,7 @@ collect:
 			case "delRaw":
 				delRaw[s.i] = s.v.(string)
 			case "svcFeat":
-				svcFeats[s.i], _ = s.v.([]branchJSON)
+				svcTB[s.i], _ = s.v.(tileBranches)
 			case "svcRel":
 				svcRels[s.i], _ = s.v.(*releaseJSON)
 			case "macroRel":
@@ -566,7 +583,16 @@ collect:
 		WebURL:  a.gl.base + "/" + t.MacroProj,
 		BaseVer: chartVersion(macroRaw), PublishedRC: publishedRC, PublishedTag: publishedTag,
 		Bundle: bundle, BundleRef: bundleRef, LatestRelease: macroRel,
-		Pipeline: macroPB.Pipe, Commit: macroPB.Commit, SHAPipes: macroPB.Pipes,
+		BuiltFrom: builtFrom(publishedTag),
+		Pipeline:  macroPB.Pipe, Commit: macroPB.Commit, SHAPipes: macroPB.Pipes,
+	}
+	for _, tg := range a.cachedTags(ctx, t.MacroProj) {
+		if strings.HasPrefix(tg.Name, t.MacroTag) {
+			macro.Tags = append(macro.Tags, tg.Name)
+		}
+		if len(macro.Tags) >= 12 {
+			break
+		}
 	}
 
 	services := make([]svcNode, len(t.Services))
@@ -576,7 +602,8 @@ collect:
 			WebURL:  a.gl.base + "/" + s.Project,
 			BaseVer: chartVersion(svcRaw[i]), Bundled: deps[s.Name],
 			Pipeline: svcPB[i].Pipe, Commit: svcPB[i].Commit, SHAPipes: svcPB[i].Pipes,
-			Features: svcFeats[i], LatestRelease: svcRels[i],
+			Features: svcTB[i].feats, Hotfixes: svcTB[i].hots,
+			BranchPipes: svcTB[i].pipes, LatestRelease: svcRels[i],
 		}
 		// A service run just finished: its dep-bump is pushing the next macro
 		// RC — put the macro on the fast lane so the handoff shows promptly.
@@ -872,6 +899,81 @@ func (a *api) cachedBranches(ctx context.Context, project string) ([]branchJSON,
 		return nil, err
 	}
 	return v.([]branchJSON), nil
+}
+
+// reBuiltFrom pulls the prerelease line out of an umbrella tag/version:
+// "...-epic-106-background.2" → "epic-106-background"; no match → main line.
+var reBuiltFrom = regexp.MustCompile(`-(epic-[a-z0-9-]+)\.[0-9]+$`)
+
+func builtFrom(tagOrVer string) string {
+	if m := reBuiltFrom.FindStringSubmatch(tagOrVer); m != nil {
+		return m[1]
+	}
+	if tagOrVer == "" {
+		return ""
+	}
+	return "main"
+}
+
+// freshHotfixes: a repo's non-stale hotfix branches, newest first, tile-sized.
+func (a *api) freshHotfixes(ctx context.Context, project string) []branchJSON {
+	brs, err := a.cachedBranches(ctx, project)
+	if err != nil {
+		return nil
+	}
+	var out []branchJSON
+	for _, b := range brs {
+		if strings.HasPrefix(b.Name, "hotfix") && !b.Stale && !a.branchDeleted(project, b.Name) {
+			out = append(out, b)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].When > out[j].When })
+	if len(out) > 4 {
+		out = out[:4]
+	}
+	return out
+}
+
+// branchPipe: the newest pipeline on a specific branch — 30s cache, 5s on the
+// hot lane so a fresh push shows up while you're watching.
+func (a *api) branchPipe(ctx context.Context, project, ref string) *pipelineJSON {
+	ttl := 30 * time.Second
+	if a.isHot(project) {
+		ttl = 5 * time.Second
+	}
+	v, err := a.c.do("bp:"+project+"@"+ref, ttl, func() (any, error) {
+		pls, err := a.gl.recentPipelines(ctx, project, ref, "", 1)
+		if err != nil {
+			return nil, err
+		}
+		if len(pls) == 0 {
+			return (*pipelineJSON)(nil), nil
+		}
+		p := pls[0]
+		pj := pipelineJSON{ID: p.ID, Status: p.Status, Ref: p.Ref,
+			WebURL: p.WebURL, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+			DurationS: p.UpdatedAt.Sub(p.CreatedAt).Seconds()}
+		return &pj, nil
+	})
+	if err != nil {
+		return nil
+	}
+	p, _ := v.(*pipelineJSON)
+	return p
+}
+
+// tileBranchData bundles a repo's tile-facing branch intel: fresh hotfixes,
+// active features, and the newest pipeline for each of those branches.
+func (a *api) tileBranchData(ctx context.Context, project string) ([]branchJSON, []branchJSON, map[string]*pipelineJSON) {
+	feats := a.activeFeatures(ctx, project)
+	hots := a.freshHotfixes(ctx, project)
+	pipes := map[string]*pipelineJSON{}
+	for _, b := range append(append([]branchJSON{}, feats...), hots...) {
+		if p := a.branchPipe(ctx, project, b.Name); p != nil {
+			pipes[b.Name] = p
+		}
+	}
+	return feats, hots, pipes
 }
 
 // activeFeatures filters a repo's epic-* branches to those touched within the
@@ -1197,7 +1299,39 @@ func (a *api) promotions(ctx context.Context, t topology, delivery []deliveryNod
 	feats := a.assembleFeatures(ctx, t, a.repoBranchesAll(ctx, t), tags)
 	feats = promotionRows(feats, delivery, tags, t.MacroTag)
 	a.observeMerged(ctx, feats)
+	a.observeChartsTwins(ctx, t, feats)
 	return feats
+}
+
+// observeChartsTwins late-creates the charts branch for any active feature
+// missing it — a branch pushed straight from a terminal gets its umbrella
+// line without anyone clicking anything (John: any time a branch is created
+// in one, it should be created in charts as well).
+func (a *api) observeChartsTwins(ctx context.Context, t topology, feats []featureJSON) {
+	if a.act == nil || !a.act.enabled() {
+		return
+	}
+	for _, f := range feats {
+		if f.Charts {
+			continue
+		}
+		a.hotMu.Lock()
+		seen := a.chartsTwinned[f.Branch]
+		a.hotMu.Unlock()
+		if seen {
+			continue
+		}
+		if _, err := a.act.gl.createBranch(ctx, t.MacroProj, f.Branch, "main"); err == nil ||
+			strings.Contains(err.Error(), "already exists") {
+			log.Printf("LIFECYCLE charts twin created branch=%s", f.Branch)
+			a.c.drop("br:" + t.MacroProj)
+		} else {
+			log.Printf("LIFECYCLE charts twin failed branch=%s err=%v", f.Branch, err)
+		}
+		a.hotMu.Lock()
+		a.chartsTwinned[f.Branch] = true
+		a.hotMu.Unlock()
+	}
 }
 
 // observeMerged closes fully-merged features' epics (Done) exactly once —
@@ -1258,6 +1392,37 @@ func (a *api) cachedRelease(ctx context.Context, project string) *releaseJSON {
 	}
 	return &releaseJSON{Tag: r.TagName, Name: r.Name, ReleasedAt: r.ReleasedAt,
 		WebURL: r.Links.Self, DaysAgo: int(time.Since(r.ReleasedAt).Hours() / 24)}
+}
+
+// bundleAt answers the umbrella version picker: the subchart pins inside ANY
+// published umbrella tag (immutable → cached long), plus the line it was
+// built from. ?tag= must be one of the macro repo's published tags.
+func (a *api) bundleAt(w http.ResponseWriter, r *http.Request) {
+	tag := strings.TrimSpace(r.URL.Query().Get("tag"))
+	t := a.topo
+	if tag == "" || !strings.HasPrefix(tag, t.MacroTag) || len(tag) > 128 {
+		writeErr(w, 400, "tag must be a published umbrella tag")
+		return
+	}
+	ctx := context.Background()
+	v, err := a.c.do("bundle:"+t.MacroProj+"@"+tag, time.Hour, func() (any, error) {
+		bctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		raw, err := a.gl.fileRaw(bctx, t.MacroProj, t.MacroFile, tag)
+		if err != nil {
+			return nil, err
+		}
+		return orderedDeps(raw), nil
+	})
+	if err != nil {
+		writeErr(w, 404, "that tag's chart could not be read: "+err.Error())
+		return
+	}
+	deps, _ := v.([]depJSON)
+	writeJSON(w, map[string]any{
+		"tag": tag, "version": strings.TrimPrefix(tag, t.MacroTag),
+		"built_from": builtFrom(tag), "deps": deps,
+	})
 }
 
 // avatarFor resolves (and long-caches) the avatar for a commit email; "" when

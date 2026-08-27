@@ -654,3 +654,18 @@ func TestPromotionRows(t *testing.T) {
 		t.Fatalf("old rc = %+v", out[0].Envs[0])
 	}
 }
+
+// TestBuiltFrom pins the built-from derivation for the umbrella picker.
+func TestBuiltFrom(t *testing.T) {
+	cases := map[string]string{
+		"metaphor-v0.2.0-rc.31":                 "main",
+		"metaphor-v0.2.0-epic-106-background.2": "epic-106-background",
+		"konstruct-v0.7.8-rc.57f3903b":          "main",
+		"":                                      "",
+	}
+	for in, want := range cases {
+		if got := builtFrom(in); got != want {
+			t.Fatalf("builtFrom(%q) = %q want %q", in, got, want)
+		}
+	}
+}

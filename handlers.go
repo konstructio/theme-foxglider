@@ -49,10 +49,12 @@ type api struct {
 	// epicClosed: one-shot memory for the merge observer — an epic is closed
 	// as Done exactly once per process (verified against live state first).
 	epicClosed map[int]bool
+	// chartsTwinned: one-shot memory for the charts-twin observer.
+	chartsTwinned map[string]bool
 }
 
 func newAPI(gl *glClient, groups []string) http.Handler {
-	a := &api{gl: gl, groups: groups, c: newCache(), topo: loadTopology(), hot: map[string]time.Time{}, lastSvc: map[string]string{}, recentDel: map[string]time.Time{}, epicClosed: map[int]bool{}}
+	a := &api{gl: gl, groups: groups, c: newCache(), topo: loadTopology(), hot: map[string]time.Time{}, lastSvc: map[string]string{}, recentDel: map[string]time.Time{}, epicClosed: map[int]bool{}, chartsTwinned: map[string]bool{}}
 	// Cross-group delivery files (e.g. konstruct's internal targetRevision in
 	// civo/platform/civo-gitops) may need their own read credential.
 	if tok := os.Getenv("GITLAB_TOKEN_DELIVERY"); tok != "" {
@@ -68,6 +70,7 @@ func newAPI(gl *glClient, groups []string) http.Handler {
 	mux.HandleFunc("GET /api/ecosystem", a.guard(a.ecosystem))
 	mux.HandleFunc("GET /api/pipeline-progress", a.guard(a.pipelineProgress))
 	mux.HandleFunc("GET /api/meta", a.meta)
+	mux.HandleFunc("GET /api/bundle", a.guard(a.bundleAt))
 	mux.HandleFunc("GET /api/org", a.guard(a.orgInfo))
 	mux.HandleFunc("GET /api/org-logo", a.guard(a.orgLogo))
 	mux.HandleFunc("GET /api/projects/{id}/pipelines", a.guard(a.projectPipelines))

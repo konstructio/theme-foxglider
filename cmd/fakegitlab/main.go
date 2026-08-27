@@ -326,6 +326,16 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 		}
 		now := time.Now().UTC()
 		web := "https://git.civo.com/" + proj + "/-/pipelines"
+		if rf := r.URL.Query().Get("ref"); rf != "" && rf != "main" {
+			// branch pipelines: epic branches run, hotfix/0.2 has an old red one
+			st2, when := "running", time.Now().UTC().Add(-3*time.Minute)
+			if strings.HasPrefix(rf, "hotfix") {
+				st2, when = "failed", time.Now().UTC().Add(-2*time.Hour)
+			}
+			fmt.Fprintf(w, `[{"id":950,"status":%q,"ref":%q,"web_url":%q,"created_at":%q,"updated_at":%q}]`,
+				st2, rf, web+"/950", when.Format(time.RFC3339), when.Add(90*time.Second).Format(time.RFC3339))
+			return
+		}
 		if r.URL.Query().Get("status") == "success" {
 			fmt.Fprintf(w, `[{"id":899,"status":"success","ref":"main","sha":"0ldfacecafe","web_url":%q,"created_at":%q,"updated_at":%q}]`,
 				web, now.Add(-3*time.Hour).Format(time.RFC3339), now.Add(-3*time.Hour+2*time.Minute).Format(time.RFC3339))

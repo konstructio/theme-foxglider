@@ -140,6 +140,16 @@
   .br-act{padding:2px 6px;font-size:10px;gap:0}
   a.br-ahead{text-decoration:none}
   a.br-ahead:hover{filter:brightness(1.25)}
+  .verpick{background:var(--panel2);border:1px solid var(--line);border-radius:5px;color:var(--ink);padding:2px 6px;max-width:100%}
+  .verpick.picked{color:var(--civo);border-color:var(--civo);box-shadow:0 0 0 1px rgba(52,211,153,.25)}
+  .macro-picked{border-color:var(--civo)}
+  .macro-picked .btree{border-color:#14532d}
+  .macro-picked .bt-ver{color:var(--civo)}
+  .upin.picked{color:var(--civo);border-color:var(--civo)}
+  .bf-chip{border:1px solid var(--line);border-radius:3px;padding:0 6px;font-size:10.5px}
+  .bf-feat{color:var(--civo);border-color:#14532d}
+  .pipe-mini{font-size:9.5px;padding:1px 6px}
+  .tf-ghost{color:var(--mut2)}
   .prom-wrap{margin-top:18px}
   .prom-row{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px 14px;margin-bottom:6px;flex-wrap:wrap}
   .prom-name{color:var(--ink)}
@@ -480,11 +490,28 @@ setInterval(() => {
 // run, an upgrade CTA when a newer chart is published (editable — any
 // published version works, so rollback is the same gesture), and the
 // delivering glow + chip while a change flows in.
+// verPicker: the umbrella version as a dropdown of every published tag.
+// Picking one previews it — the tree fluctuates to that tag's pins, the
+// selection and every environment's upgrade box turn green with it. Picking
+// the newest again clears the preview.
+function verPicker(m) {
+  const cur = m.published_tag || '';
+  const tags = m.tags || [];
+  const sel = state.picked ? state.picked.tag : cur;
+  if (!tags.length) return `<div class="ec-big mono">${esc(m.published_rc || m.base_version || '—')}</div>`;
+  return `<select id="verpick" class="ec-big mono verpick${state.picked ? ' picked' : ''}" title="preview any published umbrella — the tree and the environment boxes follow">
+    ${tags.map(t => {
+      const v = t.replace(/^.*?-v/, 'v').replace(/^v/, '');
+      const bf = /-(epic-[a-z0-9-]+)\.[0-9]+$/.exec(t)?.[1];
+      return `<option value="${esc(t)}" ${t === sel ? 'selected' : ''}>${esc(t === cur ? v + ' · newest' : v)}${bf ? ` (${esc(bf)})` : ''}</option>`;
+    }).join('')}
+  </select>`;
+}
 // bundleTree: the subchart pins inside the published umbrella, as a tree.
 // Rows flash briefly when a version changes between polls — publishes are
 // visible the moment they land.
 function bundleTree(m) {
-  const deps = m.bundle || [];
+  const deps = state.picked ? state.picked.deps : (m.bundle || []);
   if (!deps.length) return '';
   const prev = state.prevBundle || {};
   const next = {};
@@ -514,7 +541,7 @@ function envCard(e, m) {
     <div class="ec-big mono">${verChip(e.delivered_version)}</div>
     ${e.state === 'current' ? driftChip(e) : upgradable ? `<div class="up-hint">upgrade available → ${esc(latest)}${e.behind > 0 ? ` · ↑${e.behind} change${e.behind === 1 ? '' : 's'}` : ''}</div>` : driftChip(e)}
     ${canAct ? `<div class="up-row">
-        <input class="upin" value="${esc(latest)}" spellcheck="false" title="any published version — type an older one to roll back">
+        <input class="upin${state.picked ? ' picked' : ''}" value="${esc(state.picked ? state.picked.version : latest)}" spellcheck="false" title="any published version — type an older one to roll back">
         <button class="abtn warn upbtn" data-act="deliver" data-proj="${esc(m.project)}" data-env="${esc(e.environment)}">${ICON_SHIP} upgrade</button>
       </div>` : ''}
     ${watchChip({ project: '__delivery__' })}
@@ -553,16 +580,17 @@ function renderDelivery(d) {
           <div class="ec-ver mono"><span class="vlbl">in macro</span>${verChip(s.bundled_version)}<span class="vlbl">dev</span>${verChip(s.base_version)}</div>
           ${mainPipelineSection(s)}
           ${mainReleaseSection(s)}
+          ${tileHotfixes(s)}
           ${tileFeatures(s)}${watchChip(s)}
         </div>`).join('')}
       </div>
       <div class="eco-arrow">→</div>
       <div class="eco-col">
         <div class="eco-h">Umbrella</div>
-        <div class="ecard macro">
+        <div class="ecard macro${state.picked ? ' macro-picked' : ''}">
           <div class="ec-top">${METAMARK}<a class="pname" target="_blank" href="${m.web_url}" title="${esc(m.name)}">${esc(m.name)}</a>${statusChip(m.pipeline)}${avatarImg(m.pipeline)}</div>
-          <div class="ec-big mono">${esc(m.published_rc || m.base_version || '—')}</div>
-          <div class="mut">bundles ${svcs.length} microcharts · base <span class="mono">${esc(m.base_version || '—')}</span></div>
+          ${verPicker(m)}
+          <div class="mut">bundles ${svcs.length} microcharts · base <span class="mono">${esc(m.base_version || '—')}</span> · built from <span class="mono bf-chip${(state.picked ? state.picked.built_from : m.built_from) !== 'main' ? ' bf-feat' : ''}">${esc(state.picked ? state.picked.built_from : (m.built_from || 'main'))}</span></div>
           ${bundleTree(m)}
           ${mainPipelineSection(m)}
           ${mainReleaseSection(m)}
@@ -614,7 +642,9 @@ function branchActs(repo, b, lane) {
   if (!state.act || !state.act.enabled) return '';
   if (lane === 'stale') lane = /^epic-/.test(b.name) ? 'epic' : 'hotfix'; // stale rows keep their real lane's rules
   const t = `<button class="abtn br-act" data-act="trigger" data-proj="${esc(repo.project)}" data-ref="${esc(b.name)}" title="run ${esc(b.name)}'s CI">${ICON_SCOPE}</button>`;
-  const r = `<button class="abtn warn br-act" data-act="release" data-proj="${esc(repo.project)}" data-ref="${b.name === 'main' ? '' : esc(b.name)}" title="release from ${esc(b.name)}">${ICON_ROCKET}</button>`;
+  const r = lane !== 'epic'
+    ? `<button class="abtn warn br-act" data-act="release" data-proj="${esc(repo.project)}" data-ref="${b.name === 'main' ? '' : esc(b.name)}" title="release from ${esc(b.name)}">${ICON_ROCKET}</button>`
+    : '';
   const del = lane === 'hotfix'
     ? `<button class="abtn br-act danger" data-act="delete" data-proj="${esc(repo.project)}" data-ref="${esc(b.name)}" data-ahead="${b.ahead ?? ''}" title="${b.ahead === 0 ? 'delete — fully merged, nothing is lost' : 'delete branch (confirms first)'}">${ICON_TRASH}</button>`
     : '';
@@ -667,8 +697,7 @@ function featureGroup(f) {
         : act && sv.state !== 'main' ? `<button class="abtn br-act featfix" data-proj="${esc(sv.project)}" data-branch="${esc(f.branch)}" title="draft the carrying merge request for ${esc(sv.name)}">${ICON_MR} draft MR</button>` : ''}
       <span class="mut">${sv.when ? relTime(sv.when) : ''}</span>
       <span class="spacer"></span>
-      ${act && sv.state !== 'main' ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(sv.project)}" data-ref="${esc(f.branch)}" title="run ${esc(f.branch)}'s CI on ${esc(sv.name)}">${ICON_SCOPE}</button>
-      <button class="abtn warn br-act" data-act="release" data-proj="${esc(sv.project)}" data-ref="${esc(f.branch)}" title="release from ${esc(f.branch)}">${ICON_ROCKET}</button>`
+      ${act && sv.state !== 'main' ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(sv.project)}" data-ref="${esc(f.branch)}" title="run ${esc(f.branch)}'s CI on ${esc(sv.name)}">${ICON_SCOPE}</button>`
       : act && sv.state === 'main' ? `<button class="abtn br-act featfix" data-proj="${esc(sv.project)}" data-branch="${esc(f.branch)}" title="join ${esc(sv.name)} to this feature (creates its branch + drafts the MR)">${ICON_BRANCH} join</button>` : ''}
     </div>`).join('');
   return `<div class="feat-g">
@@ -959,18 +988,51 @@ function actBtns(project, isMacro) {
 // tileFeatures: epic branches touched in the last 2 days become first-class
 // secondary targets on the tile — their own trigger/release, aimed at the
 // branch (the block above stays main's).
+// pipeMini: a branch row's live pipeline chip — status-colored, linked.
+function pipeMini(pl) {
+  if (!pl) return '';
+  return `<a class="pipebtn pipe-mini" target="_blank" href="${pl.web_url}" style="--c:${statusColor(pl.status)}" title="pipeline #${pl.id} · ${pl.status} · ${relTime(pl.created_at)}">${ICON_PIPE} ${esc(pl.status)}</a>`;
+}
+// tileFeatures: EVERY active feature in the org shows on EVERY card — trigger
+// (with its live pipeline) when this repo has the branch, JOIN when it
+// doesn't. Releases never cut from epic- branches (2026-08-27 decision).
 function tileFeatures(svc) {
-  const feats = svc.features || [];
+  const proms = (state.eco && state.eco.promotions) || [];
   const act = state.act && state.act.enabled;
-  if (!feats.length && !act) return '';
-  return `<div class="tile-feats"><div class="tf-h tf-h-row">active features<span class="spacer"></span>${act ? `<button class="abtn br-act" data-act="feature" data-proj="${esc(svc.project)}" title="start or join an epic feature branch (app + charts)">${ICON_BRANCH} start · join</button>` : ''}</div>${!feats.length ? '<div class="mut" style="font-size:11px">none right now</div>' : ''}${feats.map(f => `
+  if (!proms.length && !act) return '';
+  const rows = proms.map(f => {
+    const mine = (f.services || []).find(x => x.project === svc.project);
+    const has = !!(mine && mine.state !== 'main');
+    const pipe = has ? (svc.branch_pipes || {})[f.branch] : null;
+    return `<div class="tf-row">
+      <span class="tf-ic">${ICON_BRANCH}</span>
+      ${has && mine.web_url ? `<a class="mono tf-name" target="_blank" href="${mine.web_url}">${esc(f.branch)}</a>` : `<span class="mono tf-name tf-ghost">${esc(f.branch)}</span>`}
+      ${has ? `<span class="fs-b ${mine.state === 'updated' ? 'fs-upd' : 'fs-join'}">${mine.state === 'updated' ? 'updated' : 'joined'}</span>` : '<span class="fs-b fs-main">not joined</span>'}
+      ${has && mine.when ? `<span class="mut">${relTime(mine.when)}</span>` : ''}
+      ${pipeMini(pipe)}
+      <span class="spacer"></span>
+      ${act ? has
+        ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(svc.project)}" data-ref="${esc(f.branch)}" title="run ${esc(f.branch)}'s CI here">${ICON_SCOPE}</button>`
+        : `<button class="abtn br-act featfix" data-proj="${esc(svc.project)}" data-branch="${esc(f.branch)}" title="join ${esc(f.branch)} — creates this repo's branch + drafts its MR">${ICON_BRANCH} join</button>` : ''}
+    </div>`;
+  }).join('');
+  return `<div class="tile-feats"><div class="tf-h tf-h-row">active features<span class="spacer"></span>${act ? `<button class="abtn br-act" data-act="feature" data-proj="${esc(svc.project)}" title="start or join an epic feature branch (app + charts)">${ICON_BRANCH} start · join</button>` : ''}</div>${!proms.length ? '<div class="mut" style="font-size:11px">none right now</div>' : rows}</div>`;
+}
+// tileHotfixes: the repo's fresh hotfix- branches — trigger + release (hotfix
+// lines DO release) + the live pipeline.
+function tileHotfixes(svc) {
+  const hots = svc.hotfixes || [];
+  if (!hots.length) return '';
+  const act = state.act && state.act.enabled;
+  return `<div class="tile-feats"><div class="tf-h">hotfixes</div>${hots.map(b => `
     <div class="tf-row">
       <span class="tf-ic">${ICON_BRANCH}</span>
-      <a class="mono tf-name" target="_blank" href="${f.web_url}" title="${esc(f.title || '')}">${esc(f.name)}</a>
-      <span class="mut">${f.when ? relTime(f.when) : ''}</span>
+      <a class="mono tf-name" target="_blank" href="${b.web_url}" title="${esc(b.title || '')}">${esc(b.name)}</a>
+      <span class="mut">${b.when ? relTime(b.when) : ''}</span>
+      ${pipeMini((svc.branch_pipes || {})[b.name])}
       <span class="spacer"></span>
-      ${act ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(svc.project)}" data-ref="${esc(f.name)}" title="run ${esc(f.name)}'s CI">${ICON_SCOPE}</button>
-      <button class="abtn warn br-act" data-act="release" data-proj="${esc(svc.project)}" data-ref="${esc(f.name)}" title="release from ${esc(f.name)}">${ICON_ROCKET}</button>` : ''}
+      ${act ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(svc.project)}" data-ref="${esc(b.name)}" title="run ${esc(b.name)}'s CI">${ICON_SCOPE}</button>
+      <button class="abtn warn br-act" data-act="release" data-proj="${esc(svc.project)}" data-ref="${esc(b.name)}" title="release from ${esc(b.name)}">${ICON_ROCKET}</button>` : ''}
     </div>`).join('')}</div>`;
 }
 // featureSlug: the shortest meaningful word from an epic title — strip filler
@@ -981,6 +1043,18 @@ function featureSlug(title) {
   const pick = words.find(w => !SLUG_STOP.has(w) && w.length > 2) || words[0] || '';
   return pick.slice(0, 16);
 }
+document.addEventListener('change', async e => {
+  const vp = e.target.closest('#verpick');
+  if (!vp) return;
+  const tag = vp.value;
+  const newest = state.eco?.macro?.published_tag;
+  if (!tag || tag === newest) { state.picked = null; renderDelivery(state.eco); return; }
+  try {
+    const b = await fetchJSON('/api/bundle?tag=' + encodeURIComponent(tag));
+    state.picked = b; // {tag, version, built_from, deps}
+    renderDelivery(state.eco);
+  } catch (err) { state.picked = null; renderDelivery(state.eco); }
+});
 document.addEventListener('click', async e => {
   const ff = e.target.closest('.featfix');
   if (ff) {
