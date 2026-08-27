@@ -567,3 +567,101 @@ func TestMergeMRAction(t *testing.T) {
 		t.Fatalf("merge calls = %+v", merged)
 	}
 }
+
+// TestDeliverMRMode: mr-mode delivery bumps targetRevision on a fresh branch
+// and opens the MR — never merging, and refusing no-ops.
+func TestDeliverMRMode(t *testing.T) {
+	var commitBody, mrBody map[string]any
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(p, "%2Fstage-app.yaml") || strings.Contains(p, "stage-app.yaml"):
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("spec:\n  source:\n    targetRevision: 0.5.0\n"))
+		case strings.HasSuffix(p, "/repository/commits") && r.Method == "POST":
+			json.NewDecoder(r.Body).Decode(&commitBody)
+			w.Write([]byte(`{"id":"abc"}`))
+		case strings.HasSuffix(p, "/merge_requests") && r.Method == "POST":
+			json.NewDecoder(r.Body).Decode(&mrBody)
+			w.Write([]byte(`{"iid":77,"state":"opened","web_url":"http://gl/g/-/merge_requests/77"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	t.Setenv("GITLAB_ACTION_TOKEN", "act-tok")
+	t.Setenv("TOPOLOGY", `{"services":[{"name":"metaphor","project":"civo/metaphor/metaphor","chart":"charts/metaphor/Chart.yaml","delivery":[{"env":"stage","cluster":"stage-1","project":"civo/platform/civo-gitops","app":"registry/stage-app.yaml","write":"mr"}]}],"macro":{"name":"metaphor-macro","project":"civo/metaphor/charts","file":"charts/metaphor-macro/Chart.yaml","tagPrefix":"metaphor-v"}}`)
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	post := func(body string) (*http.Response, map[string]any) {
+		res, err := http.Post(srv.URL+"/api/actions/run", "application/json", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out map[string]any
+		json.NewDecoder(res.Body).Decode(&out)
+		return res, out
+	}
+
+	// no version → refused (mr-mode needs an explicit published version)
+	res, _ := post(`{"action":"deliver","project":"civo/metaphor/metaphor","env":"stage","confirm":"metaphor"}`)
+	if res.StatusCode != 400 {
+		t.Fatalf("no version = %d", res.StatusCode)
+	}
+	// the good path
+	res, out := post(`{"action":"deliver","project":"civo/metaphor/metaphor","env":"stage","version":"0.6.0","confirm":"metaphor"}`)
+	if res.StatusCode != 200 || out["mode"] != "mr" || out["mr"] != float64(77) || out["was"] != "0.5.0" {
+		t.Fatalf("mr deliver = %d %+v", res.StatusCode, out)
+	}
+	if commitBody["start_branch"] != "main" || commitBody["branch"] == "main" {
+		t.Fatalf("commit branches = %+v", commitBody)
+	}
+	acts := commitBody["actions"].([]any)[0].(map[string]any)
+	if !strings.Contains(acts["content"].(string), "targetRevision: 0.6.0") {
+		t.Fatalf("bump content = %v", acts["content"])
+	}
+	if mrBody["target_branch"] != "main" {
+		t.Fatalf("mr = %+v", mrBody)
+	}
+	// same version → honest 409
+	res, _ = post(`{"action":"deliver","project":"civo/metaphor/metaphor","env":"stage","version":"0.5.0","confirm":"metaphor"}`)
+	if res.StatusCode != 409 {
+		t.Fatalf("no-op deliver = %d", res.StatusCode)
+	}
+}
+
+// TestHotfixOnlyPolicy: the konstruct rule — no epic-* creation or triggers.
+func TestHotfixOnlyPolicy(t *testing.T) {
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.EscapedPath(), "/pipeline") && r.Method == "POST" {
+			w.Write([]byte(`{"id":600,"status":"created","web_url":"http://gl/x/-/pipelines/600"}`))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer gl.Close()
+	t.Setenv("GITLAB_ACTION_TOKEN", "act-tok")
+	t.Setenv("TOPOLOGY", `{"branch_policy":"hotfix-only","services":[{"name":"konstruct-api","project":"civo/konstruct/konstruct-api","chart":"charts/civo/konstruct/konstruct-api/Chart.yaml"}],"macro":{"name":"konstruct","project":"civo/konstruct/charts","file":"charts/konstruct/Chart.yaml","tagPrefix":"konstruct-v"}}`)
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	post := func(body string) *http.Response {
+		res, err := http.Post(srv.URL+"/api/actions/run", "application/json", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	if res := post(`{"action":"feature","project":"civo/konstruct/konstruct-api","branch":"epic-1-x"}`); res.StatusCode != 400 {
+		t.Fatalf("feature under policy = %d", res.StatusCode)
+	}
+	if res := post(`{"action":"trigger","project":"civo/konstruct/konstruct-api","ref":"epic-1-x"}`); res.StatusCode != 400 {
+		t.Fatalf("epic trigger under policy = %d", res.StatusCode)
+	}
+	if res := post(`{"action":"trigger","project":"civo/konstruct/konstruct-api","ref":"hotfix-0.9"}`); res.StatusCode != 200 {
+		t.Fatalf("hotfix trigger under policy = %d", res.StatusCode)
+	}
+}

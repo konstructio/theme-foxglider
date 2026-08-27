@@ -669,3 +669,56 @@ func TestBuiltFrom(t *testing.T) {
 		}
 	}
 }
+
+// TestSingleAppMode: no macro — apps deliver directly, pending targets render
+// honestly, ready ones drift by their own version.
+func TestSingleAppMode(t *testing.T) {
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(p, "solo%2FChart.yaml"):
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("version: 1.4.0\n"))
+		case strings.Contains(p, "solo-app.yaml"):
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("spec:\n  source:\n    targetRevision: 1.4.0\n"))
+		case strings.HasSuffix(p, "/pipelines/latest"):
+			w.Write([]byte(`{"id":9,"status":"success","ref":"main","sha":"abcd1234","web_url":"http://gl/x/-/pipelines/9","created_at":"2026-08-27T00:00:00Z","updated_at":"2026-08-27T00:01:00Z"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	t.Setenv("TOPOLOGY", `{"services":[{"name":"solo","project":"civo/x/solo","chart":"charts/solo/Chart.yaml","delivery":[{"env":"prod-a","cluster":"a","project":"civo/x/gitops","app":"solo-app.yaml","write":"mr"},{"env":"kubefunk-b","cluster":"b","host":"https://gitlab.kubefunk.net","project":"y/gitops","app":"solo-app.yaml","token_env":"KFUNK_TOKEN","write":"mr"}]}]}`)
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	res, err := http.Get(srv.URL + "/api/ecosystem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var eco struct {
+		Macro    macroNode      `json:"macro"`
+		Delivery []deliveryNode `json:"delivery"`
+	}
+	json.NewDecoder(res.Body).Decode(&eco)
+	if eco.Macro.Project != "" {
+		t.Fatalf("single-app mode grew a macro: %+v", eco.Macro)
+	}
+	if len(eco.Delivery) != 2 {
+		t.Fatalf("delivery = %+v", eco.Delivery)
+	}
+	byEnv := map[string]deliveryNode{}
+	for _, d := range eco.Delivery {
+		byEnv[d.Env] = d
+	}
+	a := byEnv["prod-a"]
+	if !a.Ready || a.For != "solo" || a.Delivered != "1.4.0" || a.State != "current" {
+		t.Fatalf("prod-a = %+v", a)
+	}
+	b := byEnv["kubefunk-b"]
+	if b.Ready || b.State != "pending" {
+		t.Fatalf("kubefunk-b must be pending without its token: %+v", b)
+	}
+}

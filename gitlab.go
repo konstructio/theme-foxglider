@@ -437,6 +437,18 @@ func (c *glClient) fetchBytes(ctx context.Context, rawURL string) ([]byte, strin
 	return b, res.Header.Get("Content-Type"), nil
 }
 
+// commitFile creates a single-file commit on a NEW branch cut from start —
+// the mr-mode delivery write (bump targetRevision, open an MR, never merge
+// platform repos ourselves).
+func (c *glClient) commitFile(ctx context.Context, projectPath, newBranch, startBranch, filePath, content, message string) error {
+	body := map[string]any{
+		"branch": newBranch, "start_branch": startBranch, "commit_message": message,
+		"actions": []map[string]string{{"action": "update", "file_path": filePath, "content": content}},
+	}
+	p := fmt.Sprintf("/projects/%s/repository/commits", url.QueryEscape(projectPath))
+	return c.postJSON(ctx, p, body, nil)
+}
+
 // mr fetches one merge request by iid.
 func (c *glClient) mr(ctx context.Context, projectPath string, iid int) (glMR, error) {
 	var out glMR

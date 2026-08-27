@@ -58,6 +58,8 @@ type actions struct {
 	// dropMRs invalidates the cached MR lookup for a branch after a merge so
 	// the feature view reflects it immediately.
 	dropMRs func(project, branch string)
+	// clientFor resolves a delivery target's own host/credential client.
+	clientFor func(deliverySpec) *glClient
 }
 
 func newActions(read *glClient, topo topology, groups []string) *actions {
@@ -179,6 +181,8 @@ type runReq struct {
 	Ref string `json:"ref"`
 	// MRIID: merge-mr — the carrying MR to merge from the feature view.
 	MRIID int `json:"mr_iid"`
+	// Env: deliver — which delivery target (defaults to the first).
+	Env string `json:"env"`
 }
 
 // reVersionArg keeps typed version overrides to sane semver-ish shapes.
@@ -215,6 +219,10 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 	// the first moment. Creating is idempotent: an existing branch means the
 	// app is JOINING a feature already in flight.
 	if req.Action == "feature" {
+		if x.topo.BranchPolicy == "hotfix-only" {
+			writeErr(w, 400, "this org takes app-repo changes on hotfix- branches only — feature branches are disabled")
+			return
+		}
 		if req.Project == x.topo.MacroProj {
 			writeErr(w, 400, "start features from a service card — the macro branch follows automatically")
 			return
@@ -367,11 +375,113 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 	// the dev bump MR, which a background watcher auto-merges (dev
 	// auto-delivers by policy; staging/prod stay human).
 	if req.Action == "deliver" {
-		if req.Project != x.topo.MacroProj {
-			writeErr(w, 400, "deliver applies to the umbrella only")
+		// resolve the delivery TARGET: umbrella-level by default, or a
+		// service's own target (single-app delivery) when the project is a
+		// service carrying targets.
+		var target *deliverySpec
+		var forApp string
+		if req.Project == x.topo.MacroProj {
+			for i := range x.topo.Delivery {
+				if req.Env == "" || x.topo.Delivery[i].Env == req.Env {
+					target = &x.topo.Delivery[i]
+					break
+				}
+			}
+		} else {
+			for si := range x.topo.Services {
+				if x.topo.Services[si].Project != req.Project {
+					continue
+				}
+				for i := range x.topo.Services[si].Delivery {
+					if req.Env == "" || x.topo.Services[si].Delivery[i].Env == req.Env {
+						target = &x.topo.Services[si].Delivery[i]
+						forApp = x.topo.Services[si].Name
+						break
+					}
+				}
+			}
+		}
+		if target == nil {
+			writeErr(w, 400, "no delivery target matches that project/env")
 			return
 		}
 		ctx := context.Background()
+
+		// non-tag-pipeline targets: the deliver IS a gitops edit — bump the
+		// targetRevision in the target repo with the target's own credential,
+		// as an MR (platform repos keep their approvers) or a direct commit.
+		if target.Write == "mr" || target.Write == "commit" {
+			ver := strings.TrimSpace(req.Version)
+			if ver == "" || !reVersionArg.MatchString(ver) {
+				writeErr(w, 400, "deliver to this target needs an explicit published version")
+				return
+			}
+			tc := x.clientFor
+			var c *glClient
+			if tc != nil {
+				c = tc(*target)
+			}
+			if c == nil {
+				writeErr(w, 503, "this target's credentials aren't configured yet ("+target.TokenEnv+")")
+				return
+			}
+			br := target.Branch
+			if br == "" {
+				br = "main"
+			}
+			raw, err := c.fileRaw(ctx, target.Project, target.App, br)
+			if err != nil {
+				writeErr(w, 502, "target file read: "+err.Error())
+				return
+			}
+			cur := targetRevision(raw)
+			if cur == ver {
+				writeErr(w, 409, "the target already asks for "+ver)
+				return
+			}
+			updated := reTargetRev.ReplaceAllString(raw, "targetRevision: "+ver)
+			name := x.topo.MacroName
+			if forApp != "" {
+				name = forApp
+			}
+			wb := fmt.Sprintf("foxglider-deliver-%s-%s", target.Env, strings.ReplaceAll(ver, ".", "-"))
+			msg := fmt.Sprintf("chore: deliver %s %s to %s\n\nWas %s.\n\nInitiated-by: @%s", name, ver, target.Env, cur, actor)
+			if target.Write == "commit" {
+				wb = br // straight onto the target branch
+			}
+			if err := c.commitFile(ctx, target.Project, wb, br, target.App, updated, msg); err != nil {
+				writeErr(w, 502, "bump commit: "+err.Error())
+				return
+			}
+			resp := map[string]any{"ok": true, "action": "deliver", "actor": actor,
+				"version": ver, "env": target.Env, "mode": target.Write, "was": cur}
+			if target.Write == "mr" {
+				m, err := c.createMR(ctx, target.Project, wb, br,
+					fmt.Sprintf("chore: deliver %s %s to %s", name, ver, target.Env),
+					fmt.Sprintf("Requested from foxglider.\n\nWas `%s`.\n\nInitiated-by: @%s", cur, actor))
+				if err != nil {
+					writeErr(w, 502, "bump MR: "+err.Error())
+					return
+				}
+				resp["mr"] = m.IID
+				resp["mr_url"] = m.WebURL
+				log.Printf("ACTION deliver mode=mr env=%s version=%s mr=%d actor=%s remote=%s",
+					target.Env, ver, m.IID, actor, r.RemoteAddr)
+			} else {
+				log.Printf("ACTION deliver mode=commit env=%s version=%s actor=%s remote=%s",
+					target.Env, ver, actor, r.RemoteAddr)
+			}
+			if x.markHot != nil {
+				x.markHot(target.Project)
+			}
+			writeJSON(w, resp)
+			return
+		}
+
+		if req.Project != x.topo.MacroProj {
+			writeErr(w, 400, "tag-pipeline delivery applies to the umbrella only")
+			return
+		}
 		tags, err := x.gl.tags(ctx, x.topo.MacroProj, 100)
 		if err != nil {
 			writeErr(w, 502, "tags: "+err.Error())
@@ -433,6 +543,10 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 
 	// Branch-scoped trigger: run the branch's CI on its tip — for epic
 	// branches that's the whole publish chain (a fresh -<branch>.N version).
+	if req.Action == "trigger" && req.Ref != "" && x.topo.BranchPolicy == "hotfix-only" && strings.HasPrefix(strings.ToLower(req.Ref), "epic-") {
+		writeErr(w, 400, "this org takes app-repo changes on hotfix- branches only")
+		return
+	}
 	if req.Action == "trigger" && req.Ref != "" {
 		if !reBranch.MatchString(strings.ToLower(req.Ref)) {
 			writeErr(w, 400, "that doesn't look like a branch name")

@@ -51,10 +51,14 @@ type api struct {
 	epicClosed map[int]bool
 	// chartsTwinned: one-shot memory for the charts-twin observer.
 	chartsTwinned map[string]bool
+	// clients: one GitLab client per (host, token_env) delivery target —
+	// control planes live on different hosts with different credentials.
+	clientMu sync.Mutex
+	clients  map[string]*glClient
 }
 
 func newAPI(gl *glClient, groups []string) http.Handler {
-	a := &api{gl: gl, groups: groups, c: newCache(), topo: loadTopology(), hot: map[string]time.Time{}, lastSvc: map[string]string{}, recentDel: map[string]time.Time{}, epicClosed: map[int]bool{}, chartsTwinned: map[string]bool{}}
+	a := &api{gl: gl, groups: groups, c: newCache(), topo: loadTopology(), hot: map[string]time.Time{}, lastSvc: map[string]string{}, recentDel: map[string]time.Time{}, epicClosed: map[int]bool{}, chartsTwinned: map[string]bool{}, clients: map[string]*glClient{}}
 	// Cross-group delivery files (e.g. konstruct's internal targetRevision in
 	// civo/platform/civo-gitops) may need their own read credential.
 	if tok := os.Getenv("GITLAB_TOKEN_DELIVERY"); tok != "" {
@@ -65,6 +69,7 @@ func newAPI(gl *glClient, groups []string) http.Handler {
 	a.act.dropBranches = func(project string) { a.c.drop("br:" + project) }
 	a.act.noteDeleted = a.noteBranchDeleted
 	a.act.dropMRs = func(project, branch string) { a.c.drop("mrs:" + project + "@" + branch) }
+	a.act.clientFor = a.clientFor
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/overview", a.guard(a.overview))
 	mux.HandleFunc("GET /api/ecosystem", a.guard(a.ecosystem))
@@ -517,6 +522,38 @@ func (a *api) orgLogo(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "max-age=600")
 	w.Write(im.b)
+}
+
+// clientFor resolves the client for a delivery target: its own host and
+// credential when named, the primary client otherwise. nil = the target is
+// not reachable from here (unsupported kind, or its token isn't configured) —
+// callers render "credentials pending" instead of guessing.
+func (a *api) clientFor(d deliverySpec) *glClient {
+	if d.Kind != "" && d.Kind != "gitlab" {
+		return nil // github driver pending — the target renders as such
+	}
+	host := d.Host
+	if host == "" {
+		host = a.gl.base
+	}
+	tok := a.gl.token
+	if d.TokenEnv != "" {
+		tok = os.Getenv(d.TokenEnv)
+		if tok == "" {
+			return nil
+		}
+	} else if host != a.gl.base {
+		return nil // a foreign host always needs its own credential
+	}
+	key := host + "\x00" + d.TokenEnv
+	a.clientMu.Lock()
+	defer a.clientMu.Unlock()
+	if c, ok := a.clients[key]; ok {
+		return c
+	}
+	c := newGLClient(host, tok)
+	a.clients[key] = c
+	return c
 }
 
 // noteBranchDeleted / branchDeleted implement the delete tombstone (2 min —

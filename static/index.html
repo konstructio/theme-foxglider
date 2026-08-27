@@ -140,6 +140,7 @@
   .br-act{padding:2px 6px;font-size:10px;gap:0}
   a.br-ahead{text-decoration:none}
   a.br-ahead:hover{filter:brightness(1.25)}
+  .env-pending{opacity:.75;border-style:dashed}
   .verpick{background:var(--panel2);border:1px solid var(--line);border-radius:5px;color:var(--ink);padding:2px 6px;max-width:100%}
   .verpick.picked{color:var(--civo);border-color:var(--civo);box-shadow:0 0 0 1px rgba(52,211,153,.25)}
   .macro-picked{border-color:var(--civo)}
@@ -530,19 +531,29 @@ function bundleTree(m) {
   return `<div class="btree" title="subchart versions published inside ${esc(m.published_tag || 'the umbrella')}">${rows}${refNote}</div>`;
 }
 function envCard(e, m) {
-  const latest = m.published_rc || '';
+  if (!e.ready) {
+    return `<div class="ecard env env-pending">
+      <div class="ec-top"><a class="pname" target="_blank" href="${e.web_url}">${esc(e.environment)}</a><span class="mut mono">${esc(e.cluster || '')}</span></div>
+      ${e.for ? `<div class="mut" style="font-size:11px">app · <span class="mono">${esc(e.for)}</span></div>` : ''}
+      <div class="mut" style="font-size:12px;margin-top:6px">credentials pending${e.kind === 'github' ? ' · github driver' : ''}${e.host ? ` — <span class="mono">${esc(e.host.replace('https://',''))}</span>` : ''}</div>
+    </div>`;
+  }
+  const isApp = !!e.for;
+  const appNode = isApp ? (state.eco?.services || []).find(s => s.name === e.for) : null;
+  const latest = isApp ? ((appNode && (appNode.bundled_version || appNode.base_version)) || '') : (m.published_rc || '');
   const w = state.watch;
   const delivering = w && w.mode === 'deliver' && !w.done && Date.now() < w.until;
   const canAct = state.act && state.act.enabled && latest;
   const upgradable = latest && e.delivered_version !== latest;
   return `<div class="ecard env${delivering ? ' delivering' : ''}">
     <div class="ec-top"><a class="pname" target="_blank" href="${e.web_url}" title="${esc(e.environment)}">${esc(e.environment)}</a><span class="mut mono">${esc(e.cluster)}</span></div>
+    ${isApp ? `<div class="mut" style="font-size:11px">app · <span class="mono">${esc(e.for)}</span></div>` : ''}
     <div class="mut" style="font-size:11px">current version</div>
     <div class="ec-big mono">${verChip(e.delivered_version)}</div>
     ${e.state === 'current' ? driftChip(e) : upgradable ? `<div class="up-hint">upgrade available → ${esc(latest)}${e.behind > 0 ? ` · ↑${e.behind} change${e.behind === 1 ? '' : 's'}` : ''}</div>` : driftChip(e)}
     ${canAct ? `<div class="up-row">
         <input class="upin${state.picked ? ' picked' : ''}" value="${esc(state.picked ? state.picked.version : latest)}" spellcheck="false" title="any published version — type an older one to roll back">
-        <button class="abtn warn upbtn" data-act="deliver" data-proj="${esc(m.project)}" data-env="${esc(e.environment)}">${ICON_SHIP} upgrade</button>
+        <button class="abtn warn upbtn" data-act="deliver" data-proj="${esc(isApp ? (appNode ? appNode.project : '') : m.project)}" data-env="${esc(e.environment)}">${ICON_SHIP} ${e.write === 'mr' ? 'open bump MR' : 'upgrade'}</button>
       </div>` : ''}
     ${watchChip({ project: '__delivery__' })}
   </div>`;
@@ -1117,7 +1128,9 @@ function openActionModal(action, project, opts) {
           ? `Plays the manual <b>release</b> job on <b class="mono">${esc(ref)}</b>'s newest pipeline — releasing from the branch, not main. If that branch's CI offers no release job, this reports it honestly.`
           : 'Plays the manual <b>release</b> job on the latest main pipeline: cuts the clean tag from the current RC, retags artifacts (no rebuild), and opens the next dev cycle.'
         : action === 'deliver'
-        ? `Runs the tag pipeline for <b class="mono">${esc(rc || 'the latest RC')}</b>: republishes it (idempotent), writes the ${esc(opts.env || (state.eco?.delivery?.[0]?.environment ?? 'environment'))} bump MR, and auto-merges it — ArgoCD takes it from there.`
+        ? (state.eco?.delivery || []).find(d => d.environment === opts.env)?.write === 'mr'
+          ? `Bumps <b class="mono">${esc(opts.env || '')}</b>'s targetRevision to <b class="mono">${esc(rc || 'the typed version')}</b> and opens the merge request in its gitops repo — <b>it does not merge</b>; that repo's approvers stay in charge.`
+          : `Runs the tag pipeline for <b class="mono">${esc(rc || 'the latest RC')}</b>: republishes it (idempotent), writes the ${esc(opts.env || (state.eco?.delivery?.[0]?.environment ?? 'environment'))} bump MR, and auto-merges it — ArgoCD takes it from there.`
         : ref
         ? `Runs <b class="mono">${esc(ref)}</b>'s CI on its tip — on an epic branch that's the full publish chain, minting a fresh <span class="mono">-${esc(ref)}.N</span> version.`
         : 'Plays the manual <b>trigger:manual</b> job: pushes an empty commit to main so the delivery pipeline runs end-to-end on a fresh SHA.'}</p>
@@ -1152,7 +1165,7 @@ function openActionModal(action, project, opts) {
       const hdrs = { 'Content-Type': 'application/json' };
       if (state.konstructUser) hdrs['X-Konstruct-Actor'] = state.konstructUser;
       const res = await fetch('/api/actions/run', { method: 'POST', headers: hdrs,
-        body: JSON.stringify({ project, action, confirm, ref: ref || undefined, mr_iid: opts.mriid || undefined, version: action === 'deliver' ? (version || '') : undefined }) });
+        body: JSON.stringify({ project, action, confirm, ref: ref || undefined, mr_iid: opts.mriid || undefined, env: opts.env || undefined, version: action === 'deliver' ? (version || '') : undefined }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         // stale "merged" view: the server re-checked and found unmerged work —
@@ -1168,6 +1181,12 @@ function openActionModal(action, project, opts) {
         state.burstUntil = Date.now() + 120000;
         refresh();
         setTimeout(() => { closeActModal(); }, 2200);
+        return;
+      }
+      if (action === 'deliver' && body.mode === 'mr') {
+        $('#act-out').innerHTML = `✓ bump MR opened — <a target="_blank" href="${body.mr_url}">!${body.mr}</a> (was ${esc(body.was || '?')})`;
+        refresh();
+        setTimeout(() => { closeActModal(); }, 3500);
         return;
       }
       if (action === 'delete') {

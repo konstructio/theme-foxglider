@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.13.0"
+const themeVersion = "2.14.0"
 
 const ttlEco = 45 * time.Second
 
@@ -34,6 +34,10 @@ type svcSpec struct {
 	Name    string
 	Project string // GitLab path, e.g. civo/metaphor/metaphor
 	Chart   string // path to that repo's Chart.yaml (base version lives here)
+	// Delivery: SINGLE-APP delivery targets — this app's chart pinned in an
+	// environment directly, no umbrella in between. Same conventions
+	// (epic/main/hotfix, trigger, release, pipelines) apply.
+	Delivery []deliverySpec
 }
 
 type deliverySpec struct {
@@ -41,32 +45,47 @@ type deliverySpec struct {
 	Cluster string
 	Project string // gitops repo path
 	App     string // path to the ArgoCD Application yaml
+	// Multi-target delivery (2026-08-27): control planes live on different
+	// hosts with different credentials and write etiquettes.
+	Kind     string // "gitlab" (default) | "github" (driver pending)
+	Host     string // e.g. https://gitlab.kubefunk.net; "" = the primary host
+	TokenEnv string // env var holding this target's token; "" = primary creds
+	Write    string // "tag-pipeline" (default, metaphor CI) | "mr" | "commit"
+	Branch   string // target branch of the gitops repo; "" = main
 }
 
 type topology struct {
 	Services  []svcSpec
 	MacroName string
-	MacroProj string
+	MacroProj string // "" = single-app mode: no umbrella, apps deliver directly
 	MacroFile string
 	MacroTag  string // tag prefix, e.g. "metaphor-v"
 	Delivery  []deliverySpec
+	// BranchPolicy "hotfix-only": app repos take changes on hotfix- branches
+	// only — feature (epic-*) creation and epic-ref triggers are refused
+	// (John 2026-08-27, the konstruct rule).
+	BranchPolicy string
 }
+
+// hasMacro: umbrella mode vs single-app mode.
+func (t topology) hasMacro() bool { return t.MacroProj != "" }
 
 // defaultTopology is the metaphor supply chain. This theme is org-pinned to
 // civo/metaphor and IS the metaphor delivery-view, so the topology is concrete.
 func defaultTopology() topology {
 	return topology{
 		Services: []svcSpec{
-			{"metaphor", "civo/metaphor/metaphor", "charts/metaphor/Chart.yaml"},
-			{"metaphor-dashboard-manager", "civo/metaphor/metaphor-dashboard-manager", "charts/metaphor-dashboard-manager/Chart.yaml"},
-			{"metaphor-micro-frontend", "civo/metaphor/metaphor-micro-frontend", "charts/metaphor-micro-frontend/Chart.yaml"},
+			{Name: "metaphor", Project: "civo/metaphor/metaphor", Chart: "charts/metaphor/Chart.yaml"},
+			{Name: "metaphor-dashboard-manager", Project: "civo/metaphor/metaphor-dashboard-manager", Chart: "charts/metaphor-dashboard-manager/Chart.yaml"},
+			{Name: "metaphor-micro-frontend", Project: "civo/metaphor/metaphor-micro-frontend", Chart: "charts/metaphor-micro-frontend/Chart.yaml"},
 		},
 		MacroName: "metaphor-macro",
 		MacroProj: "civo/metaphor/charts",
 		MacroFile: "charts/metaphor-macro/Chart.yaml",
 		MacroTag:  "metaphor-v",
 		Delivery: []deliverySpec{
-			{"development-33", "dev-33", "civo/metaphor/metaphor-gitops", "registry/environments/development-33/dev-33/metaphor-macro.yaml"},
+			{Env: "development-33", Cluster: "dev-33", Project: "civo/metaphor/metaphor-gitops",
+				App: "registry/environments/development-33/dev-33/metaphor-macro.yaml", Write: "tag-pipeline"},
 		},
 	}
 }
@@ -322,6 +341,40 @@ type deliveryNode struct {
 	WebURL    string `json:"web_url"`
 	State     string `json:"state"`
 	Behind    int    `json:"behind"`
+	// For: "" = the umbrella; an app name = single-app delivery of that app.
+	For string `json:"for,omitempty"`
+	// Ready=false: the target's credential/driver isn't configured here —
+	// rendered as "credentials pending", never guessed at.
+	Ready bool   `json:"ready"`
+	Write string `json:"write,omitempty"` // tag-pipeline | mr | commit
+	Kind  string `json:"kind,omitempty"`
+	Host  string `json:"host,omitempty"`
+}
+
+// deliveryTargets flattens the umbrella-level and per-service targets.
+func deliveryTargets(t topology) []struct {
+	spec deliverySpec
+	app  string
+} {
+	var out []struct {
+		spec deliverySpec
+		app  string
+	}
+	for _, d := range t.Delivery {
+		out = append(out, struct {
+			spec deliverySpec
+			app  string
+		}{d, ""})
+	}
+	for _, sv := range t.Services {
+		for _, d := range sv.Delivery {
+			out = append(out, struct {
+				spec deliverySpec
+				app  string
+			}{d, sv.Name})
+		}
+	}
+	return out
 }
 
 // --- cached fetch helpers ---
@@ -488,7 +541,8 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 		macroPB                pipeBundle
 		svcRaw                 = make([]string, len(t.Services))
 		svcPB                  = make([]pipeBundle, len(t.Services))
-		delRaw                 = make([]string, len(t.Delivery))
+		allTargets             = deliveryTargets(t)
+		delRaw                 = make([]string, len(allTargets))
 	)
 
 	// Every fetch reports on a buffered channel (buffered so a late fetch never
@@ -508,7 +562,7 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 	svcTB := make([]tileBranches, len(t.Services))
 	svcRels := make([]*releaseJSON, len(t.Services))
 	var macroRel *releaseJSON
-	total := 4 + len(t.Services)*4 + len(t.Delivery)
+	total := 4 + len(t.Services)*4 + len(allTargets)
 	ch := make(chan slot, total)
 	go func() { ch <- slot{"macroRaw", 0, a.rawFile(ctx, t.MacroProj, t.MacroFile)} }()
 	go func() { ch <- slot{"tag", 0, newestTag(a.cachedTags(ctx, t.MacroProj), t.MacroTag)} }()
@@ -524,9 +578,9 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 		}()
 		go func() { ch <- slot{"svcRel", i, a.cachedRelease(ctx, s.Project)} }()
 	}
-	for i, d := range t.Delivery {
-		i, d := i, d
-		go func() { ch <- slot{"delRaw", i, a.deliveryFile(ctx, d.Project, d.App)} }()
+	for i, dt := range allTargets {
+		i, dt := i, dt
+		go func() { ch <- slot{"delRaw", i, a.deliveryFileFor(ctx, dt.spec)} }()
 	}
 
 	deadline := time.After(9 * time.Second)
@@ -612,15 +666,42 @@ collect:
 		}
 	}
 
-	delivery := make([]deliveryNode, len(t.Delivery))
-	for i, d := range t.Delivery {
-		delivered := targetRevision(delRaw[i])
-		state, behind := drift(delivered, publishedRC)
-		delivery[i] = deliveryNode{
-			Env: d.Env, Cluster: d.Cluster, Delivered: delivered,
-			WebURL: a.gl.base + "/" + d.Project + "/-/blob/main/" + d.App,
-			State:  state, Behind: behind,
+	delivery := make([]deliveryNode, len(allTargets))
+	for i, dt := range allTargets {
+		d := dt.spec
+		host := d.Host
+		if host == "" {
+			host = a.gl.base
 		}
+		br := d.Branch
+		if br == "" {
+			br = "main"
+		}
+		node := deliveryNode{
+			Env: d.Env, Cluster: d.Cluster, For: dt.app,
+			WebURL: host + "/" + d.Project + "/-/blob/" + br + "/" + d.App,
+			Ready:  a.clientFor(d) != nil, Write: d.Write, Kind: d.Kind, Host: d.Host,
+		}
+		if node.Ready {
+			node.Delivered = targetRevision(delRaw[i])
+			ref := publishedRC
+			if dt.app != "" {
+				// single-app target: compare against the app's own version
+				// (its umbrella pin when there is one, else its base chart)
+				for _, sv := range services {
+					if sv.Name == dt.app {
+						ref = sv.Bundled
+						if ref == "" {
+							ref = sv.BaseVer
+						}
+					}
+				}
+			}
+			node.State, node.Behind = drift(node.Delivered, ref)
+		} else {
+			node.State = "pending"
+		}
+		delivery[i] = node
 	}
 
 	writeJSON(w, map[string]any{
@@ -1226,7 +1307,9 @@ func promotionRows(features []featureJSON, delivery []deliveryNode, tags []glTag
 // shared by the Branches tab and the ecosystem's promotion summary.
 func (a *api) repoBranchesAll(ctx context.Context, t topology) []repoBranches {
 	repos := append([]svcSpec{}, t.Services...)
-	repos = append(repos, svcSpec{Name: t.MacroName, Project: t.MacroProj})
+	if t.hasMacro() {
+		repos = append(repos, svcSpec{Name: t.MacroName, Project: t.MacroProj})
+	}
 	out := make([]repoBranches, len(repos))
 	done := make(chan int, len(repos))
 	for i, s := range repos {
@@ -1308,7 +1391,7 @@ func (a *api) promotions(ctx context.Context, t topology, delivery []deliveryNod
 // line without anyone clicking anything (John: any time a branch is created
 // in one, it should be created in charts as well).
 func (a *api) observeChartsTwins(ctx context.Context, t topology, feats []featureJSON) {
-	if a.act == nil || !a.act.enabled() {
+	if a.act == nil || !a.act.enabled() || !t.hasMacro() {
 		return
 	}
 	for _, f := range feats {
@@ -1449,6 +1532,9 @@ var reBranchID = regexp.MustCompile(`[^a-z0-9-]`)
 // publishes: main → the newest rc tag; any other branch → the newest tag
 // whose prerelease id is the sanitized branch name.
 func macroTagFor(tags []glTag, prefix, branch string) string {
+	if prefix == "" {
+		return "" // single-app mode: no umbrella tags to map
+	}
 	if branch == "main" {
 		for _, t := range tags {
 			if strings.HasPrefix(t.Name, prefix) && reRCTag.MatchString(t.Name) {
@@ -1516,11 +1602,29 @@ func ecoSummary(t topology, m macroNode, del []deliveryNode, tags []glTag) strin
 // --- topology as config (multi-org: metaphor default, konstruct via env) ---
 
 // topologyJSON is the TOPOLOGY env shape — lowercase mirrors of the structs.
+type deliveryJSON struct {
+	Env      string `json:"env"`
+	Cluster  string `json:"cluster"`
+	Project  string `json:"project"`
+	App      string `json:"app"`
+	Kind     string `json:"kind"`
+	Host     string `json:"host"`
+	TokenEnv string `json:"token_env"`
+	Write    string `json:"write"`
+	Branch   string `json:"branch"`
+}
+
+func (d deliveryJSON) spec() deliverySpec {
+	return deliverySpec{Env: d.Env, Cluster: d.Cluster, Project: d.Project, App: d.App,
+		Kind: d.Kind, Host: d.Host, TokenEnv: d.TokenEnv, Write: d.Write, Branch: d.Branch}
+}
+
 type topologyJSON struct {
 	Services []struct {
-		Name    string `json:"name"`
-		Project string `json:"project"`
-		Chart   string `json:"chart"`
+		Name     string         `json:"name"`
+		Project  string         `json:"project"`
+		Chart    string         `json:"chart"`
+		Delivery []deliveryJSON `json:"delivery"`
 	} `json:"services"`
 	Macro struct {
 		Name      string `json:"name"`
@@ -1528,12 +1632,8 @@ type topologyJSON struct {
 		File      string `json:"file"`
 		TagPrefix string `json:"tagPrefix"`
 	} `json:"macro"`
-	Delivery []struct {
-		Env     string `json:"env"`
-		Cluster string `json:"cluster"`
-		Project string `json:"project"`
-		App     string `json:"app"`
-	} `json:"delivery"`
+	Delivery     []deliveryJSON `json:"delivery"`
+	BranchPolicy string         `json:"branch_policy"`
 }
 
 // loadTopology returns the TOPOLOGY env override when present and valid,
@@ -1545,22 +1645,58 @@ func loadTopology() topology {
 		return defaultTopology()
 	}
 	var tj topologyJSON
-	if err := json.Unmarshal([]byte(raw), &tj); err != nil || tj.Macro.Project == "" || len(tj.Services) == 0 {
+	// macro is OPTIONAL now (single-app mode) — only services are mandatory
+	if err := json.Unmarshal([]byte(raw), &tj); err != nil || len(tj.Services) == 0 {
 		log.Printf("TOPOLOGY env invalid (%v) — using the metaphor default", err)
 		return defaultTopology()
 	}
 	t := topology{
 		MacroName: tj.Macro.Name, MacroProj: tj.Macro.Project,
 		MacroFile: tj.Macro.File, MacroTag: tj.Macro.TagPrefix,
+		BranchPolicy: tj.BranchPolicy,
 	}
 	for _, s := range tj.Services {
-		t.Services = append(t.Services, svcSpec{Name: s.Name, Project: s.Project, Chart: s.Chart})
+		sv := svcSpec{Name: s.Name, Project: s.Project, Chart: s.Chart}
+		for _, d := range s.Delivery {
+			sv.Delivery = append(sv.Delivery, d.spec())
+		}
+		t.Services = append(t.Services, sv)
 	}
 	for _, d := range tj.Delivery {
-		t.Delivery = append(t.Delivery, deliverySpec{Env: d.Env, Cluster: d.Cluster, Project: d.Project, App: d.App})
+		t.Delivery = append(t.Delivery, d.spec())
 	}
-	log.Printf("TOPOLOGY: %d services, macro %s, %d delivery targets", len(t.Services), t.MacroProj, len(t.Delivery))
+	log.Printf("TOPOLOGY: %d services, macro %q, %d delivery targets, policy %q",
+		len(t.Services), t.MacroProj, len(t.Delivery), t.BranchPolicy)
 	return t
+}
+
+// deliveryFileFor reads a delivery app file with the TARGET's own client —
+// per-host, per-credential. An unready target reads as "" (rendered pending).
+func (a *api) deliveryFileFor(ctx context.Context, d deliverySpec) string {
+	c := a.clientFor(d)
+	if c == nil {
+		return ""
+	}
+	// the legacy single cross-group client still wins for un-annotated
+	// targets so existing konstruct config keeps working
+	if d.TokenEnv == "" && d.Host == "" && a.glDelivery != nil {
+		return a.deliveryFile(ctx, d.Project, d.App)
+	}
+	br := d.Branch
+	if br == "" {
+		br = "main"
+	}
+	ttl := ttlEco
+	if a.isHot(d.Project) {
+		ttl = 5 * time.Second
+	}
+	v, err := a.c.do("dfile:"+d.Host+":"+d.Project+":"+d.App, ttl, func() (any, error) {
+		return c.fileRaw(ctx, d.Project, d.App, br)
+	})
+	if err != nil {
+		return ""
+	}
+	return v.(string)
 }
 
 // deliveryFile reads a delivery app file — with the dedicated cross-group
