@@ -575,7 +575,7 @@ function renderDelivery(d) {
   const m = d.macro, svcs = d.services || [], del = d.delivery || [], primary = del[0];
   $('#view').innerHTML = `
     <div class="eco-summary">
-      ${METAMARK}<span class="big">metaphor-macro</span>
+      ${METAMARK}<span class="big">${esc(m.name || 'macro')}</span>
       <span class="vchip mono">${esc(m.published_rc || m.base_version || '—')}</span>
       ${statusChip(m.pipeline)}
       <span class="spacer"></span>
