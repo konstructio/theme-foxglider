@@ -95,26 +95,6 @@ func (x *actions) epicsList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, eps)
 }
 
-// featuresList = epic-* branches on the macro repo: the join list.
-func (x *actions) featuresList(w http.ResponseWriter, r *http.Request) {
-	if !x.enabled() {
-		writeJSON(w, []any{})
-		return
-	}
-	brs, err := x.gl.branches(context.Background(), x.topo.MacroProj, "epic-")
-	if err != nil {
-		writeJSON(w, []any{})
-		return
-	}
-	out := []map[string]any{}
-	for _, b := range brs {
-		if strings.HasPrefix(b.Name, "epic-") {
-			out = append(out, map[string]any{"name": b.Name, "web_url": b.WebURL})
-		}
-	}
-	writeJSON(w, out)
-}
-
 // group derives the org group from the macro project path.
 func (x *actions) group() string {
 	p := x.topo.MacroProj
@@ -159,9 +139,10 @@ func (x *actions) status(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{
-		"enabled": true,
-		"actions": []string{"trigger", "release", "deliver", "feature", "delete", "merge-mr"},
-		"actor":   x.actorFor(r),
+		"enabled":       true,
+		"actions":       []string{"trigger", "release", "deliver", "feature", "delete", "merge-mr", "hotfix", "hotfix-join"},
+		"actor":         x.actorFor(r),
+		"branch_policy": x.topo.BranchPolicy,
 	})
 }
 
@@ -183,6 +164,8 @@ type runReq struct {
 	MRIID int `json:"mr_iid"`
 	// Env: deliver — which delivery target (defaults to the first).
 	Env string `json:"env"`
+	// Tag: hotfix — the published umbrella tag to branch a hotfix from.
+	Tag string `json:"tag"`
 }
 
 // reVersionArg keeps typed version overrides to sane semver-ish shapes.
@@ -199,18 +182,66 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jobName, isJob := actionJobs[req.Action]
-	if !isJob && req.Action != "deliver" && req.Action != "feature" && req.Action != "delete" && req.Action != "merge-mr" {
+	if !isJob && req.Action != "deliver" && req.Action != "feature" && req.Action != "delete" &&
+		req.Action != "merge-mr" && req.Action != "hotfix" && req.Action != "hotfix-join" {
 		writeErr(w, 400, "unknown action")
 		return
 	}
+	actor := x.actorFor(r)
+
+	// hotfix: cut a hotfix branch across every repo a published umbrella tag
+	// pins. It carries no single project (it resolves them from the tag and
+	// validates each against the topology internally), so it runs BEFORE the
+	// single-project gate.
+	if req.Action == "hotfix" {
+		x.runHotfix(w, r, req, actor)
+		return
+	}
+
 	if !x.allowed(req.Project) {
 		writeErr(w, 400, "project is not part of the metaphor topology")
 		return
 	}
-	actor := x.actorFor(r)
 	short := req.Project[strings.LastIndex(req.Project, "/")+1:]
 	if (req.Action == "release" || req.Action == "deliver" || req.Action == "merge-mr") && req.Confirm != short {
 		writeErr(w, 400, fmt.Sprintf("confirmation mismatch: %q required", short))
+		return
+	}
+
+	// hotfix-join: create (or join) a hotfix branch on ONE allowed repo — the
+	// org's permitted lane, so no branch-policy check and no confirm handshake.
+	if req.Action == "hotfix-join" {
+		branch := strings.TrimSpace(req.Branch)
+		if !strings.HasPrefix(branch, "hotfix") || !reBranch.MatchString(branch) {
+			writeErr(w, 400, "hotfix branch names only (e.g. hotfix-0.9)")
+			return
+		}
+		ctx := context.Background()
+		joined := false
+		webURL := ""
+		if b, err := x.gl.createBranch(ctx, req.Project, branch, "main"); err != nil {
+			if strings.Contains(err.Error(), "already exists") {
+				joined = true
+			} else {
+				writeErr(w, 502, "branch on "+req.Project+": "+err.Error())
+				return
+			}
+		} else {
+			webURL = b.WebURL
+		}
+		if x.dropBranches != nil {
+			x.dropBranches(req.Project)
+		}
+		if x.markHot != nil {
+			x.markHot(req.Project)
+		}
+		log.Printf("ACTION hotfix-join project=%s branch=%s joined=%v actor=%s remote=%s",
+			req.Project, branch, joined, actor, r.RemoteAddr)
+		writeJSON(w, map[string]any{
+			"ok": true, "action": "hotfix-join", "actor": actor, "branch": branch,
+			"joined": joined, "web_url": webURL,
+			"checkout": fmt.Sprintf("git fetch origin %s && git checkout %s", branch, branch),
+		})
 		return
 	}
 
@@ -223,16 +254,42 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "this org takes app-repo changes on hotfix- branches only — feature branches are disabled")
 			return
 		}
-		if req.Project == x.topo.MacroProj {
-			writeErr(w, 400, "start features from a service card — the macro branch follows automatically")
-			return
-		}
 		branch := strings.TrimSpace(req.Branch)
 		if !reBranch.MatchString(branch) {
 			writeErr(w, 400, "branch name must be lowercase letters, digits, dots, dashes (e.g. epic-20-pink)")
 			return
 		}
 		ctx := context.Background()
+		// macro (charts) feature: the umbrella feature line only — one branch,
+		// no micro, no draft MR. Idempotent: an existing branch is a join.
+		if req.Project == x.topo.MacroProj {
+			created := map[string]bool{}
+			urls := map[string]string{}
+			for _, proj := range []string{x.topo.MacroProj} {
+				b, err := x.gl.createBranch(ctx, proj, branch, "main")
+				if err != nil {
+					if strings.Contains(err.Error(), "already exists") {
+						created[proj] = false
+						continue
+					}
+					writeErr(w, 502, "branch on "+proj+": "+err.Error())
+					return
+				}
+				created[proj] = true
+				urls[proj] = b.WebURL
+			}
+			if x.markHot != nil {
+				x.markHot(x.topo.MacroProj)
+			}
+			log.Printf("ACTION feature project=%s branch=%s epic=%d charts_created=%v actor=%s remote=%s",
+				x.topo.MacroProj, branch, req.EpicIID, created[x.topo.MacroProj], actor, r.RemoteAddr)
+			writeJSON(w, map[string]any{
+				"ok": true, "action": "feature", "actor": actor, "branch": branch,
+				"charts_created": created[x.topo.MacroProj], "urls": urls,
+				"checkout": fmt.Sprintf("git fetch origin %s && git checkout %s", branch, branch),
+			})
+			return
+		}
 		created := map[string]bool{}
 		urls := map[string]string{}
 		for _, proj := range []string{req.Project, x.topo.MacroProj} {
@@ -808,4 +865,183 @@ func (x *actions) upgradePreview(w http.ResponseWriter, r *http.Request) {
 		out.Changes = append(out.Changes, ch)
 	}
 	writeJSON(w, out)
+}
+
+// hotfixRepoPlan is one repo's resolved plan for a hotfix-from-version cut:
+// where to branch from (a commit sha or a tag), or why it's skipped.
+type hotfixRepoPlan struct {
+	Name    string
+	Project string
+	Pin     string
+	Ref     string
+	Kind    string // "commit" | "tag" | "skip"
+	Reason  string
+}
+
+// resolveHotfixRepos plans a hotfix cut from a published umbrella tag: for each
+// service the tag pins, the ref to branch from — the pinned commit when it's a
+// sha-rc that still exists, else a service tag carrying the pin, else a skip
+// with a human reason. The macro repo itself is appended, branching from the
+// tag. A commit-existence check that fails ON THE WIRE aborts the whole plan:
+// a GitLab outage must never be mis-reported as "commit absent → skipped".
+func (x *actions) resolveHotfixRepos(ctx context.Context, tag string) ([]hotfixRepoPlan, error) {
+	raw, err := x.gl.fileRaw(ctx, x.topo.MacroProj, x.topo.MacroFile, tag)
+	if err != nil {
+		return nil, fmt.Errorf("read umbrella %s@%s: %w", x.topo.MacroFile, tag, err)
+	}
+	pins := macroDeps(raw)
+	plans := make([]hotfixRepoPlan, 0, len(x.topo.Services)+1)
+	for _, s := range x.topo.Services {
+		pin := pins[s.Name]
+		if pin == "" {
+			// a topology service the umbrella doesn't pin must still show —
+			// an invisible row reads as "covered" when it isn't
+			plans = append(plans, hotfixRepoPlan{
+				Name: s.Name, Project: s.Project,
+				Kind: "skip", Reason: "not declared in this umbrella",
+			})
+			continue
+		}
+		plan := hotfixRepoPlan{Name: s.Name, Project: s.Project, Pin: pin}
+		if sha := rcSHA(pin); sha != "" {
+			ok, err := x.gl.commitExists(ctx, s.Project, sha)
+			if err != nil {
+				return nil, fmt.Errorf("commit check %s %s: %w", s.Project, sha, err)
+			}
+			if ok {
+				plan.Kind, plan.Ref = "commit", sha
+				plans = append(plans, plan)
+				continue
+			}
+		}
+		if tref := x.tagForPin(ctx, s.Project, pin); tref != "" {
+			plan.Kind, plan.Ref = "tag", tref
+		} else {
+			plan.Kind, plan.Reason = "skip", "no commit or tag for "+pin
+		}
+		plans = append(plans, plan)
+	}
+	plans = append(plans, hotfixRepoPlan{
+		Name: shortName(x.topo.MacroProj), Project: x.topo.MacroProj,
+		Pin: strings.TrimPrefix(tag, x.topo.MacroTag), Ref: tag, Kind: "tag",
+	})
+	return plans, nil
+}
+
+// tagForPin finds a service tag matching a pin exactly or as v<pin>.
+func (x *actions) tagForPin(ctx context.Context, project, pin string) string {
+	tags, err := x.gl.tags(ctx, project, 100)
+	if err != nil {
+		return ""
+	}
+	for _, t := range tags {
+		if t.Name == pin || t.Name == "v"+pin {
+			return t.Name
+		}
+	}
+	return ""
+}
+
+// hotfixPreview answers "what would a hotfix-from-version cut touch": the plan
+// per repo, creating nothing. GET /api/actions/hotfix-preview?tag=…
+func (x *actions) hotfixPreview(w http.ResponseWriter, r *http.Request) {
+	if !x.enabled() {
+		writeErr(w, 503, "actions not configured")
+		return
+	}
+	tag := strings.TrimSpace(r.URL.Query().Get("tag"))
+	if tag == "" || !strings.HasPrefix(tag, x.topo.MacroTag) || len(tag) > 128 {
+		writeErr(w, 400, "tag must be a published umbrella tag")
+		return
+	}
+	plans, err := x.resolveHotfixRepos(context.Background(), tag)
+	if err != nil {
+		writeErr(w, 502, "resolve: "+err.Error())
+		return
+	}
+	type repoOut struct {
+		Name    string `json:"name"`
+		Project string `json:"project"`
+		Pin     string `json:"pin"`
+		Ref     string `json:"ref,omitempty"`
+		Kind    string `json:"kind"`
+		Reason  string `json:"reason,omitempty"`
+	}
+	repos := make([]repoOut, 0, len(plans))
+	for _, p := range plans {
+		repos = append(repos, repoOut{p.Name, p.Project, p.Pin, p.Ref, p.Kind, p.Reason})
+	}
+	writeJSON(w, map[string]any{
+		"tag": tag, "version": strings.TrimPrefix(tag, x.topo.MacroTag), "repos": repos,
+	})
+}
+
+// runHotfix cuts the hotfix branch across every repo the tag pins (skipping the
+// unresolved). branch must be hotfix-<...>; confirm must be the macro repo's
+// short name (the deliver/delete handshake). No branch-policy check — hotfixes
+// ARE the allowed lane. One audit line carries the created/joined/skipped tally.
+func (x *actions) runHotfix(w http.ResponseWriter, r *http.Request, req runReq, actor string) {
+	tag := strings.TrimSpace(req.Tag)
+	if tag == "" || !strings.HasPrefix(tag, x.topo.MacroTag) || len(tag) > 128 {
+		writeErr(w, 400, "tag must be a published umbrella tag")
+		return
+	}
+	branch := strings.TrimSpace(req.Branch)
+	if !strings.HasPrefix(branch, "hotfix-") || !reBranch.MatchString(branch) {
+		writeErr(w, 400, "hotfix branch name must look like hotfix-0.9")
+		return
+	}
+	confirm := shortName(x.topo.MacroProj)
+	if req.Confirm != confirm {
+		writeErr(w, 400, fmt.Sprintf("confirmation mismatch: %q required", confirm))
+		return
+	}
+	ctx := context.Background()
+	plans, err := x.resolveHotfixRepos(ctx, tag)
+	if err != nil {
+		writeErr(w, 502, "resolve: "+err.Error())
+		return
+	}
+	type result struct {
+		Project string `json:"project"`
+		Status  string `json:"status"` // created | joined | skipped
+		Ref     string `json:"ref,omitempty"`
+		Reason  string `json:"reason,omitempty"`
+		WebURL  string `json:"web_url,omitempty"`
+	}
+	results := make([]result, 0, len(plans))
+	created, joined, skipped := 0, 0, 0
+	for _, p := range plans {
+		if p.Kind == "skip" {
+			skipped++
+			results = append(results, result{Project: p.Project, Status: "skipped", Reason: p.Reason})
+			continue
+		}
+		b, err := x.gl.createBranch(ctx, p.Project, branch, p.Ref)
+		switch {
+		case err == nil:
+			created++
+			results = append(results, result{Project: p.Project, Status: "created", Ref: p.Ref, WebURL: b.WebURL})
+		case strings.Contains(err.Error(), "already exists"):
+			joined++
+			results = append(results, result{Project: p.Project, Status: "joined", Ref: p.Ref})
+		default:
+			skipped++
+			results = append(results, result{Project: p.Project, Status: "skipped", Ref: p.Ref, Reason: err.Error()})
+			continue
+		}
+		if x.dropBranches != nil {
+			x.dropBranches(p.Project)
+		}
+		if x.markHot != nil {
+			x.markHot(p.Project)
+		}
+	}
+	log.Printf("ACTION hotfix tag=%s branch=%s created=%d joined=%d skipped=%d actor=%s remote=%s",
+		tag, branch, created, joined, skipped, actor, r.RemoteAddr)
+	writeJSON(w, map[string]any{
+		"ok": true, "action": "hotfix", "actor": actor, "branch": branch, "tag": tag,
+		"results":  results,
+		"checkout": fmt.Sprintf("git fetch origin %s && git checkout %s", branch, branch),
+	})
 }
