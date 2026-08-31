@@ -714,7 +714,11 @@ function laneRow(repo, list, lane) {
 function featureGroup(f) {
   const act = state.act && state.act.enabled;
   // the feature action is idempotent (join + ensure charts branch + draft MR
-  // if missing) — so every convenience button here is the same safe call
+  // if missing) — so every convenience button here is the same safe call.
+  // Under a hotfix-only org every epic affordance is a guaranteed server
+  // refusal, so the rows go view-only (merge-mr stays — merging existing
+  // epic MRs is the maintainer's call, not a branch creation).
+  const epicOK = act && !(state.act && state.act.branch_policy === 'hotfix-only');
   const joined = (f.services || []).find(sv => sv.state !== 'main');
   const stBadge = st => st === 'merged'
     ? '<span class="fs-b fs-merged" title="the carrying MR is merged — this work rides main now">merged</span>'
@@ -729,11 +733,11 @@ function featureGroup(f) {
       ${stBadge(sv.state)}
       ${sv.version ? `<span class="mono mut tf-ver" title="the feature pin this service carries">${esc(sv.version)}</span>` : ''}
       ${sv.mr_iid ? `<a class="fs-mr mono mr-${esc(sv.mr_state || 'ready')}" target="_blank" href="${sv.mr_url}" title="the carrying merge request — ${esc(sv.mr_state || 'ready')}">!${sv.mr_iid} · ${esc(sv.mr_state || 'ready')}</a>${act && (sv.mr_state === 'ready' || sv.mr_state === 'feedback') ? `<button class="abtn warn br-act" data-act="merge-mr" data-proj="${esc(sv.project)}" data-mriid="${sv.mr_iid}" data-branch="${esc(f.branch)}" title="merge !${sv.mr_iid} into main">${ICON_MR} merge</button>` : ''}`
-        : act && sv.state !== 'main' ? `<button class="abtn br-act featfix" data-proj="${esc(sv.project)}" data-branch="${esc(f.branch)}" title="draft the carrying merge request for ${esc(sv.name)}">${ICON_MR} draft MR</button>` : ''}
+        : epicOK && sv.state !== 'main' ? `<button class="abtn br-act featfix" data-proj="${esc(sv.project)}" data-branch="${esc(f.branch)}" title="draft the carrying merge request for ${esc(sv.name)}">${ICON_MR} draft MR</button>` : ''}
       <span class="mut">${sv.when ? relTime(sv.when) : ''}</span>
       <span class="spacer"></span>
-      ${act && sv.state !== 'main' ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(sv.project)}" data-ref="${esc(f.branch)}" title="run ${esc(f.branch)}'s CI on ${esc(sv.name)}">${ICON_SCOPE}</button>`
-      : act && sv.state === 'main' ? `<button class="abtn br-act featfix" data-proj="${esc(sv.project)}" data-branch="${esc(f.branch)}" title="join ${esc(sv.name)} to this feature (creates its branch + drafts the MR)">${ICON_BRANCH} join</button>` : ''}
+      ${epicOK && sv.state !== 'main' ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(sv.project)}" data-ref="${esc(f.branch)}" title="run ${esc(f.branch)}'s CI on ${esc(sv.name)}">${ICON_SCOPE}</button>`
+      : epicOK && sv.state === 'main' ? `<button class="abtn br-act featfix" data-proj="${esc(sv.project)}" data-branch="${esc(f.branch)}" title="join ${esc(sv.name)} to this feature (creates its branch + drafts the MR)">${ICON_BRANCH} join</button>` : ''}
     </div>`).join('');
   return `<div class="feat-g">
     <div class="feat-h">
@@ -744,7 +748,7 @@ function featureGroup(f) {
       ${f.macro_ver ? `<a class="br-macro mono" target="_blank" href="${f.macro_url}" title="the feature umbrella this branch publishes">${ICON_SHIP} ${esc(f.macro_ver)}</a>` : ''}
       <span class="mut">${f.when ? relTime(f.when) : ''}</span>
       ${f.charts ? ''
-        : act && joined ? `<button class="abtn br-act featfix" data-proj="${esc(joined.project)}" data-branch="${esc(f.branch)}" title="late-create the same-named charts branch so the feature umbrella line exists">${ICON_BRANCH} create charts branch</button>`
+        : epicOK && joined ? `<button class="abtn br-act featfix" data-proj="${esc(joined.project)}" data-branch="${esc(f.branch)}" title="late-create the same-named charts branch so the feature umbrella line exists">${ICON_BRANCH} create charts branch</button>`
         : '<span class="mut" style="font-size:10.5px">· no charts branch yet (created on first publish)</span>'}
       <span class="fs-out mono mut"></span>
     </div>
@@ -1052,7 +1056,7 @@ function tileFeatures(svc, isMacro) {
       ${f.macro_ver ? `<a class="br-macro mono" target="_blank" href="${f.macro_url || '#'}" title="the umbrella version this feature publishes">${ICON_SHIP} ${esc(f.macro_ver)}</a>` : ''}
       ${pipeMini(pipe)}
       <span class="spacer"></span>
-      ${act ? has
+      ${canStart ? has
         ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(svc.project)}" data-ref="${esc(f.branch)}" title="run ${esc(f.branch)}'s CI here">${ICON_SCOPE}</button>`
         : `<button class="abtn br-act featfix" data-proj="${esc(svc.project)}" data-branch="${esc(f.branch)}" title="${isMacro ? `create the charts branch for ${esc(f.branch)}` : `join ${esc(f.branch)} — creates this repo's branch + drafts its MR`}">${ICON_BRANCH} join</button>` : ''}
     </div>`;
