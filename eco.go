@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.14.2"
+const themeVersion = "2.15.0"
 
 const ttlEco = 45 * time.Second
 
@@ -149,6 +149,10 @@ func unquote(s string) string { return strings.Trim(s, `"'`) }
 type depJSON struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+	// Source: the line this pinned build came from — "main", an epic/hotfix
+	// branch id, or "unknown" when a sha-rc's commit can't be placed. Omitted
+	// when the service can't be identified at all.
+	Source string `json:"source,omitempty"`
 }
 
 // orderedDeps is macroDeps preserving file order — the bundle tree renders
@@ -311,6 +315,10 @@ type macroNode struct {
 	Pipeline      *pipelineJSON `json:"pipeline,omitempty"`
 	Commit        *commitJSON   `json:"commit,omitempty"`
 	SHAPipes      []shaPipeJSON `json:"sha_pipelines,omitempty"`
+	// Hotfixes: fresh hotfix branches on the macro (charts) repo, and the
+	// newest pipeline per epic/hotfix branch — the macro tile's live lanes.
+	Hotfixes    []branchJSON             `json:"hotfixes,omitempty"`
+	BranchPipes map[string]*pipelineJSON `json:"branch_pipes,omitempty"`
 }
 
 // commitJSON is the headline of the commit behind the latest pipeline — the
@@ -525,6 +533,65 @@ func (a *api) pipeBundleFor(ctx context.Context, proj string) pipeBundle {
 	return pb
 }
 
+// depSource classifies where a bundled dependency's pinned build came from:
+// a branch-suffixed version → that branch id; a counter rc or plain release →
+// "main"; a sha-suffixed rc → the branch its commit lives on (main preferred,
+// then a hotfix line), looked up once and cached 6h. "" when the service name
+// isn't in the topology (nothing to look up), "unknown" when the lookup fails
+// or the commit is on no branch we can name.
+func (a *api) depSource(ctx context.Context, t topology, name, version string) string {
+	if m := reBuiltFrom.FindStringSubmatch(version); m != nil {
+		return m[1] // epic-/hotfix- branch line, straight off the version
+	}
+	sha := rcSHA(version)
+	if sha == "" {
+		return "main" // counter rc or plain release rides main
+	}
+	proj := ""
+	for _, s := range t.Services {
+		if s.Name == name {
+			proj = s.Project
+			break
+		}
+	}
+	if proj == "" {
+		return "" // not a topology service — omit rather than guess
+	}
+	v, err := a.c.do("cref:"+proj+":"+sha, 6*time.Hour, func() (any, error) {
+		return a.gl.commitRefs(ctx, proj, sha)
+	})
+	if err != nil {
+		return "unknown"
+	}
+	refs, _ := v.([]glRef)
+	for _, r := range refs {
+		if r.Name == "main" {
+			return "main"
+		}
+	}
+	for _, r := range refs {
+		if strings.HasPrefix(r.Name, "hotfix") {
+			return r.Name
+		}
+	}
+	if len(refs) > 0 {
+		return refs[0].Name
+	}
+	return "unknown"
+}
+
+// depsWithSource enriches bundle deps with their provenance line. Called from
+// inside the cached bundle closures so the (possibly networked) lookups run
+// once per cached bundle, not once per request.
+func (a *api) depsWithSource(ctx context.Context, t topology, deps []depJSON) []depJSON {
+	out := make([]depJSON, len(deps))
+	for i, d := range deps {
+		d.Source = a.depSource(ctx, t, d.Name, d.Version)
+		out[i] = d
+	}
+	return out
+}
+
 // ecosystem renders the metaphor supply chain: services → umbrella → delivered.
 // Every GitLab call fires concurrently — the handler's wall-clock is one slow
 // call, not the sum — so a sluggish GitLab can't push it past the ingress
@@ -562,12 +629,17 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 	svcTB := make([]tileBranches, len(t.Services))
 	svcRels := make([]*releaseJSON, len(t.Services))
 	var macroRel *releaseJSON
-	total := 4 + len(t.Services)*4 + len(allTargets)
+	var macroTB tileBranches
+	total := 5 + len(t.Services)*4 + len(allTargets)
 	ch := make(chan slot, total)
 	go func() { ch <- slot{"macroRaw", 0, a.rawFile(ctx, t.MacroProj, t.MacroFile)} }()
 	go func() { ch <- slot{"tag", 0, newestTag(a.cachedTags(ctx, t.MacroProj), t.MacroTag)} }()
 	go func() { ch <- slot{"macroPipe", 0, a.pipeBundleFor(ctx, t.MacroProj)} }()
 	go func() { ch <- slot{"macroRel", 0, a.cachedRelease(ctx, t.MacroProj)} }()
+	go func() {
+		f, h, p := a.tileBranchData(ctx, t.MacroProj)
+		ch <- slot{"macroTB", 0, tileBranches{f, h, p}}
+	}()
 	for i, s := range t.Services {
 		i, s := i, s
 		go func() { ch <- slot{"svcRaw", i, a.rawFile(ctx, s.Project, s.Chart)} }()
@@ -607,6 +679,8 @@ collect:
 				svcRels[s.i], _ = s.v.(*releaseJSON)
 			case "macroRel":
 				macroRel, _ = s.v.(*releaseJSON)
+			case "macroTB":
+				macroTB, _ = s.v.(tileBranches)
 			}
 		case <-deadline:
 			break collect
@@ -617,8 +691,12 @@ collect:
 	publishedRC := strings.TrimPrefix(publishedTag, t.MacroTag)
 	// The bundle tree shows what's inside the PUBLISHED umbrella — deps read
 	// at the tag ref (immutable, so cached long). A miss falls back to main's
-	// tip, which in steady state is the same pins.
-	bundle, bundleRef := orderedDeps(macroRaw), "main"
+	// tip, which in steady state is the same pins. The fallback enrichment is
+	// deadline-bound like its siblings: it runs outside the fan-out's collect
+	// window, and cold provenance lookups must never hold the whole handler.
+	fbctx, fbcancel := context.WithTimeout(ctx, 5*time.Second)
+	bundle, bundleRef := a.depsWithSource(fbctx, t, orderedDeps(macroRaw)), "main"
+	fbcancel()
 	if publishedTag != "" {
 		if v, err := a.c.do("bundle:"+t.MacroProj+"@"+publishedTag, time.Hour, func() (any, error) {
 			bctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -627,7 +705,7 @@ collect:
 			if err != nil {
 				return nil, err
 			}
-			return orderedDeps(raw), nil
+			return a.depsWithSource(bctx, t, orderedDeps(raw)), nil
 		}); err == nil {
 			bundle, bundleRef = v.([]depJSON), publishedTag
 		}
@@ -639,6 +717,7 @@ collect:
 		Bundle: bundle, BundleRef: bundleRef, LatestRelease: macroRel,
 		BuiltFrom: builtFrom(publishedTag),
 		Pipeline:  macroPB.Pipe, Commit: macroPB.Commit, SHAPipes: macroPB.Pipes,
+		Hotfixes: macroTB.hots, BranchPipes: macroTB.pipes,
 	}
 	for _, tg := range a.cachedTags(ctx, t.MacroProj) {
 		if strings.HasPrefix(tg.Name, t.MacroTag) {
@@ -704,13 +783,17 @@ collect:
 		delivery[i] = node
 	}
 
+	// One org-wide branch pass feeds BOTH the promotion matrix and the org
+	// hotfix rollup — the same repoBranches, so the two views can't drift.
+	repos := a.repoBranchesAll(ctx, t)
 	writeJSON(w, map[string]any{
 		"generated_at": time.Now().UTC(),
 		"macro":        macro,
 		"services":     services,
 		"delivery":     delivery,
 		"summary":      ecoSummary(t, macro, delivery, a.cachedTags(ctx, t.MacroProj)),
-		"promotions":   a.promotions(ctx, t, delivery),
+		"promotions":   a.promotions(ctx, t, delivery, repos),
+		"org_hotfixes": assembleOrgHotfixes(t, repos),
 	})
 }
 
@@ -905,6 +988,10 @@ type branchJSON struct {
 	// main → the newest rc), with a link to that tag.
 	MacroVer string `json:"macro_ver,omitempty"`
 	MacroURL string `json:"macro_url,omitempty"`
+	// ChartVer: the umbrella chart version a hotfix lane's dep-bump produced,
+	// read off the macro repo's dep-bump commits (hotfix lanes only; epic
+	// lanes carry their pin in featSvcJSON.Version instead).
+	ChartVer string `json:"chart_ver,omitempty"`
 }
 
 type repoBranches struct {
@@ -983,8 +1070,39 @@ func (a *api) cachedBranches(ctx context.Context, project string) ([]branchJSON,
 }
 
 // reBuiltFrom pulls the prerelease line out of an umbrella tag/version:
-// "...-epic-106-background.2" → "epic-106-background"; no match → main line.
-var reBuiltFrom = regexp.MustCompile(`-(epic-[a-z0-9-]+)\.[0-9]+$`)
+// "...-epic-106-background.2" → "epic-106-background",
+// "...-hotfix-0-9.2" → "hotfix-0-9"; no match → main line. End-anchored on
+// purpose: a sha-rc like "0.7.8-rc.57f3903b" must NOT match (→ "main").
+var reBuiltFrom = regexp.MustCompile(`-((?:epic|hotfix)-[a-z0-9-]+)\.[0-9]+$`)
+
+// reShaRC matches a sha-suffixed rc tail (konstruct: -rc.57f3903b). The
+// capture is hex, but callers still reject all-digit captures — a metaphor
+// counter like -rc.13 is NOT a sha (see rcSHA).
+var reShaRC = regexp.MustCompile(`-rc\.([0-9a-f]{7,12})$`)
+
+// rcSHA returns the commit sha a sha-suffixed rc version carries, or "" when
+// the version is a counter rc (-rc.13), a branch line, or a plain release.
+func rcSHA(version string) string {
+	m := reShaRC.FindStringSubmatch(strings.TrimSpace(version))
+	if m == nil {
+		return ""
+	}
+	for _, r := range m[1] {
+		if r < '0' || r > '9' {
+			return m[1] // has a hex letter → a real sha, not a counter
+		}
+	}
+	return "" // all digits → a counter, not a sha
+}
+
+// shortName is a repo's display name: the last path segment (civo/metaphor/
+// charts → charts).
+func shortName(project string) string {
+	if i := strings.LastIndex(project, "/"); i >= 0 {
+		return project[i+1:]
+	}
+	return project
+}
 
 func builtFrom(tagOrVer string) string {
 	if m := reBuiltFrom.FindStringSubmatch(tagOrVer); m != nil {
@@ -1084,7 +1202,10 @@ type featSvcJSON struct {
 	// State: "updated" — the feature's charts branch pins this service at a
 	// feature version; "joined" — the branch exists but the pin is still
 	// stable; "main" — no branch, the service rides main inside this feature.
-	State      string     `json:"state"`
+	State string `json:"state"`
+	// Version: the feature-branch pin this service carries in the charts
+	// branch (set only when State is "updated") — the umbrella dep line.
+	Version    string     `json:"version,omitempty"`
 	When       string     `json:"when,omitempty"`
 	WebURL     string     `json:"web_url,omitempty"`
 	MRIID      int        `json:"mr_iid,omitempty"`
@@ -1244,7 +1365,7 @@ func (a *api) assembleFeatures(ctx context.Context, t topology, repos []repoBran
 			if p, ok := found[name][svc.Project]; ok {
 				fs.State, fs.When, fs.WebURL = "joined", p.when, p.webURL
 				if strings.Contains(pins[svc.Name], needle) {
-					fs.State = "updated"
+					fs.State, fs.Version = "updated", pins[svc.Name]
 				}
 				if m := lookupMR(svc.Project); m != nil {
 					fs.MRIID, fs.MRURL, fs.MRState = m.IID, m.WebURL, mrStateLabel(*m)
@@ -1350,14 +1471,23 @@ func (a *api) repoBranchesAll(ctx context.Context, t topology) []repoBranches {
 		<-done
 	}
 	// every branch gets its end-result umbrella version: the newest macro tag
-	// whose prerelease id matches the branch (main → the newest rc).
+	// whose prerelease id matches the branch (main → the newest rc), or — for
+	// a konstruct hotfix tip — the tag ending -rc.<shortSHA>. Hotfix lanes also
+	// get the umbrella chart version their dep-bump produced.
 	allTags := a.cachedTags(ctx, t.MacroProj)
+	chartsCommits := a.cachedChartsCommits(ctx, t)
 	for ri := range out {
 		for _, lane := range [][]branchJSON{out[ri].Main, out[ri].Hotfix, out[ri].Epic} {
 			for bi := range lane {
-				if tag := macroTagFor(allTags, t.MacroTag, lane[bi].Name); tag != "" {
-					lane[bi].MacroVer = strings.TrimPrefix(tag, t.MacroTag)
+				if ver, tag := macroTagForTip(allTags, t.MacroTag, lane[bi].Name, lane[bi].Short); ver != "" {
+					lane[bi].MacroVer = ver
 					lane[bi].MacroURL = a.gl.base + "/" + t.MacroProj + "/-/tags/" + url.PathEscape(tag)
+				}
+				if strings.HasPrefix(lane[bi].Name, "hotfix") {
+					needle := "-" + reBranchID.ReplaceAllString(strings.ToLower(lane[bi].Name), "-") + "."
+					if cv := chartVerFor(chartsCommits, out[ri].Name, needle, lane[bi].Short); cv != "" {
+						lane[bi].ChartVer = cv
+					}
 				}
 			}
 		}
@@ -1386,9 +1516,9 @@ func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
 // observer: a feature whose every carrying MR is merged closes its epic as
 // Done (John's lifecycle — merge means the content rides main; promotion is
 // tracked HERE from then on, not on the epic).
-func (a *api) promotions(ctx context.Context, t topology, delivery []deliveryNode) []featureJSON {
+func (a *api) promotions(ctx context.Context, t topology, delivery []deliveryNode, repos []repoBranches) []featureJSON {
 	tags := a.cachedTags(ctx, t.MacroProj)
-	feats := a.assembleFeatures(ctx, t, a.repoBranchesAll(ctx, t), tags)
+	feats := a.assembleFeatures(ctx, t, repos, tags)
 	feats = promotionRows(feats, delivery, tags, t.MacroTag)
 	a.observeMerged(ctx, feats)
 	a.observeChartsTwins(ctx, t, feats)
@@ -1504,7 +1634,7 @@ func (a *api) bundleAt(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		return orderedDeps(raw), nil
+		return a.depsWithSource(bctx, t, orderedDeps(raw)), nil
 	})
 	if err != nil {
 		writeErr(w, 404, "that tag's chart could not be read: "+err.Error())
@@ -1559,6 +1689,141 @@ func macroTagFor(tags []glTag, prefix, branch string) string {
 		}
 	}
 	return ""
+}
+
+// macroTagForTip is macroTagFor with a konstruct-hotfix fallback: when the
+// branch-name needle matches no tag, any tag ending -rc.<shortSHA> (a hotfix
+// tip's sha-suffixed umbrella) wins. Returns (version, tag) or empties.
+func macroTagForTip(tags []glTag, prefix, branch, shortSHA string) (string, string) {
+	if tag := macroTagFor(tags, prefix, branch); tag != "" {
+		return strings.TrimPrefix(tag, prefix), tag
+	}
+	if prefix == "" || shortSHA == "" {
+		return "", ""
+	}
+	suffix := "-rc." + shortSHA
+	for _, t := range tags {
+		if strings.HasPrefix(t.Name, prefix) && strings.HasSuffix(t.Name, suffix) {
+			return strings.TrimPrefix(t.Name, prefix), t.Name
+		}
+	}
+	return "", ""
+}
+
+// reDepBump matches the macro repo's dependency-bump commits — the trail a
+// service's publish leaves in the umbrella ("ci: update <name> dependency to
+// <version>").
+var reDepBump = regexp.MustCompile(`^ci: (?:update|bump) ([A-Za-z0-9._-]+) dependency to (\S+)$`)
+
+// chartVerFor finds the newest macro dep-bump for svcName whose bumped version
+// carries branchNeedle (the sanitized "-<branch>.") or ends with tipSHA — the
+// umbrella chart version a hotfix lane's publish produced. "" when none match.
+func chartVerFor(commits []glCommit, svcName, branchNeedle, tipSHA string) string {
+	for _, c := range commits {
+		m := reDepBump.FindStringSubmatch(strings.TrimSpace(c.Title))
+		if m == nil || m[1] != svcName {
+			continue
+		}
+		ver := m[2]
+		if branchNeedle != "" && strings.Contains(ver, branchNeedle) {
+			return ver
+		}
+		if tipSHA != "" && strings.HasSuffix(ver, tipSHA) {
+			return ver
+		}
+	}
+	return ""
+}
+
+// cachedChartsCommits lists the macro repo's ~50 newest main commits (120s
+// cache) — the dep-bump trail hotfix ChartVer resolution reads. Nil in
+// single-app mode (no umbrella to bump).
+func (a *api) cachedChartsCommits(ctx context.Context, t topology) []glCommit {
+	if !t.hasMacro() {
+		return nil
+	}
+	v, err := a.c.do("mc:"+t.MacroProj, 120*time.Second, func() (any, error) {
+		return a.gl.commitsRange(ctx, t.MacroProj, "main", time.Time{}, time.Time{}, 50)
+	})
+	if err != nil {
+		return nil
+	}
+	cs, _ := v.([]glCommit)
+	return cs
+}
+
+// orgHotfixRepo is one repo's cell in an org-hotfix row: whether it carries the
+// hotfix branch and, if so, that branch's enriched metadata.
+type orgHotfixRepo struct {
+	Name     string `json:"name"`
+	Project  string `json:"project"`
+	Has      bool   `json:"has"`
+	When     string `json:"when,omitempty"`
+	WebURL   string `json:"web_url,omitempty"`
+	ChartVer string `json:"chart_ver,omitempty"`
+	MacroVer string `json:"macro_ver,omitempty"`
+	MacroURL string `json:"macro_url,omitempty"`
+}
+
+// orgHotfixJSON is one hotfix branch across the whole org: a cell per topology
+// service plus the macro repo, so a hotfix that spans repos reads as one row.
+type orgHotfixJSON struct {
+	Branch string          `json:"branch"`
+	When   string          `json:"when"`
+	Repos  []orgHotfixRepo `json:"repos"`
+}
+
+// assembleOrgHotfixes groups non-stale hotfix branches by name across every
+// topology service and the macro repo — each row carries a cell for every
+// repo (present or not), newest-first, capped at 6.
+func assembleOrgHotfixes(t topology, repos []repoBranches) []orgHotfixJSON {
+	byBranch := map[string]map[string]branchJSON{} // branch → project → entry
+	newest := map[string]string{}
+	for _, rb := range repos {
+		for _, b := range rb.Hotfix {
+			if b.Stale {
+				continue
+			}
+			if byBranch[b.Name] == nil {
+				byBranch[b.Name] = map[string]branchJSON{}
+			}
+			byBranch[b.Name][rb.Project] = b
+			if b.When > newest[b.Name] {
+				newest[b.Name] = b.When
+			}
+		}
+	}
+	type col struct{ name, project string }
+	cols := make([]col, 0, len(t.Services)+1)
+	for _, s := range t.Services {
+		cols = append(cols, col{shortName(s.Project), s.Project})
+	}
+	if t.hasMacro() {
+		cols = append(cols, col{shortName(t.MacroProj), t.MacroProj})
+	}
+	names := make([]string, 0, len(byBranch))
+	for n := range byBranch {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool { return newest[names[i]] > newest[names[j]] })
+	if len(names) > 6 {
+		names = names[:6]
+	}
+	out := make([]orgHotfixJSON, 0, len(names))
+	for _, name := range names {
+		row := orgHotfixJSON{Branch: name, When: newest[name], Repos: make([]orgHotfixRepo, 0, len(cols))}
+		for _, c := range cols {
+			cell := orgHotfixRepo{Name: c.name, Project: c.project}
+			if b, ok := byBranch[name][c.project]; ok {
+				cell.Has = true
+				cell.When, cell.WebURL = b.When, b.WebURL
+				cell.ChartVer, cell.MacroVer, cell.MacroURL = b.ChartVer, b.MacroVer, b.MacroURL
+			}
+			row.Repos = append(row.Repos, cell)
+		}
+		out = append(out, row)
+	}
+	return out
 }
 
 // ecoSummary composes the newcomer's narrative from the same data the cards

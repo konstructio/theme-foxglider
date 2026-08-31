@@ -260,6 +260,47 @@ func (c *glClient) commitInfo(ctx context.Context, projectPath, sha string) (glC
 	return out, err
 }
 
+// glRef is a branch/tag a commit is contained in — commitRefs' element.
+type glRef struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+}
+
+// commitRefs lists the branches that contain a commit — the provenance lookup
+// for sha-suffixed RC pins (which line a build came from).
+func (c *glClient) commitRefs(ctx context.Context, projectPath, sha string) ([]glRef, error) {
+	var out []glRef
+	p := fmt.Sprintf("/projects/%s/repository/commits/%s/refs", url.QueryEscape(projectPath), url.PathEscape(sha))
+	_, err := c.get(ctx, p, url.Values{"type": {"branch"}, "per_page": {"20"}}, &out)
+	return out, err
+}
+
+// commitExists reports whether a commit is present in a project. An explicit
+// 404 is a definite "no" (nil error); any other non-200 is a real failure the
+// caller must NOT read as absence (a GitLab outage is not a missing commit).
+func (c *glClient) commitExists(ctx context.Context, projectPath, sha string) (bool, error) {
+	u := c.base + "/api/v4" + fmt.Sprintf("/projects/%s/repository/commits/%s",
+		url.QueryEscape(projectPath), url.PathEscape(sha))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+	res, err := c.hc.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer res.Body.Close()
+	switch res.StatusCode {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		return false, fmt.Errorf("gitlab commit %s: %s", sha, res.Status)
+	}
+}
+
 // glSHAPipeline is a pipeline in a ?sha= listing; Source separates the branch
 // run from tag/trigger runs of the same commit.
 type glSHAPipeline struct {
