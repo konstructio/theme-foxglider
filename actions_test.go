@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -187,7 +188,8 @@ func TestActionsDisabledWithoutToken(t *testing.T) {
 func TestDeliver(t *testing.T) {
 	var createdRef string
 	var createdVars []byte
-	merged := map[int]bool{}
+	merged := map[int]bool{} // guarded: the watcher merges from another goroutine
+	var mergedMu sync.Mutex
 	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.EscapedPath()
 		w.Header().Set("Content-Type", "application/json")
@@ -211,6 +213,7 @@ func TestDeliver(t *testing.T) {
 		case strings.HasSuffix(p, "/approve"):
 			w.Write([]byte(`{}`))
 		case strings.HasSuffix(p, "/merge"):
+			mergedMu.Lock()
 			for _, seg := range strings.Split(p, "/") {
 				if seg == "55" {
 					merged[55] = true
@@ -219,6 +222,7 @@ func TestDeliver(t *testing.T) {
 					merged[56] = true
 				}
 			}
+			mergedMu.Unlock()
 			w.Write([]byte(`{"iid":55,"state":"merged"}`))
 		default:
 			w.WriteHeader(404)
@@ -263,14 +267,19 @@ func TestDeliver(t *testing.T) {
 		t.Fatalf("tag pipeline missing INITIATED_BY: %s", createdVars)
 	}
 	// the watcher merges the matching bump MR — and never the other one
+	isMerged := func(iid int) bool {
+		mergedMu.Lock()
+		defer mergedMu.Unlock()
+		return merged[iid]
+	}
 	deadline := time.Now().Add(3 * time.Second)
-	for !merged[55] && time.Now().Before(deadline) {
+	for !isMerged(55) && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
-	if !merged[55] {
+	if !isMerged(55) {
 		t.Fatal("dev bump MR !55 was not merged")
 	}
-	if merged[56] {
+	if isMerged(56) {
 		t.Fatal("unrelated MR !56 must not be touched")
 	}
 }
@@ -349,11 +358,27 @@ func TestFeatureAction(t *testing.T) {
 	if res.StatusCode != 400 {
 		t.Fatalf("bad branch name = %d, want 400", res.StatusCode)
 	}
-	// macro refused
+	// macro (charts) feature: charts-only success — exactly one branch call to
+	// charts, zero MR calls, and no micro_created in the response.
+	chartsBefore, mrBefore := created["charts"], created["mr"]
 	res, _ = http.Post(srv.URL+"/api/actions/run", "application/json",
-		strings.NewReader(`{"project":"civo/metaphor/charts","action":"feature","branch":"epic-20-pink"}`))
-	if res.StatusCode != 400 {
-		t.Fatalf("feature on macro = %d, want 400", res.StatusCode)
+		strings.NewReader(`{"project":"civo/metaphor/charts","action":"feature","branch":"epic-30-teal"}`))
+	var mout struct {
+		OK           bool `json:"ok"`
+		MicroCreated bool `json:"micro_created"`
+	}
+	json.NewDecoder(res.Body).Decode(&mout)
+	if res.StatusCode != 200 || !mout.OK {
+		t.Fatalf("charts-only feature = %d %+v (want 200 ok)", res.StatusCode, mout)
+	}
+	if mout.MicroCreated {
+		t.Fatal("charts-only feature must not report micro_created")
+	}
+	if created["charts"] != chartsBefore+1 {
+		t.Fatalf("charts branch calls = %d, want exactly one more", created["charts"])
+	}
+	if created["mr"] != mrBefore {
+		t.Fatalf("charts-only feature drafted an MR (mr calls %d→%d)", mrBefore, created["mr"])
 	}
 }
 
@@ -509,6 +534,7 @@ func TestDeleteBranch(t *testing.T) {
 // TestMergeMRAction: only open epic-* MRs merge, with the repo-name confirm.
 func TestMergeMRAction(t *testing.T) {
 	merged := map[string]bool{}
+	var mergedMu sync.Mutex
 	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.EscapedPath()
 		w.Header().Set("Content-Type", "application/json")
@@ -522,7 +548,9 @@ func TestMergeMRAction(t *testing.T) {
 		case strings.HasSuffix(p, "/approve"):
 			w.Write([]byte(`{}`))
 		case strings.HasSuffix(p, "/merge"):
+			mergedMu.Lock()
 			merged[p] = true
+			mergedMu.Unlock()
 			w.Write([]byte(`{"iid":9,"state":"merged","web_url":"http://gl/x/-/merge_requests/9"}`))
 		default:
 			w.WriteHeader(404)
@@ -563,6 +591,8 @@ func TestMergeMRAction(t *testing.T) {
 	if res.StatusCode != 200 || out["state"] != "merged" {
 		t.Fatalf("merge = %d %+v", res.StatusCode, out)
 	}
+	mergedMu.Lock()
+	defer mergedMu.Unlock()
 	if len(merged) != 1 {
 		t.Fatalf("merge calls = %+v", merged)
 	}

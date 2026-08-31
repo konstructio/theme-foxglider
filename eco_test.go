@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -166,11 +167,12 @@ func TestEcosystem(t *testing.T) {
 	if eco.Macro.Pipeline == nil || eco.Macro.Pipeline.Status != "success" {
 		t.Fatalf("macro pipeline = %+v", eco.Macro.Pipeline)
 	}
-	// the bundle tree: declared order, exact pins, read at the published tag
+	// the bundle tree: declared order, exact pins, read at the published tag,
+	// each enriched with its provenance line (counter-rc pins ride main)
 	wantBundle := []depJSON{
-		{"metaphor", "0.11.0-rc.13"},
-		{"metaphor-dashboard-manager", "0.12.0-rc.15"},
-		{"metaphor-micro-frontend", "0.1.0-rc.7"},
+		{Name: "metaphor", Version: "0.11.0-rc.13", Source: "main"},
+		{Name: "metaphor-dashboard-manager", Version: "0.12.0-rc.15", Source: "main"},
+		{Name: "metaphor-micro-frontend", Version: "0.1.0-rc.7", Source: "main"},
 	}
 	if len(eco.Macro.Bundle) != 3 {
 		t.Fatalf("bundle = %+v", eco.Macro.Bundle)
@@ -777,5 +779,190 @@ func TestSingleAppMode(t *testing.T) {
 	b := byEnv["kubefunk-b"]
 	if b.Ready || b.State != "pending" {
 		t.Fatalf("kubefunk-b must be pending without its token: %+v", b)
+	}
+}
+
+// TestBuiltFromHotfixAndShaImmunity pins the R4 regex change: hotfix lines
+// resolve like epic lines, while sha-suffixed rcs stay on "main".
+func TestBuiltFromHotfixAndShaImmunity(t *testing.T) {
+	cases := map[string]string{
+		"metaphor-v0.2.0-hotfix-0-9.3":          "hotfix-0-9",
+		"konstruct-v0.11.0-hotfix-2-4.1":        "hotfix-2-4",
+		"metaphor-v0.2.0-epic-106-background.2": "epic-106-background",
+		"konstruct-v0.7.8-rc.57f3903b":          "main", // sha-rc must NOT match
+		"0.7.8-rc.57f3903b":                     "main",
+		"metaphor-v0.2.0-rc.13":                 "main", // counter rc
+	}
+	for in, want := range cases {
+		if got := builtFrom(in); got != want {
+			t.Fatalf("builtFrom(%q) = %q want %q", in, got, want)
+		}
+	}
+}
+
+// TestRcSHA pins the sha-vs-counter split: only hex-with-a-letter is a sha.
+func TestRcSHA(t *testing.T) {
+	cases := map[string]string{
+		"0.11.0-rc.57f3903b": "57f3903b", // real sha
+		"0.11.0-rc.13":       "",         // short counter
+		"0.11.0-rc.1234567":  "",         // 7-digit all-digit counter, not a sha
+		"0.11.0-rc.4":        "",
+		"0.11.0":             "",
+		"0.11.0-epic-x.1":    "",
+	}
+	for in, want := range cases {
+		if got := rcSHA(in); got != want {
+			t.Fatalf("rcSHA(%q) = %q want %q", in, got, want)
+		}
+	}
+}
+
+// TestChartVerFor pins the hotfix ChartVer lookup: newest matching dep-bump,
+// matched by branch needle OR tip sha, always for the right service.
+func TestChartVerFor(t *testing.T) {
+	commits := []glCommit{
+		{Title: "ci: update konstruct-api dependency to 0.11.0-rc.a1b2c3d4"},
+		{Title: "ci: bump metaphor dependency to 0.11.0-hotfix-0-9.2"},
+		{Title: "chore: something unrelated"},
+		{Title: "ci: update konstruct-api dependency to 0.10.0-rc.deadbeef"},
+	}
+	cases := []struct {
+		description, svc, needle, tip, want string
+	}{
+		{"matches by branch needle", "metaphor", "-hotfix-0-9.", "", "0.11.0-hotfix-0-9.2"},
+		{"matches by tip sha, newest first", "konstruct-api", "", "a1b2c3d4", "0.11.0-rc.a1b2c3d4"},
+		{"wrong service never matches", "metaphor", "", "a1b2c3d4", ""},
+		{"no needle or tip match returns empty", "konstruct-api", "-nope.", "zzzz", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.description, func(t *testing.T) {
+			if got := chartVerFor(commits, c.svc, c.needle, c.tip); got != c.want {
+				t.Fatalf("chartVerFor = %q want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestMacroTagForTip pins the tip-aware mapping: branch-name needle first,
+// then the konstruct-hotfix -rc.<shortSHA> fallback, else empties.
+func TestMacroTagForTip(t *testing.T) {
+	tags := []glTag{
+		{Name: "metaphor-v0.2.0-epic-101-aurora.2"},
+		{Name: "metaphor-v0.2.0-rc.4"},
+		{Name: "metaphor-v0.3.0-rc.a1b2c3d4"}, // a hotfix tip's sha-suffixed umbrella
+	}
+	cases := []struct {
+		description, branch, short, wantVer, wantTag string
+	}{
+		{"main → newest rc", "main", "zz", "0.2.0-rc.4", "metaphor-v0.2.0-rc.4"},
+		{"epic → its feature tag", "epic-101-aurora", "zz", "0.2.0-epic-101-aurora.2", "metaphor-v0.2.0-epic-101-aurora.2"},
+		{"hotfix tip → tag ending -rc.<sha>", "hotfix-0.3", "a1b2c3d4", "0.3.0-rc.a1b2c3d4", "metaphor-v0.3.0-rc.a1b2c3d4"},
+		{"no needle, no sha match → empties", "hotfix-9.9", "ffffffff", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.description, func(t *testing.T) {
+			ver, tag := macroTagForTip(tags, "metaphor-v", c.branch, c.short)
+			if ver != c.wantVer || tag != c.wantTag {
+				t.Fatalf("macroTagForTip = (%q,%q) want (%q,%q)", ver, tag, c.wantVer, c.wantTag)
+			}
+		})
+	}
+}
+
+// TestAssembleOrgHotfixes pins the org rollup: live hotfix branches grouped by
+// name, a cell per service + macro repo, stale branches dropped, newest-first.
+func TestAssembleOrgHotfixes(t *testing.T) {
+	topo := topology{
+		Services: []svcSpec{
+			{Name: "metaphor", Project: "civo/metaphor/metaphor"},
+			{Name: "mdm", Project: "civo/metaphor/metaphor-dashboard-manager"},
+		},
+		MacroName: "metaphor-macro", MacroProj: "civo/metaphor/charts",
+	}
+	repos := []repoBranches{
+		{Name: "metaphor", Project: "civo/metaphor/metaphor", Hotfix: []branchJSON{
+			{Name: "hotfix-0.9", When: "2026-08-27T10:00:00Z", WebURL: "u1",
+				ChartVer: "0.11.0-rc.aaa", MacroVer: "0.2.0-rc.9", MacroURL: "m1"},
+			{Name: "hotfix-old", When: "2026-01-01T00:00:00Z", Stale: true}, // dropped
+		}},
+		{Name: "mdm", Project: "civo/metaphor/metaphor-dashboard-manager", Hotfix: []branchJSON{
+			{Name: "hotfix-0.9", When: "2026-08-27T09:00:00Z", WebURL: "u2"},
+		}},
+		{Name: "metaphor-macro", Project: "civo/metaphor/charts", Hotfix: []branchJSON{
+			{Name: "hotfix-charts", When: "2026-08-26T00:00:00Z", WebURL: "u3"},
+		}},
+	}
+	out := assembleOrgHotfixes(topo, repos)
+	if len(out) != 2 {
+		t.Fatalf("rows = %+v", out)
+	}
+	if out[0].Branch != "hotfix-0.9" || out[1].Branch != "hotfix-charts" {
+		t.Fatalf("order/branch = %+v", out)
+	}
+	row := out[0]
+	if len(row.Repos) != 3 { // two services + the macro repo
+		t.Fatalf("cols = %+v", row.Repos)
+	}
+	byProj := map[string]orgHotfixRepo{}
+	for _, c := range row.Repos {
+		byProj[c.Project] = c
+	}
+	m := byProj["civo/metaphor/metaphor"]
+	if !m.Has || m.ChartVer != "0.11.0-rc.aaa" || m.MacroVer != "0.2.0-rc.9" || m.WebURL != "u1" {
+		t.Fatalf("metaphor cell = %+v", m)
+	}
+	if c := byProj["civo/metaphor/charts"]; c.Has {
+		t.Fatalf("charts must not carry hotfix-0.9: %+v", c)
+	}
+	if c := byProj["civo/metaphor/charts"]; c.Name != "charts" {
+		t.Fatalf("macro column display name = %q, want short 'charts'", c.Name)
+	}
+	for _, r := range out {
+		if r.Branch == "hotfix-old" {
+			t.Fatal("stale hotfix leaked into the rollup")
+		}
+	}
+}
+
+// TestDepSource pins the provenance classifier: branch-suffix → the branch id;
+// counter/plain → main; sha-rc → the commit's branch (main preferred, then a
+// hotfix line); unknown service → "" (omit); commit on no branch → "unknown".
+func TestDepSource(t *testing.T) {
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(p, "/commits/aaaaaaa1/refs"):
+			w.Write([]byte(`[{"type":"branch","name":"main"},{"type":"branch","name":"hotfix-0.9"}]`))
+		case strings.HasSuffix(p, "/commits/bbbbbbb2/refs"):
+			w.Write([]byte(`[{"type":"branch","name":"hotfix-0.9"}]`))
+		case strings.HasSuffix(p, "/commits/ccccccc3/refs"):
+			w.Write([]byte(`[]`)) // on no branch we can name
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	a := &api{gl: newGLClient(gl.URL, "tok"), c: newCache()}
+	topo := topology{Services: []svcSpec{{Name: "metaphor", Project: "civo/metaphor/metaphor"}}}
+	ctx := context.Background()
+	cases := []struct {
+		description, name, version, want string
+	}{
+		{"epic branch-suffix → the branch id", "metaphor", "0.11.0-epic-101-aurora.1", "epic-101-aurora"},
+		{"hotfix branch-suffix → the branch id", "metaphor", "0.11.0-hotfix-0-9.2", "hotfix-0-9"},
+		{"counter rc → main", "metaphor", "0.11.0-rc.13", "main"},
+		{"plain release → main", "metaphor", "0.11.0", "main"},
+		{"unknown service name → empty so the field omits", "ghost", "0.11.0-rc.aaaaaaa1", ""},
+		{"sha-rc contained in main → main", "metaphor", "0.11.0-rc.aaaaaaa1", "main"},
+		{"sha-rc only on a hotfix → that hotfix", "metaphor", "0.11.0-rc.bbbbbbb2", "hotfix-0.9"},
+		{"sha-rc on no named branch → unknown", "metaphor", "0.11.0-rc.ccccccc3", "unknown"},
+	}
+	for _, c := range cases {
+		t.Run(c.description, func(t *testing.T) {
+			if got := a.depSource(ctx, topo, c.name, c.version); got != c.want {
+				t.Fatalf("depSource(%q,%q) = %q want %q", c.name, c.version, got, c.want)
+			}
+		})
 	}
 }

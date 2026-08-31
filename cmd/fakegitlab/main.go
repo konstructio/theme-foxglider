@@ -30,6 +30,11 @@ var statuses = []string{"success", "success", "failed", "success", "canceled", "
 // fake booted, so client-side elapsed/progress advances in real time.
 var bootStarted = time.Now().UTC().Add(-45 * time.Second).Format(time.RFC3339)
 
+// createdBranches records demo branch creations (key project|branch → ref) so
+// the list stays honest, joins 400 like real GitLab, and hotfix-from-version
+// cuts are inspectable.
+var createdBranches = map[string]string{}
+
 // deletedBranches tracks branch deletes so the list stays honest mid-demo.
 var delMu sync.Mutex
 var deletedBranches = map[string]bool{}
@@ -164,6 +169,10 @@ func fakeCommitter(proj string) (name, avatar string) {
 func ecoFake(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.EscapedPath()
 	switch {
+	case strings.Contains(p, "metaphor-macro%2FChart.yaml") && strings.Contains(r.URL.RawQuery, "rc.feedface"):
+		// the hotfix-from-version demo bundle: one pin resolves to a live
+		// commit (on a hotfix branch → provenance chip), the rest must skip
+		fmt.Fprint(w, "version: 0.6.0-rc.feedface\ndependencies:\n  - name: metaphor\n    version: \"0.11.0-rc.13\"\n  - name: metaphor-dashboard-manager\n    version: \"0.12.0-rc.deadd00d\"\n  - name: metaphor-micro-frontend\n    version: \"0.1.0-rc.0b20cdff\"\n")
 	case strings.Contains(p, "metaphor-macro%2FChart.yaml") && strings.Contains(r.URL.RawQuery, "epic-101-aurora"):
 		fmt.Fprint(w, "version: 0.2.0\ndependencies:\n  - name: metaphor\n    version: \"0.11.0-rc.13\"\n  - name: metaphor-dashboard-manager\n    version: \"0.12.0-epic-101-aurora.2\"\n  - name: metaphor-micro-frontend\n    version: \"0.1.0-rc.7\"\n")
 	case strings.Contains(p, "metaphor-macro%2FChart.yaml") && strings.Contains(r.URL.RawQuery, "epic-showrishi"):
@@ -185,8 +194,9 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(p, "/repository/tags"):
 		w.Header().Set("Content-Type", "application/json")
 		now3 := time.Now().UTC()
-		fmt.Fprintf(w, `[{"name":"metaphor-v0.2.0-epic-101-aurora.2","commit":{"created_at":%q}},{"name":"metaphor-v0.2.0-rc.4","commit":{"created_at":%q}},{"name":"metaphor-v0.2.0-rc.3","commit":{"created_at":%q}},{"name":"metaphor-v0.2.0-rc.2","commit":{"created_at":%q}}]`,
-			now3.Add(-2*time.Hour).Format(time.RFC3339), now3.Add(-10*time.Minute).Format(time.RFC3339), now3.Add(-20*time.Minute).Format(time.RFC3339), now3.Add(-30*time.Minute).Format(time.RFC3339))
+		fmt.Fprintf(w, `[{"name":"metaphor-v0.2.0-epic-101-aurora.2","commit":{"created_at":%q}},{"name":"metaphor-v0.2.0-rc.4","commit":{"created_at":%q}},{"name":"metaphor-v0.2.0-rc.3","commit":{"created_at":%q}},{"name":"metaphor-v0.2.0-rc.2","commit":{"created_at":%q}},{"name":"metaphor-v0.6.0-rc.feedface","commit":{"created_at":%q}},{"name":"metaphor-v0.11.1-rc.def67890","commit":{"created_at":%q}}]`,
+			now3.Add(-2*time.Hour).Format(time.RFC3339), now3.Add(-10*time.Minute).Format(time.RFC3339), now3.Add(-20*time.Minute).Format(time.RFC3339), now3.Add(-30*time.Minute).Format(time.RFC3339),
+			now3.Add(-1*time.Hour).Format(time.RFC3339), now3.Add(-26*time.Hour).Format(time.RFC3339))
 	case (strings.Contains(p, "%2Fepics%2F") || strings.Contains(p, "/epics/")) && r.Method == "PUT":
 		fmt.Fprint(w, `{"iid":101,"state":"closed"}`)
 	case strings.Contains(p, "%2Fepics%2F"), strings.Contains(p, "/epics/"):
@@ -213,7 +223,20 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"commits":[{"id":"a","author_name":"Jared Edwards","author_email":"jared@civo.com"},{"id":"b","author_name":"John Dietz","author_email":"john.dietz@civo.com"},{"id":"c","author_name":"John Dietz","author_email":"john.dietz@civo.com"}]}`)
 	case strings.HasSuffix(p, "/repository/branches") && r.Method == "POST":
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"name":"epic-20-pink","web_url":"https://git.civo.com/x/-/tree/epic-20-pink"}`)
+		branch, ref := r.URL.Query().Get("branch"), r.URL.Query().Get("ref")
+		key := ecoProjFromPath(p) + "|" + branch
+		delMu.Lock()
+		_, dup := createdBranches[key]
+		if !dup && !deletedBranches[branch] {
+			createdBranches[key] = ref
+		}
+		delMu.Unlock()
+		if dup {
+			w.WriteHeader(400)
+			fmt.Fprint(w, `{"message":"Branch already exists"}`)
+			return
+		}
+		fmt.Fprintf(w, `{"name":%q,"web_url":"https://git.civo.com/x/-/tree/%s"}`, branch, strings.ReplaceAll(branch, "/", "-"))
 	case strings.HasSuffix(p, "/repository/branches"):
 		w.Header().Set("Content-Type", "application/json")
 		now2 := time.Now().UTC()
@@ -233,7 +256,14 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(p, "micro-frontend") || strings.Contains(p, "%2Fcharts") {
 			all = append(all, fb{"epic-showrishi", "aa11bb22", "wip: show rishi", "John Dietz", now2.Add(-40 * time.Minute)})
 		}
+		// branches created mid-demo (feature start, hotfix join, hotfix cut)
+		proj := ecoProjFromPath(p)
 		delMu.Lock()
+		for key := range createdBranches {
+			if kp, name, ok := strings.Cut(key, "|"); ok && kp == proj {
+				all = append(all, fb{name, "c4ea7ed1", "branch cut by foxglider", "John Dietz", now2.Add(-1 * time.Minute)})
+			}
+		}
 		items := []string{}
 		for _, b := range all {
 			if deletedBranches[b.name] {
@@ -250,9 +280,25 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 	case strings.Contains(p, "/merge_requests") && strings.Contains(p, "/repository/commits/"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `[{"iid":7,"title":"feat: aurora background","source_branch":"epic-101-aurora","web_url":"https://git.civo.com/x/-/merge_requests/7"}]`)
+	case strings.HasSuffix(p, "/repository/commits") && strings.Contains(p, "%2Fcharts"):
+		// charts main history: dep-bump titles feed the per-branch
+		// "chart it produced" resolver
+		w.Header().Set("Content-Type", "application/json")
+		now4 := time.Now().UTC()
+		fmt.Fprintf(w, `[{"id":"d1","short_id":"d1short","title":"ci: update metaphor dependency to 0.11.1-rc.def67890","author_name":"kbot","web_url":"https://git.civo.com/x/-/commit/d1","authored_date":%q},{"id":"d2","short_id":"d2short","title":"ci: update metaphor-dashboard-manager dependency to 0.12.0-epic-101-aurora.2","author_name":"kbot","web_url":"https://git.civo.com/x/-/commit/d2","authored_date":%q}]`,
+			now4.Add(-26*time.Hour).Format(time.RFC3339), now4.Add(-2*time.Hour).Format(time.RFC3339))
 	case strings.HasSuffix(p, "/repository/commits"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `[{"id":"c1","short_id":"c1short","title":"feat: aurora background (epic-101)","author_name":"John Dietz","web_url":"https://git.civo.com/x/-/commit/c1","authored_date":%q}]`, time.Now().UTC().Add(-40*time.Minute).Format(time.RFC3339))
+	case strings.HasSuffix(p, "/refs") && strings.Contains(p, "/repository/commits/"):
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(p, "0b20cdff") {
+			fmt.Fprint(w, `[{"type":"branch","name":"hotfix-llm-broker"}]`)
+			return
+		}
+		fmt.Fprint(w, `[{"type":"branch","name":"main"}]`)
+	case strings.Contains(p, "/repository/commits/deadd00d"):
+		w.WriteHeader(404) // the hotfix-from-version skip demo: commit long gone
 	case strings.Contains(p, "%2Frepository%2Fcommits%2F"), strings.Contains(p, "/repository/commits/"):
 		w.Header().Set("Content-Type", "application/json")
 		proj := ecoProjFromPath(p)
