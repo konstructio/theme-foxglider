@@ -149,6 +149,8 @@
   .upin.picked{color:var(--civo);border-color:var(--civo)}
   .bf-chip{border:1px solid var(--line);border-radius:3px;padding:0 6px;font-size:10.5px}
   .bf-feat{color:var(--civo);border-color:#14532d}
+  .bf-hot{color:var(--gl-amber);border-color:#78560f}
+  .pin-src{margin-left:2px;flex:none}
   .pipe-mini{font-size:9.5px;padding:1px 6px}
   .tf-ghost{color:var(--mut2)}
   .prom-wrap{margin-top:18px}
@@ -162,7 +164,7 @@
   .feat-g{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 14px;margin:0 0 10px}
   .feat-h{display:flex;align-items:center;gap:9px;margin-bottom:7px}
   .feat-name{font-size:13px;color:var(--ink)}
-  .fs-row{display:flex;align-items:center;gap:9px;padding:3px 0 3px 20px;font-size:12px}
+  .fs-row{display:flex;align-items:center;gap:9px;padding:3px 0 3px 20px;font-size:12px;flex-wrap:wrap;row-gap:2px}
   .fs-name a{color:var(--ink2);text-decoration:none}
   .fs-name a:hover{color:var(--ink)}
   .fs-b{font-size:10px;border-radius:3px;padding:1px 7px;border:1px solid}
@@ -188,11 +190,14 @@
   .tf-h-row .abtn{text-transform:none;letter-spacing:0}
   .tile-feats{margin-top:7px;border-top:1px dashed var(--line);padding-top:6px;display:flex;flex-direction:column;gap:4px}
   .tf-h{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut2);margin-bottom:2px}
-  .tf-row{display:flex;align-items:center;gap:7px;font-size:11.5px}
+  .tf-row{display:flex;align-items:center;gap:7px;font-size:11.5px;flex-wrap:wrap;row-gap:2px}
   .tf-ic{color:var(--mut2);display:inline-flex}
   .tf-ic svg{width:11px;height:11px}
   .tf-name{color:var(--ink2);text-decoration:none}
   .tf-name:hover{color:var(--ink)}
+  .tile-feats .tf-row{min-width:0}
+  .tile-feats .tf-name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tf-ver{font-size:10px;flex:none}
   .btree{margin:7px 0 2px;padding:7px 9px;background:var(--panel2);border:1px solid var(--line);border-radius:5px}
   .bt-row{display:flex;align-items:baseline;gap:7px;font-size:11.5px;line-height:1.85;border-radius:3px;padding:0 4px}
   .bt-branch{color:var(--mut2);flex:none}
@@ -504,10 +509,21 @@ function verPicker(m) {
   return `<select id="verpick" class="ec-big mono verpick${state.picked ? ' picked' : ''}" title="preview any published umbrella — the tree and the environment boxes follow">
     ${tags.map(t => {
       const v = t.replace(/^.*?-v/, 'v').replace(/^v/, '');
-      const bf = /-(epic-[a-z0-9-]+)\.[0-9]+$/.exec(t)?.[1];
+      const bf = /-((?:epic|hotfix)-[a-z0-9.-]+)\.[0-9]+$/.exec(t)?.[1];
       return `<option value="${esc(t)}" ${t === sel ? 'selected' : ''}>${esc(t === cur ? v + ' · newest' : v)}${bf ? ` (${esc(bf)})` : ''}</option>`;
     }).join('')}
   </select>`;
+}
+// pinSource: the provenance chip on a bundle-tree row — which branch the pin
+// was built from. main is muted, epic-/hotfix- get the feature/hotfix accent,
+// unknown is an honest muted "?" (GitLab couldn't place the sha). Absent → nothing.
+function pinSource(src) {
+  if (!src) return '';
+  if (src === 'main') return `<span class="lane-tag pin-src" title="pinned from main">main</span>`;
+  if (src === 'unknown') return `<span class="lane-tag pin-src" title="source branch unknown — GitLab could not resolve this sha">?</span>`;
+  if (/^epic-/.test(src)) return `<span class="bf-chip bf-feat mono pin-src" title="pinned from ${esc(src)}">${esc(src)}</span>`;
+  if (/^hotfix-/.test(src)) return `<span class="bf-chip bf-hot mono pin-src" title="pinned from ${esc(src)}">${esc(src)}</span>`;
+  return `<span class="lane-tag pin-src" title="pinned from ${esc(src)}">${esc(src)}</span>`;
 }
 // bundleTree: the subchart pins inside the published umbrella, as a tree.
 // Rows flash briefly when a version changes between polls — publishes are
@@ -525,7 +541,7 @@ function bundleTree(m) {
     const last = i === deps.length - 1;
     const svc = svcByName[d.name];
     const nm = svc ? `<a class="bt-name" target="_blank" href="${svc.web_url}">${esc(d.name)}</a>` : `<span class="bt-name">${esc(d.name)}</span>`;
-    return `<div class="bt-row${changed ? ' bump' : ''}"><span class="bt-branch mono">${last ? '└─' : '├─'}</span>${nm}<span class="bt-dots"></span><span class="mono bt-ver">${esc(d.version)}</span></div>`;
+    return `<div class="bt-row${changed ? ' bump' : ''}"><span class="bt-branch mono">${last ? '└─' : '├─'}</span>${nm}<span class="bt-dots"></span><span class="mono bt-ver">${esc(d.version)}</span>${pinSource(d.source)}</div>`;
   }).join('');
   state.prevBundle = next;
   const refNote = m.bundle_ref && m.bundle_ref !== m.published_tag ? `<span class="mut" title="the published tag couldn't be read — showing main's tip">@${esc(m.bundle_ref)}</span>` : '';
@@ -606,6 +622,9 @@ function renderDelivery(d) {
           ${bundleTree(m)}
           ${mainPipelineSection(m)}
           ${mainReleaseSection(m)}
+          ${tileHotfixes(m, true)}
+          ${tileFeatures(m, true)}
+          ${state.act && state.act.enabled ? `<div class="ec-act"><button class="abtn warn" data-act="hotfix" data-proj="${esc(m.project)}" title="cut a hotfix branch from a published umbrella version">⚑ hotfix</button></div>` : ''}
           ${watchChip(m)}
         </div>
       </div>
@@ -682,6 +701,7 @@ function laneRow(repo, list, lane) {
         : `<span class="br-ahead" title="${b.ahead} commit(s) not yet merged back to main">↑${b.ahead} not in main</span>`) : ''}
       ${avs ? `<span class="avstack" title="wrote the commits not yet in main">${avs}</span>` : ''}
       ${b.ahead === 0 ? `<span class="br-merged" title="everything merged back">✓ merged</span>` : ''}
+      ${b.chart_ver ? `<span class="mono mut tf-ver" title="last chart this branch produced">${esc(b.chart_ver)}</span>` : ''}
       ${b.macro_ver ? `<a class="br-macro mono" target="_blank" href="${b.macro_url}" title="the umbrella version this branch's line publishes">${ICON_SHIP} ${esc(b.macro_ver)}</a>` : ''}
       ${branchActs(repo, b, lane)}
     </span>`;
@@ -707,6 +727,7 @@ function featureGroup(f) {
     <div class="fs-row">
       <span class="mono fs-name">${sv.web_url ? `<a target="_blank" href="${sv.web_url}">${esc(sv.name)}</a>` : esc(sv.name)}</span>
       ${stBadge(sv.state)}
+      ${sv.version ? `<span class="mono mut tf-ver" title="the feature pin this service carries">${esc(sv.version)}</span>` : ''}
       ${sv.mr_iid ? `<a class="fs-mr mono mr-${esc(sv.mr_state || 'ready')}" target="_blank" href="${sv.mr_url}" title="the carrying merge request — ${esc(sv.mr_state || 'ready')}">!${sv.mr_iid} · ${esc(sv.mr_state || 'ready')}</a>${act && (sv.mr_state === 'ready' || sv.mr_state === 'feedback') ? `<button class="abtn warn br-act" data-act="merge-mr" data-proj="${esc(sv.project)}" data-mriid="${sv.mr_iid}" data-branch="${esc(f.branch)}" title="merge !${sv.mr_iid} into main">${ICON_MR} merge</button>` : ''}`
         : act && sv.state !== 'main' ? `<button class="abtn br-act featfix" data-proj="${esc(sv.project)}" data-branch="${esc(f.branch)}" title="draft the carrying merge request for ${esc(sv.name)}">${ICON_MR} draft MR</button>` : ''}
       <span class="mut">${sv.when ? relTime(sv.when) : ''}</span>
@@ -926,7 +947,6 @@ window.addEventListener('message', e => {
   try { if (window.parent !== window) window.parent.postMessage({ type: 'konstruct:whoami' }, '*'); } catch {}
   setTimeout(() => askWhoami(attempt + 1), attempt * 1500 + 500);
 })(0);
-// actBtns renders the two guarded actions when the write token is configured.
 const ICON_SCOPE = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M22 12h-4M6 12H2M12 6V2M12 22v-4"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>';
 const ICON_MR = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg>';
 const ICON_TRASH = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>';
@@ -991,14 +1011,6 @@ function mainReleaseSection(n) {
     </div>
   </div>`;
 }
-function actBtns(project, isMacro) {
-  if (!state.act || !state.act.enabled) return '';
-  return `<div class="ec-act">
-    <button class="abtn" data-act="trigger" data-proj="${esc(project)}" title="trigger the delivery pipeline on main (fresh sha)">${ICON_SCOPE} trigger</button>
-    <button class="abtn warn" data-act="release" data-proj="${esc(project)}" title="cut a clean release from main's latest RC">${ICON_ROCKET} release</button>
-    ${isMacro ? '' : `<button class="abtn" data-act="feature" data-proj="${esc(project)}" title="start or join an epic feature branch (app + charts)">${ICON_BRANCH} feature</button>`}
-  </div>`;
-}
 // tileFeatures: epic branches touched in the last 2 days become first-class
 // secondary targets on the tile — their own trigger/release, aimed at the
 // branch (the block above stays main's).
@@ -1010,44 +1022,73 @@ function pipeMini(pl) {
 // tileFeatures: EVERY active feature in the org shows on EVERY card — trigger
 // (with its live pipeline) when this repo has the branch, JOIN when it
 // doesn't. Releases never cut from epic- branches (2026-08-27 decision).
-function tileFeatures(svc) {
+// On the umbrella card (isMacro) presence is the feature's charts branch
+// (f.charts) and JOIN creates only that charts branch. The version pin the
+// service carries and the feature's umbrella version ride alongside.
+function tileFeatures(svc, isMacro) {
   const proms = (state.eco && state.eco.promotions) || [];
   const act = state.act && state.act.enabled;
-  if (!proms.length && !act) return '';
+  // epic starts are server-refused in a hotfix-only org — don't offer the button.
+  const canStart = act && !(state.act && state.act.branch_policy === 'hotfix-only');
+  if (!proms.length && !canStart) return '';
   const rows = proms.map(f => {
-    const mine = (f.services || []).find(x => x.project === svc.project);
-    const has = !!(mine && mine.state !== 'main');
+    const mine = isMacro ? null : (f.services || []).find(x => x.project === svc.project);
+    const has = isMacro ? !!f.charts : !!(mine && mine.state !== 'main');
     const pipe = has ? (svc.branch_pipes || {})[f.branch] : null;
+    const ver = mine && mine.version;
+    const nm = isMacro
+      ? (has && f.macro_url ? `<a class="mono tf-name" target="_blank" href="${f.macro_url}" title="${esc(f.branch)}">${esc(f.branch)}</a>` : `<span class="mono tf-name${has ? '' : ' tf-ghost'}" title="${esc(f.branch)}">${esc(f.branch)}</span>`)
+      : (has && mine.web_url ? `<a class="mono tf-name" target="_blank" href="${mine.web_url}" title="${esc(f.branch)}">${esc(f.branch)}</a>` : `<span class="mono tf-name tf-ghost" title="${esc(f.branch)}">${esc(f.branch)}</span>`);
+    const badge = isMacro
+      ? (has ? '<span class="fs-b fs-join">charts</span>' : '<span class="fs-b fs-main">not joined</span>')
+      : (has ? `<span class="fs-b ${mine.state === 'updated' ? 'fs-upd' : 'fs-join'}">${mine.state === 'updated' ? 'updated' : 'joined'}</span>` : '<span class="fs-b fs-main">not joined</span>');
+    const when = isMacro ? (has && f.when ? relTime(f.when) : '') : (has && mine.when ? relTime(mine.when) : '');
     return `<div class="tf-row">
       <span class="tf-ic">${ICON_BRANCH}</span>
-      ${has && mine.web_url ? `<a class="mono tf-name" target="_blank" href="${mine.web_url}">${esc(f.branch)}</a>` : `<span class="mono tf-name tf-ghost">${esc(f.branch)}</span>`}
-      ${has ? `<span class="fs-b ${mine.state === 'updated' ? 'fs-upd' : 'fs-join'}">${mine.state === 'updated' ? 'updated' : 'joined'}</span>` : '<span class="fs-b fs-main">not joined</span>'}
-      ${has && mine.when ? `<span class="mut">${relTime(mine.when)}</span>` : ''}
+      ${nm}
+      ${badge}
+      ${ver ? `<span class="mono mut tf-ver" title="the feature pin this service carries">${esc(ver)}</span>` : ''}
+      ${when ? `<span class="mut">${when}</span>` : ''}
+      ${f.macro_ver ? `<a class="br-macro mono" target="_blank" href="${f.macro_url || '#'}" title="the umbrella version this feature publishes">${ICON_SHIP} ${esc(f.macro_ver)}</a>` : ''}
       ${pipeMini(pipe)}
       <span class="spacer"></span>
       ${act ? has
         ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(svc.project)}" data-ref="${esc(f.branch)}" title="run ${esc(f.branch)}'s CI here">${ICON_SCOPE}</button>`
-        : `<button class="abtn br-act featfix" data-proj="${esc(svc.project)}" data-branch="${esc(f.branch)}" title="join ${esc(f.branch)} — creates this repo's branch + drafts its MR">${ICON_BRANCH} join</button>` : ''}
+        : `<button class="abtn br-act featfix" data-proj="${esc(svc.project)}" data-branch="${esc(f.branch)}" title="${isMacro ? `create the charts branch for ${esc(f.branch)}` : `join ${esc(f.branch)} — creates this repo's branch + drafts its MR`}">${ICON_BRANCH} join</button>` : ''}
     </div>`;
   }).join('');
-  return `<div class="tile-feats"><div class="tf-h tf-h-row">active features<span class="spacer"></span>${act ? `<button class="abtn br-act" data-act="feature" data-proj="${esc(svc.project)}" title="start or join an epic feature branch (app + charts)">${ICON_BRANCH} start · join</button>` : ''}</div>${!proms.length ? '<div class="mut" style="font-size:11px">none right now</div>' : rows}</div>`;
+  return `<div class="tile-feats"><div class="tf-h tf-h-row">active features<span class="spacer"></span>${canStart ? `<button class="abtn br-act" data-act="feature" data-proj="${esc(svc.project)}" title="start an epic feature branch">⑂ start</button>` : ''}</div>${!proms.length ? '<div class="mut" style="font-size:11px">none right now</div>' : rows}</div>`;
 }
-// tileHotfixes: the repo's fresh hotfix- branches — trigger + release (hotfix
-// lines DO release) + the live pipeline.
-function tileHotfixes(svc) {
-  const hots = svc.hotfixes || [];
-  if (!hots.length) return '';
+// tileHotfixes: the ORG's fresh hotfix- branches (state.eco.org_hotfixes) shown
+// on EVERY card — trigger + release when this repo carries the branch, JOIN
+// (hotfix-join) when it doesn't. The umbrella card resolves its own cell as the
+// charts repo. Hotfix lines DO release (unlike epic branches). chart_ver +
+// macro_ver ride along; empty org_hotfixes shows "none right now".
+function tileHotfixes(svc, isMacro) {
+  const rows = (state.eco && state.eco.org_hotfixes) || [];
   const act = state.act && state.act.enabled;
-  return `<div class="tile-feats"><div class="tf-h">hotfixes</div>${hots.map(b => `
-    <div class="tf-row">
+  const body = !rows.length
+    ? '<div class="mut" style="font-size:11px">none right now</div>'
+    : rows.map(row => {
+        const mine = (row.repos || []).find(r => r.project === svc.project);
+        const has = !!(mine && mine.has);
+        const pipe = has ? (svc.branch_pipes || {})[row.branch] : null;
+        return `<div class="tf-row">
       <span class="tf-ic">${ICON_BRANCH}</span>
-      <a class="mono tf-name" target="_blank" href="${b.web_url}" title="${esc(b.title || '')}">${esc(b.name)}</a>
-      <span class="mut">${b.when ? relTime(b.when) : ''}</span>
-      ${pipeMini((svc.branch_pipes || {})[b.name])}
+      ${has && mine.web_url ? `<a class="mono tf-name" target="_blank" href="${mine.web_url}" title="${esc(row.branch)}">${esc(row.branch)}</a>` : `<span class="mono tf-name tf-ghost" title="${esc(row.branch)}">${esc(row.branch)}</span>`}
+      ${has ? '' : '<span class="fs-b fs-main">not joined</span>'}
+      ${has && mine.when ? `<span class="mut">${relTime(mine.when)}</span>` : ''}
+      ${has && mine.chart_ver ? `<span class="mono mut tf-ver" title="the umbrella chart this hotfix line produced">${esc(mine.chart_ver)}</span>` : ''}
+      ${has && mine.macro_ver ? `<a class="br-macro mono" target="_blank" href="${mine.macro_url || '#'}" title="the umbrella version this hotfix line publishes">${ICON_SHIP} ${esc(mine.macro_ver)}</a>` : ''}
+      ${pipeMini(pipe)}
       <span class="spacer"></span>
-      ${act ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(svc.project)}" data-ref="${esc(b.name)}" title="run ${esc(b.name)}'s CI">${ICON_SCOPE}</button>
-      <button class="abtn warn br-act" data-act="release" data-proj="${esc(svc.project)}" data-ref="${esc(b.name)}" title="release from ${esc(b.name)}">${ICON_ROCKET}</button>` : ''}
-    </div>`).join('')}</div>`;
+      ${act ? has
+        ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(svc.project)}" data-ref="${esc(row.branch)}" title="run ${esc(row.branch)}'s CI">${ICON_SCOPE}</button>
+      <button class="abtn warn br-act" data-act="release" data-proj="${esc(svc.project)}" data-ref="${esc(row.branch)}" title="release from ${esc(row.branch)}">${ICON_ROCKET}</button>`
+        : `<button class="abtn br-act featfix" data-action="hotfix-join" data-proj="${esc(svc.project)}" data-branch="${esc(row.branch)}" title="join ${esc(row.branch)} — creates this repo's hotfix branch">${ICON_BRANCH} join</button>` : ''}
+    </div>`;
+      }).join('');
+  return `<div class="tile-feats"><div class="tf-h">hotfixes</div>${body}</div>`;
 }
 // featureSlug: the shortest meaningful word from an epic title — strip filler
 // verbs, articles, and product words; first survivor wins. Always editable.
@@ -1078,7 +1119,7 @@ document.addEventListener('click', async e => {
       const hdrs = { 'Content-Type': 'application/json' };
       if (state.konstructUser) hdrs['X-Konstruct-Actor'] = state.konstructUser;
       const res = await fetch('/api/actions/run', { method: 'POST', headers: hdrs,
-        body: JSON.stringify({ action: 'feature', project: ff.dataset.proj, branch: ff.dataset.branch }) });
+        body: JSON.stringify({ action: ff.dataset.action || 'feature', project: ff.dataset.proj, branch: ff.dataset.branch }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw body;
       if (out) out.innerHTML = `✓ done${body.mr ? ` · <a target="_blank" href="${body.mr.web_url}">!${body.mr.iid}</a>` : ''}`;
@@ -1100,6 +1141,7 @@ document.addEventListener('click', async e => {
 });
 function openActionModal(action, project, opts) {
   if (action === 'feature') return openFeatureModal(project);
+  if (action === 'hotfix') return openHotfixModal(project);
   opts = opts || {};
   const version = opts.version || '';
   const ref = opts.ref || '';
@@ -1246,20 +1288,21 @@ function openActionModal(action, project, opts) {
   // Esc is also a calm way out
   document.onkeydown = (e) => { if (e.key === 'Escape') { if (actCountdown) disarm(action === 'deliver' ? 'no worries — nothing delivered.' : action === 'delete' ? 'no worries — branch kept.' : 'no worries — nothing released.'); else closeActModal(); } };
 }
-// Feature modal: pick an epic (suggested branch name follows), join an
-// existing feature, or type any branch name — then one click creates the
-// branch on this app AND the charts repo.
+// Feature modal: pick an epic (suggested branch name follows) or type any
+// branch name — then one click creates the branch on this app AND the charts
+// repo. On the umbrella (macro) project it creates only the charts branch.
 async function openFeatureModal(project) {
   const short = project.split('/').pop();
+  const isMacro = (state.eco && state.eco.macro && state.eco.macro.project) === project;
   $('#actmodal').innerHTML = `
     <div class="d-back"></div>
     <div class="d-panel" role="dialog" aria-modal="true">
       <div class="d-head">${METAMARK}<b>Start a feature</b>
         <span class="mono mut">${esc(project)}</span><span class="spacer"></span>
         <a href="#" id="act-x" aria-label="close">✕</a></div>
-      <p class="mut">Creates the branch from <b>main</b> on <b class="mono">${esc(short)}</b> and mirrors it on the charts repo — the feature's umbrella line starts as a copy of main and evolves as apps join. Pushes to the branch publish <span class="mono">-&lt;branch&gt;.N</span> versions automatically.</p>
-      <label for="feat-join">join an existing feature</label>
-      <select id="feat-join"><option value="">— start a new one —</option></select>
+      <p class="mut">${isMacro
+        ? `Creates the feature branch from <b>main</b> on <b class="mono">${esc(short)}</b> — the charts repo only. This starts the feature's umbrella line; services join from their tiles. Pushes to the branch publish <span class="mono">-&lt;branch&gt;.N</span> umbrella versions automatically.`
+        : `Creates the branch from <b>main</b> on <b class="mono">${esc(short)}</b> and mirrors it on the charts repo — the feature's umbrella line starts as a copy of main and evolves as apps join. Pushes to the branch publish <span class="mono">-&lt;branch&gt;.N</span> versions automatically.`}</p>
       <label for="feat-epic">epic (recommended)</label>
       <select id="feat-epic"><option value="">no epic</option></select>
       <label for="feat-branch">branch name</label>
@@ -1274,22 +1317,15 @@ async function openFeatureModal(project) {
   $('#actmodal').style.display = 'block';
   $('#act-x').onclick = e => { e.preventDefault(); closeActModal(); };
   $('#actmodal .d-back').onclick = closeActModal;
-  // fill pickers (parallel; failures degrade to empty lists)
-  const [epics, feats] = await Promise.all([
-    fetchJSON('/api/actions/epics').catch(() => []),
-    fetchJSON('/api/actions/features').catch(() => []),
-  ]);
-  const je = $('#feat-join');
-  for (const f of feats) je.insertAdjacentHTML('beforeend', `<option value="${esc(f.name)}">${esc(f.name)}</option>`);
+  // fill the epic picker (failure degrades to just the "no epic" option)
+  const epics = await fetchJSON('/api/actions/epics').catch(() => []);
   const ee = $('#feat-epic');
   for (const ep of epics) ee.insertAdjacentHTML('beforeend', `<option value="${ep.iid}" data-title="${esc(ep.title)}">&${ep.iid} ${esc(ep.title.slice(0, 56))}</option>`);
   ee.onchange = () => {
     const opt = ee.selectedOptions[0];
     if (!ee.value) { $('#feat-branch').value = ''; return; }
     $('#feat-branch').value = `epic-${ee.value}-${featureSlug(opt.dataset.title)}`;
-    je.value = '';
   };
-  je.onchange = () => { if (je.value) { $('#feat-branch').value = je.value; ee.value = ''; } };
   $('#feat-go').onclick = async () => {
     const branch = $('#feat-branch').value.trim();
     if (!branch) { $('#act-out').textContent = '✗ name the branch (or pick an epic)'; return; }
@@ -1301,8 +1337,12 @@ async function openFeatureModal(project) {
         body: JSON.stringify({ project, action: 'feature', branch, epic_iid: +($('#feat-epic').value || 0) }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw body;
-      const verb = body.micro_created ? 'created' : 'joined';
-      $('#act-out').innerHTML = `✓ ${esc(branch)} ${verb} on app${body.charts_created ? ' + charts' : ' (charts already had it)'}${body.mr ? ` · <a target="_blank" href="${body.mr.web_url}">draft !${body.mr.iid}</a>` : ''}`;
+      if (isMacro) {
+        $('#act-out').innerHTML = `✓ ${esc(branch)} — charts branch ${body.charts_created ? 'created' : 'already existed'}`;
+      } else {
+        const verb = body.micro_created ? 'created' : 'joined';
+        $('#act-out').innerHTML = `✓ ${esc(branch)} ${verb} on app${body.charts_created ? ' + charts' : ' (charts already had it)'}${body.mr ? ` · <a target="_blank" href="${body.mr.web_url}">draft !${body.mr.iid}</a>` : ''}`;
+      }
       if (body.checkout) {
         const shortRepo = project.split('/').pop();
         $('#feat-term').innerHTML = `
@@ -1320,6 +1360,114 @@ async function openFeatureModal(project) {
       else refresh();
     } catch (err) { $('#act-out').textContent = '✗ ' + errMsg(err); }
   };
+}
+// Hotfix modal: cut a hotfix-<...> branch across every repo a published umbrella
+// version pins — each at the exact commit or tag that version shipped. The
+// preview resolves what each repo pins; the same 5s arm/disarm as the other
+// guarded actions gates the cut. confirm is the macro repo's short name.
+async function openHotfixModal(project) {
+  const m = state.eco && state.eco.macro;
+  const tags = (m && m.tags) || [];
+  const confirm = (m && m.project ? m.project : project).split('/').pop();
+  const actor = state.konstructUser || (state.act && state.act.actor) || 'konstruct';
+  const defTag = (state.picked && state.picked.tag) || (m && m.published_tag) || tags[0] || '';
+  const nameRe = /^hotfix-[a-z0-9][a-z0-9._-]*$/;
+  $('#actmodal').innerHTML = `
+    <div class="d-back"></div>
+    <div class="d-panel" role="dialog" aria-modal="true">
+      <div class="d-head">${METAMARK}<b>Cut a hotfix</b>
+        <span class="mono mut">${esc(m && m.project ? m.project : project)}</span><span class="spacer"></span>
+        <a href="#" id="act-x" aria-label="close">✕</a></div>
+      <p class="mut">Branches <b class="mono">hotfix-…</b> across every repo the chosen umbrella pins — each at the exact commit or tag that version shipped. Services that can't be placed are skipped, never guessed. Release from the hotfix line once the fix lands.</p>
+      <label for="hf-tag">from published umbrella</label>
+      <select id="hf-tag" class="mono">${tags.map(t => `<option value="${esc(t)}" ${t === defTag ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
+      <label for="hf-name">hotfix branch name</label>
+      <input id="hf-name" class="mono" autocomplete="off" spellcheck="false" placeholder="hotfix-…">
+      <div id="hf-preview" class="mut" style="font-size:12px;margin:2px 0 12px">resolving what this pins…</div>
+      <div class="act-row">
+        <button id="act-go" class="abtn warn">${ICON_BRANCH} <span class="cd-txt">cut hotfix</span><span class="cd"></span></button>
+        <span class="act-id mono mut" title="attribution is set by the server — the signed-in konstruct session">as @${esc(actor)}</span>
+        <span id="act-out" class="mono mut"></span>
+      </div>
+      <p class="mut cd-hint">name the branch, then the button gives you five seconds to change your mind.</p>
+      <div id="hf-term"></div>
+    </div>`;
+  $('#actmodal').style.display = 'block';
+  $('#act-x').onclick = e => { e.preventDefault(); closeActModal(); };
+  $('#actmodal .d-back').onclick = closeActModal;
+  const tagSel = $('#hf-tag'), nameIn = $('#hf-name'), btn = $('#act-go');
+  // preview: what each repo pins for the chosen tag (commit / tag / skip)
+  async function loadPreview() {
+    const el = $('#hf-preview'); if (el) el.textContent = 'resolving what this pins…';
+    try {
+      const p = await fetchJSON('/api/actions/hotfix-preview?tag=' + encodeURIComponent(tagSel.value));
+      if (!$('#hf-preview')) return;
+      if (!p.repos || !p.repos.length) { $('#hf-preview').textContent = 'nothing to pin for this version.'; return; }
+      $('#hf-preview').innerHTML = `<div class="pv-h">pins (${esc(p.version)})</div>` + p.repos.map(rp => `
+        <div class="pv-svc"><b>${esc(rp.name)}</b> <span class="mono mut">${esc(rp.pin)}</span> ${
+          rp.kind === 'commit' ? `<span class="mono mut">@${esc(rp.ref || '')}</span>`
+          : rp.kind === 'tag' ? `<span class="mono mut">tag ${esc(rp.ref || '')}</span>`
+          : `<span class="mono" style="color:var(--gl-amber)">will skip — ${esc(rp.reason || 'unresolved')}</span>`}</div>`).join('');
+    } catch (err) { const el = $('#hf-preview'); if (el) el.textContent = '✗ ' + errMsg(err); }
+  }
+  tagSel.onchange = loadPreview;
+  loadPreview();
+  const fire = async () => {
+    const branch = nameIn.value.trim();
+    $('#act-out').textContent = 'starting…';
+    try {
+      const hdrs = { 'Content-Type': 'application/json' };
+      if (state.konstructUser) hdrs['X-Konstruct-Actor'] = state.konstructUser;
+      const res = await fetch('/api/actions/run', { method: 'POST', headers: hdrs,
+        body: JSON.stringify({ action: 'hotfix', tag: tagSel.value, branch, confirm }) });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw body;
+      const chip = r => r.status === 'created' ? '<span class="fs-b fs-upd">created</span>'
+        : r.status === 'joined' ? '<span class="fs-b fs-join">joined</span>'
+        : `<span class="fs-b" style="color:var(--gl-amber);border-color:#78560f">skipped${r.reason ? ' — ' + esc(r.reason) : ''}</span>`;
+      $('#act-out').textContent = '✓ done';
+      $('#hf-preview').innerHTML = (body.results || []).map(r => `
+        <div class="pv-svc"><b class="mono">${esc((r.project || '').split('/').pop())}</b> ${chip(r)} ${r.ref ? `<span class="mono mut">${esc(r.ref)}</span>` : ''}</div>`).join('');
+      if (body.checkout) {
+        $('#hf-term').innerHTML = `
+          <div class="term">
+            <div class="term-c"># in any joined repo</div>
+            <div class="term-l mono">${esc(body.checkout)}</div>
+            <button class="copy term-copy" data-sha="${esc(body.checkout)}" title="copy">⧉</button>
+          </div>`;
+      }
+      state.burstUntil = Date.now() + 120000;
+      poll(); refresh();
+    } catch (err) { $('#act-out').textContent = '✗ ' + errMsg(err); }
+  };
+  const disarm = (msg) => {
+    cancelCountdown();
+    btn.classList.remove('arming');
+    btn.classList.add('calm');
+    btn.addEventListener('mouseleave', () => btn.classList.remove('calm'), { once: true });
+    const t = btn.querySelector('.cd-txt'); if (t) t.textContent = 'cut hotfix';
+    const b = btn.querySelector('.cd'); if (b) b.style.width = '0%';
+    if (msg) $('#act-out').textContent = msg;
+  };
+  btn.onclick = () => {
+    const branch = nameIn.value.trim();
+    if (!nameRe.test(branch)) { $('#act-out').textContent = '✗ name must look like hotfix-0.9'; nameIn.focus(); return; }
+    if (actCountdown) { disarm('no worries — no hotfix cut.'); return; }
+    let left = 5;
+    btn.classList.add('arming');
+    const txt = btn.querySelector('.cd-txt'), bar = btn.querySelector('.cd');
+    txt.textContent = `cutting hotfix in ${left} — click to cancel`;
+    bar.style.width = '100%';
+    requestAnimationFrame(() => { bar.style.transition = 'width 1s linear'; bar.style.width = `${(left - 1) / 5 * 100}%`; });
+    $('#act-out').textContent = '';
+    actCountdown = setInterval(() => {
+      left--;
+      if (left <= 0) { disarm(); fire(); return; }
+      txt.textContent = `cutting hotfix in ${left} — click to cancel`;
+      bar.style.width = `${(left - 1) / 5 * 100}%`;
+    }, 1000);
+  };
+  document.onkeydown = (e) => { if (e.key === 'Escape') { if (actCountdown) disarm('no worries — no hotfix cut.'); else closeActModal(); } };
 }
 
 let actCountdown = null;
