@@ -1056,16 +1056,27 @@ func (a *api) cachedBranches(ctx context.Context, project string) ([]branchJSON,
 			return nil, err
 		}
 		out := make([]branchJSON, 0, len(brs))
+		mainTip := ""
 		for i, b := range brs {
 			out = append(out, toBranchJSON(b))
-			// last-committer avatar: 6h per-email cache, so every branch gets one
+			if b.Name == "main" && b.Commit != nil {
+				mainTip = b.Commit.ShortID
+			}
+			// last-committer avatar: 6h per-email cache, so every branch gets
+			// one. Bot-authored commits carry the masked "****" display name
+			// but a group_<id>_bot_* noreply local-part — un-mask like
+			// pipeline attribution does.
 			if b.Commit != nil {
 				out[i].AuthorAvatar = a.avatarFor(ctx, b.Commit.AuthorEmail)
+				if lp, _, ok := strings.Cut(b.Commit.AuthorEmail, "@"); ok {
+					out[i].Author = friendlyAuthor(out[i].Author, lp)
+				}
 			}
 		}
-		// divergence vs main: hotfix lanes (10 newest) + live epic lanes.
-		// Results are keyed by tip sha (immutable), so the 60s branch refresh
-		// re-fills from cache and only a moved tip pays the compare calls.
+		// divergence vs main: hotfix lanes (10 newest) + live epic lanes
+		// (6 newest; hard cap 16 combined). Results are keyed by BOTH tips —
+		// the branch's and main's — so nothing recomputes while neither side
+		// moves, and a merge or fresh main commit invalidates immediately.
 		dix := []int{}
 		for i, bj := range out {
 			if strings.HasPrefix(bj.Name, "hotfix") {
@@ -1076,16 +1087,22 @@ func (a *api) cachedBranches(ctx context.Context, project string) ([]branchJSON,
 		if len(dix) > 10 {
 			dix = dix[:10]
 		}
+		eix := []int{}
 		for i, bj := range out {
 			if strings.HasPrefix(bj.Name, "epic-") && !bj.Stale {
-				dix = append(dix, i)
+				eix = append(eix, i)
 			}
 		}
+		sort.Slice(eix, func(x, y int) bool { return out[eix[x]].When > out[eix[y]].When })
+		if len(eix) > 6 {
+			eix = eix[:6]
+		}
+		dix = append(dix, eix...)
 		if len(dix) > 16 {
 			dix = dix[:16]
 		}
 		for _, i := range dix {
-			d, ok := a.divergence(ctx, project, out[i].Name, out[i].Short)
+			d, ok := a.divergence(ctx, project, out[i].Name, out[i].Short, mainTip)
 			if !ok {
 				continue
 			}
@@ -1696,11 +1713,12 @@ type branchDivergence struct {
 	Committers    []committerJSON
 }
 
-// divergence computes a branch's drift vs main, cached by tip sha — compare
-// results for an immutable tip never change, so only a moved tip pays the two
-// API calls (ahead with committers, then behind).
-func (a *api) divergence(ctx context.Context, project, branch, tip string) (branchDivergence, bool) {
-	v, err := a.c.do("div:"+project+":"+branch+"@"+tip, 6*time.Hour, func() (any, error) {
+// divergence computes a branch's drift vs main, cached by BOTH tips — ahead
+// and behind are functions of the branch tip AND main's tip, so the key must
+// carry each: a merge to main (behind changes, ahead may drop to 0) busts the
+// cache immediately instead of lingering for the TTL.
+func (a *api) divergence(ctx context.Context, project, branch, tip, mainTip string) (branchDivergence, bool) {
+	v, err := a.c.do("div:"+project+":"+branch+"@"+tip+"~"+mainTip, 6*time.Hour, func() (any, error) {
 		ahead, people, err := a.gl.compareBranch(ctx, project, "main", branch)
 		if err != nil {
 			return nil, err

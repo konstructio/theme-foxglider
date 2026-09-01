@@ -276,7 +276,7 @@ func TestBranchDivergenceAndAvatars(t *testing.T) {
 			w.Write([]byte(`[
 				{"name":"main","web_url":"http://gl/m","commit":{"short_id":"aa","title":"x","author_name":"jd","author_email":"jd@civo.com","committed_date":"` + fresh + `"}},
 				{"name":"hotfix-hot","web_url":"http://gl/h","commit":{"short_id":"bb","title":"f","author_name":"jd","author_email":"jd@civo.com","committed_date":"` + fresh + `"}},
-				{"name":"epic-9-x","web_url":"http://gl/e","commit":{"short_id":"cc","title":"e","author_name":"jd","author_email":"jd@civo.com","committed_date":"` + fresh + `"}}]`))
+				{"name":"epic-9-x","web_url":"http://gl/e","commit":{"short_id":"cc","title":"e","author_name":"****","author_email":"group_1642_bot_abc@noreply.git.civo.com","committed_date":"` + fresh + `"}}]`))
 		default:
 			w.WriteHeader(404)
 		}
@@ -319,6 +319,9 @@ func TestBranchDivergenceAndAvatars(t *testing.T) {
 	}
 	if epic == nil || epic.Ahead == nil || *epic.Ahead != 2 || epic.Behind == nil || *epic.Behind != 1 {
 		t.Fatalf("epic divergence = %+v (epic lanes must be checked too)", epic)
+	}
+	if epic.Author != "token bot (group_1642)" {
+		t.Fatalf("bot-authored branch = %q (masked name must un-mask via the noreply email)", epic.Author)
 	}
 
 	// the eco payload's org hotfix cells and feature cells inherit the fields
