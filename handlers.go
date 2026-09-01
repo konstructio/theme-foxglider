@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -71,16 +70,13 @@ func newAPI(gl *glClient, groups []string) http.Handler {
 	a.act.dropMRs = func(project, branch string) { a.c.drop("mrs:" + project + "@" + branch) }
 	a.act.clientFor = a.clientFor
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/overview", a.guard(a.overview))
 	mux.HandleFunc("GET /api/ecosystem", a.guard(a.ecosystem))
 	mux.HandleFunc("GET /api/pipeline-progress", a.guard(a.pipelineProgress))
 	mux.HandleFunc("GET /api/meta", a.meta)
 	mux.HandleFunc("GET /api/bundle", a.guard(a.bundleAt))
 	mux.HandleFunc("GET /api/org", a.guard(a.orgInfo))
 	mux.HandleFunc("GET /api/org-logo", a.guard(a.orgLogo))
-	mux.HandleFunc("GET /api/projects/{id}/pipelines", a.guard(a.projectPipelines))
 	mux.HandleFunc("GET /api/pipelines/{pid}/{plid}", a.guard(a.pipelineDetail))
-	mux.HandleFunc("GET /api/activity", a.guard(a.activity))
 	mux.HandleFunc("GET /api/branches", a.guard(a.branchesView))
 	// Actions guard themselves on the separate write token, not the read token.
 	mux.HandleFunc("GET /api/actions/status", a.act.status)
@@ -190,111 +186,6 @@ type releaseJSON struct {
 	DaysAgo    int       `json:"days_ago"`
 }
 
-type projectJSON struct {
-	ID            int            `json:"id"`
-	Name          string         `json:"name"`
-	Path          string         `json:"path"`
-	WebURL        string         `json:"web_url"`
-	DefaultBranch string         `json:"default_branch"`
-	Pipelines     []pipelineJSON `json:"pipelines"`
-	// LastActivityAt + LatestEvent + LatestRelease feed the fleet's
-	// activity-ordered view: what happened last, and how stale the release
-	// line is.
-	LastActivityAt time.Time     `json:"last_activity_at,omitempty"`
-	LatestEvent    *activityItem `json:"latest_event,omitempty"`
-	LatestRelease  *releaseJSON  `json:"latest_release,omitempty"`
-}
-
-type groupJSON struct {
-	Path     string        `json:"path"`
-	Projects []projectJSON `json:"projects"`
-}
-
-func (a *api) overview(w http.ResponseWriter, r *http.Request) {
-	ctx := context.Background() // detached: slow GitLab warms the cache instead of cancelling
-	projects, err := a.cachedProjects(ctx)
-	if err != nil {
-		writeErr(w, 503, "GitLab unreachable: "+err.Error())
-		return
-	}
-
-	sem := make(chan struct{}, fanout)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	byGroup := map[string][]projectJSON{}
-	for _, p := range projects {
-		wg.Add(1)
-		go func(p glProject) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			pls, err := a.cachedPipelines(ctx, p.ID)
-			if err != nil {
-				pls = nil // project row still renders; empty timeline is honest
-			}
-			pj := projectJSON{ID: p.ID, Name: p.Name, Path: p.PathWithNamespace,
-				WebURL: p.WebURL, DefaultBranch: p.DefaultBranch, Pipelines: []pipelineJSON{},
-				LastActivityAt: p.LastActivityAt}
-			for _, pl := range pls {
-				pj.Pipelines = append(pj.Pipelines, toPipelineJSON(pl))
-			}
-			// most recent human-readable happening (same cache the old
-			// activity feed used) + the release staleness signal
-			if evs, err := a.c.do(fmt.Sprintf("ev:%d", p.ID), ttlEvents, func() (any, error) {
-				return a.gl.events(ctx, p.ID, 50)
-			}); err == nil {
-				if list := evs.([]glEvent); len(list) > 0 {
-					it := eventItem(p, list[0])
-					pj.LatestEvent = &it
-				}
-			}
-			if rel, err := a.c.do(fmt.Sprintf("rel:%d", p.ID), 5*time.Minute, func() (any, error) {
-				r, err := a.gl.latestRelease(ctx, p.ID)
-				if err != nil {
-					return nil, err
-				}
-				return r, nil
-			}); err == nil {
-				if r, _ := rel.(*glRelease); r != nil {
-					pj.LatestRelease = &releaseJSON{Tag: r.TagName, Name: r.Name,
-						ReleasedAt: r.ReleasedAt, WebURL: r.Links.Self,
-						DaysAgo: int(time.Since(r.ReleasedAt).Hours() / 24)}
-				}
-			}
-			mu.Lock()
-			byGroup[p.Namespace.FullPath] = append(byGroup[p.Namespace.FullPath], pj)
-			mu.Unlock()
-		}(p)
-	}
-	wg.Wait()
-
-	var groups []groupJSON
-	for path, ps := range byGroup {
-		sort.Slice(ps, func(i, j int) bool { return ps[i].Path < ps[j].Path })
-		groups = append(groups, groupJSON{Path: path, Projects: ps})
-	}
-	sort.Slice(groups, func(i, j int) bool { return groups[i].Path < groups[j].Path })
-	writeJSON(w, map[string]any{"generated_at": time.Now().UTC(), "groups": groups})
-}
-
-func (a *api) projectPipelines(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(r.PathValue("id"))
-	if err != nil {
-		writeErr(w, 400, "bad project id")
-		return
-	}
-	pls, err := a.cachedPipelines(context.Background(), id)
-	if err != nil {
-		writeErr(w, 503, "GitLab unreachable: "+err.Error())
-		return
-	}
-	out := make([]pipelineJSON, 0, len(pls))
-	for _, p := range pls {
-		out = append(out, toPipelineJSON(p))
-	}
-	writeJSON(w, map[string]any{"pipelines": out})
-}
-
 type jobJSON struct {
 	Name       string     `json:"name"`
 	Stage      string     `json:"stage"`
@@ -340,114 +231,6 @@ func (a *api) pipelineDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, v)
-}
-
-type activityItem struct {
-	Type    string    `json:"type"`
-	Project string    `json:"project"`
-	Title   string    `json:"title"`
-	Status  string    `json:"status,omitempty"`
-	Author  string    `json:"author,omitempty"`
-	WebURL  string    `json:"web_url"`
-	At      time.Time `json:"at"`
-}
-
-func eventItem(p glProject, e glEvent) activityItem {
-	it := activityItem{Project: p.PathWithNamespace, Author: e.Author.Username, At: e.CreatedAt}
-	switch {
-	case e.PushData != nil:
-		it.Type = "push"
-		it.Title = fmt.Sprintf("%s (%d commit(s) to %s)", e.PushData.CommitTitle, e.PushData.CommitCount, e.PushData.Ref)
-		it.WebURL = p.WebURL + "/-/commits/" + e.PushData.Ref
-	case e.TargetType == "MergeRequest":
-		it.Type = "merge_request"
-		it.Title = e.ActionName + ": " + e.TargetTitle
-		it.WebURL = fmt.Sprintf("%s/-/merge_requests/%d", p.WebURL, e.TargetIID)
-	case e.TargetType == "Issue":
-		it.Type = "issue"
-		it.Title = e.ActionName + ": " + e.TargetTitle
-		it.WebURL = fmt.Sprintf("%s/-/issues/%d", p.WebURL, e.TargetIID)
-	case e.Note != nil:
-		it.Type = "comment"
-		it.Title = "commented: " + e.TargetTitle
-		switch e.Note.NoteableType {
-		case "MergeRequest":
-			it.WebURL = fmt.Sprintf("%s/-/merge_requests/%d", p.WebURL, e.Note.NoteableIID)
-		case "Issue":
-			it.WebURL = fmt.Sprintf("%s/-/issues/%d", p.WebURL, e.Note.NoteableIID)
-		default:
-			it.WebURL = p.WebURL + "/activity"
-		}
-	default:
-		it.Type = "comment" // note-like fallback
-		it.Title = e.ActionName + ": " + e.TargetTitle
-		it.WebURL = p.WebURL + "/activity"
-	}
-	return it
-}
-
-func (a *api) activity(w http.ResponseWriter, r *http.Request) {
-	hours, _ := strconv.Atoi(r.URL.Query().Get("hours"))
-	if hours < 1 {
-		hours = 24
-	}
-	if hours > 168 {
-		hours = 168
-	}
-	cutoff := time.Now().Add(-time.Duration(hours) * time.Hour)
-
-	ctx := context.Background() // detached: slow GitLab warms the cache instead of cancelling
-	projects, err := a.cachedProjects(ctx)
-	if err != nil {
-		writeErr(w, 503, "GitLab unreachable: "+err.Error())
-		return
-	}
-
-	sem := make(chan struct{}, fanout)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	var items []activityItem
-	for _, p := range projects {
-		wg.Add(1)
-		go func(p glProject) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			var local []activityItem
-			evs, err := a.c.do(fmt.Sprintf("ev:%d", p.ID), ttlEvents, func() (any, error) {
-				return a.gl.events(ctx, p.ID, 50)
-			})
-			if err == nil {
-				for _, e := range evs.([]glEvent) {
-					if e.CreatedAt.After(cutoff) {
-						local = append(local, eventItem(p, e))
-					}
-				}
-			}
-			if pls, err := a.cachedPipelines(ctx, p.ID); err == nil {
-				for _, pl := range pls {
-					if pl.CreatedAt.After(cutoff) {
-						short := pl.SHA
-						if len(short) > 8 {
-							short = short[:8]
-						}
-						local = append(local, activityItem{Type: "pipeline",
-							Project: p.PathWithNamespace, Title: pl.Ref + " · " + short,
-							Status: pl.Status, WebURL: pl.WebURL, At: pl.CreatedAt})
-					}
-				}
-			}
-			mu.Lock()
-			items = append(items, local...)
-			mu.Unlock()
-		}(p)
-	}
-	wg.Wait()
-	sort.Slice(items, func(i, j int) bool { return items[i].At.After(items[j].At) })
-	if items == nil {
-		items = []activityItem{}
-	}
-	writeJSON(w, map[string]any{"items": items})
 }
 
 // orgGroup resolves which group represents this org: the first configured

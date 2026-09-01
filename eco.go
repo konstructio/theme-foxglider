@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.16.0"
+const themeVersion = "2.17.0"
 
 const ttlEco = 45 * time.Second
 
@@ -1269,6 +1269,9 @@ type featSvcJSON struct {
 	Ahead        *int   `json:"ahead,omitempty"`
 	Behind       *int   `json:"behind,omitempty"`
 	CompareURL   string `json:"compare_url,omitempty"`
+	// Committers: who wrote the branch's unmerged commits (newest first) —
+	// the hero's who-did-this stack.
+	Committers []committerJSON `json:"committers,omitempty"`
 }
 
 // featEnvJSON: one feature's presence in one delivery environment.
@@ -1424,6 +1427,7 @@ func (a *api) assembleFeatures(ctx context.Context, t topology, repos []repoBran
 				fs.State, fs.When, fs.WebURL = "joined", p.when, p.webURL
 				fs.Author, fs.AuthorAvatar = p.b.Author, p.b.AuthorAvatar
 				fs.Ahead, fs.Behind, fs.CompareURL = p.b.Ahead, p.b.Behind, p.b.CompareURL
+				fs.Committers = p.b.Committers
 				if strings.Contains(pins[svc.Name], needle) {
 					fs.State, fs.Version = "updated", pins[svc.Name]
 				}

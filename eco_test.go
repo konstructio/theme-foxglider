@@ -546,56 +546,6 @@ func TestMergedBranchDeleted(t *testing.T) {
 	}
 }
 
-// TestOverviewActivity pins the fleet's activity-view payload: per-project
-// last_activity_at, the latest human-readable event, and release staleness.
-func TestOverviewActivity(t *testing.T) {
-	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case p == "/api/v4/projects":
-			w.Write([]byte(`[{"id":9,"name":"zippy","path_with_namespace":"civo/metaphor/zippy","web_url":"http://gl/z","default_branch":"main","last_activity_at":"2026-08-26T09:00:00Z","namespace":{"full_path":"civo/metaphor"}}]`))
-		case strings.HasSuffix(p, "/projects/9/pipelines"):
-			w.Write([]byte(`[]`))
-		case strings.HasSuffix(p, "/projects/9/events"):
-			w.Write([]byte(`[{"action_name":"pushed to","created_at":"2026-08-26T09:00:00Z","author":{"username":"jd"},"push_data":{"ref":"main","commit_title":"feat: sharpen","commit_count":2}}]`))
-		case strings.HasSuffix(p, "/projects/9/releases"):
-			w.Write([]byte(`[{"tag_name":"v0.11.0","name":"v0.11.0","released_at":"2026-08-20T00:00:00Z","_links":{"self":"http://gl/z/-/releases/v0.11.0"}}]`))
-		default:
-			w.WriteHeader(404)
-		}
-	}))
-	defer gl.Close()
-	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
-	defer srv.Close()
-
-	res, err := http.Get(srv.URL + "/api/overview")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out struct {
-		Groups []struct {
-			Projects []projectJSON `json:"projects"`
-		} `json:"groups"`
-	}
-	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
-		t.Fatal(err)
-	}
-	if len(out.Groups) != 1 || len(out.Groups[0].Projects) != 1 {
-		t.Fatalf("groups = %+v", out.Groups)
-	}
-	p := out.Groups[0].Projects[0]
-	if p.LastActivityAt.IsZero() {
-		t.Fatal("last_activity_at missing")
-	}
-	if p.LatestEvent == nil || p.LatestEvent.Type != "push" || !strings.Contains(p.LatestEvent.Title, "feat: sharpen") {
-		t.Fatalf("latest_event = %+v", p.LatestEvent)
-	}
-	if p.LatestRelease == nil || p.LatestRelease.Tag != "v0.11.0" || p.LatestRelease.DaysAgo < 5 {
-		t.Fatalf("latest_release = %+v", p.LatestRelease)
-	}
-}
-
 // TestMRStateLabel pins the chip vocabulary: merged/closed outrank draft,
 // draft outranks feedback, comments flip ready→feedback.
 func TestMRStateLabel(t *testing.T) {

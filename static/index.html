@@ -290,11 +290,7 @@
     <a class="brand" href="#" id="brand"><svg viewBox="0 0 64 48" width="26" height="20" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#05df72"/><stop offset=".55" stop-color="#00c950"/><stop offset="1" stop-color="#00a884"/></linearGradient></defs><path fill="url(#g)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/><path fill="#12161d" opacity=".25" d="M32 20 L42 22 L32 44 Z"/><circle cx="26" cy="28" r="2.2" fill="#0b1220"/></svg>FOXGLIDER</a>
     <span id="ver" class="ver mono" title="theme build version"></span>
     <span id="org" class="orgchip mono" title="the org this view is scoped to"></span>
-    <nav class="tabs">
-      <a href="#delivery" class="tab on" data-view="delivery">Delivery</a>
-      <a href="#branches" class="tab" data-view="branches">Branches</a>
-      <a href="#fleet" class="tab" data-view="fleet">Fleet</a>
-    </nav>
+
     <span class="spacer"></span>
     <select id="window" class="mono">
       <option value="6">6h</option><option value="24" selected>24h</option><option value="168">7d</option>
@@ -314,7 +310,7 @@
 <script>
 // epicFocus is deliberately session-only (never persisted): a reload always
 // shows every epic — a forgotten filter must not cost visibility.
-const state = { view: 'delivery', windowH: 24, overview: null, activity: null, eco: null, act: null, epicFocus: null };
+const state = { windowH: 24, eco: null, act: null, epicFocus: null };
 const METAMARK = '<svg viewBox="0 0 64 48" width="20" height="15" aria-hidden="true" style="flex:none"><defs><linearGradient id="gm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#05df72"/><stop offset=".55" stop-color="#00c950"/><stop offset="1" stop-color="#00a884"/></linearGradient></defs><path fill="url(#gm)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/><circle cx="26" cy="28" r="2.2" fill="#0b1220"/></svg>';
 const $ = (s, el=document) => el.querySelector(s);
 
@@ -633,6 +629,8 @@ function renderDelivery(d) {
       <a href="#" id="explain-t" class="fchip" title="explain this view">?</a>
     </div>
     ${d.summary ? `<div id="explain" class="explain" style="display:none">${esc(d.summary)}</div>` : ''}
+    ${featuresHero(d)}
+    ${hotfixStrip(d)}
     <div class="eco">
       <div class="eco-col">
         <div class="eco-h">Microcharts</div>
@@ -640,9 +638,7 @@ function renderDelivery(d) {
           <div class="ec-top"><a class="pname" target="_blank" href="${s.web_url}" title="${esc(s.name)}">${esc(s.name)}</a>${statusChip(s.pipeline)}${avatarImg(s.pipeline)}</div>
           <div class="ec-ver mono"><span class="vlbl">in macro</span>${verChip(s.bundled_version)}<span class="vlbl">dev</span>${verChip(s.base_version)}</div>
           ${mainPipelineSection(s)}
-          ${mainReleaseSection(s)}
-          ${tileHotfixes(s)}
-          ${tileFeatures(s)}${watchChip(s)}
+          ${mainReleaseSection(s)}${watchChip(s)}
         </div>`).join('')}
       </div>
       <div class="eco-arrow">→</div>
@@ -655,8 +651,6 @@ function renderDelivery(d) {
           ${bundleTree(m)}
           ${mainPipelineSection(m)}
           ${mainReleaseSection(m)}
-          ${tileHotfixes(m, true)}
-          ${tileFeatures(m, true)}
           ${state.act && state.act.enabled ? `<div class="ec-act"><button class="abtn warn" data-act="hotfix" data-proj="${esc(m.project)}" title="cut a hotfix branch from a published umbrella version">⚑ hotfix</button></div>` : ''}
           ${watchChip(m)}
         </div>
@@ -666,53 +660,77 @@ function renderDelivery(d) {
         <div class="eco-h">Desired state</div>
         ${del.length ? del.map(e => envCard(e, m)).join('') : '<div class="ecard mut">no delivery targets</div>'}
       </div>
-    </div>` + promotionPanel(d.promotions);
+    </div>`;
   startProgressPollers();
 }
-// promotionPanel: which features are in which environments — and which are
-// in NONE. direct = the env runs the feature's own umbrella; via-rc = the
-// feature merged and the env's rc was cut after the merge (the rc carries it).
-function promotionPanel(proms) {
-  if (!proms || !proms.length) return '';
-  const chip = e => e.state === 'direct'
+// featuresHero: the headline surface — every active feature as a full card:
+// per-service rows (state, MR, pin, drift, who), environment presence, and the
+// session-only epic focus (◎ / ✕; reloads always show everything).
+function envChip(e) {
+  return e.state === 'direct'
     ? `<span class="pe pe-direct" title="running this feature's own umbrella (${esc(e.version)})">✓ ${esc(e.env)}</span>`
     : e.state === 'via-rc'
     ? `<span class="pe pe-rc" title="merged — carried by ${esc(e.version)}">✓ ${esc(e.env)} · via rc</span>`
     : `<span class="pe pe-miss" title="this environment does not contain the feature">— ${esc(e.env)}</span>`;
-  const rows = proms.map(f => {
-    const nowhere = (f.envs || []).every(e => e.state === 'missing');
-    return `<div class="prom-row">
-      <span class="tf-ic">${ICON_BRANCH}</span>
-      <span class="mono prom-name">${esc(f.branch)}</span>
-      ${f.epic_iid ? `<a class="pv-epic" target="_blank" href="${f.epic_url}">&${f.epic_iid}</a>` : ''}
-      ${f.merged ? '<span class="fs-b fs-upd" title="every carrying MR is merged — the content rides main">merged</span>' : ''}
-      ${(f.envs || []).map(chip).join('')}
-      ${nowhere ? '<span class="pe pe-none">not yet in any environment</span>' : ''}
-      <span class="spacer"></span>
-      ${f.macro_ver ? `<span class="mono mut" style="font-size:10.5px">${esc(f.macro_ver)}</span>` : ''}
-    </div>`;
-  }).join('');
-  return `<div class="prom-wrap">
-    <div class="section-h">features · promotion<span></span></div>
-    <div class="mut" style="font-size:11px;margin:-4px 0 8px">deliver a feature version from the environment card's upgrade box — merged features ride the next rc</div>
-    ${rows}
+}
+function featuresHero(d) {
+  const all = d.promotions || [];
+  const act = state.act && state.act.enabled;
+  const canStart = act && !(state.act && state.act.branch_policy === 'hotfix-only');
+  if (!all.length && !canStart) return '';
+  const proms = state.epicFocus ? all.filter(f => f.branch === state.epicFocus) : all;
+  return `<div class="hero-wrap">
+    <div class="section-h">features<span></span>
+      ${state.epicFocus ? `<button class="ef-clear" data-focus="${esc(state.epicFocus)}" title="showing only ${esc(state.epicFocus)} — click to show every epic again">✕ ${esc(state.epicFocus)}</button>` : ''}
+      ${canStart ? `<button class="abtn br-act" data-act="feature" data-proj="${esc(d.macro.project)}" title="start a feature — creates the charts line; services join from the rows">⑂ start</button>` : ''}
+    </div>
+    ${proms.length ? proms.map(featureGroup).join('')
+      : `<div class="mut" style="font-size:11px;margin-bottom:8px">${state.epicFocus ? 'the focused epic has no live rows' : 'no active features'}</div>`}
   </div>`;
 }
-
-// Branches: swimlanes of the delivery lines — main, hotfix-*, epic-* —
-// across every repo in the set, with the macro's newest tags as the
-// release/feature timeline.
-function branchActs(repo, b, lane) {
-  if (!state.act || !state.act.enabled) return '';
-  if (lane === 'stale') lane = /^epic-/.test(b.name) ? 'epic' : 'hotfix'; // stale rows keep their real lane's rules
-  const t = `<button class="abtn br-act" data-act="trigger" data-proj="${esc(repo.project)}" data-ref="${esc(b.name)}" title="run ${esc(b.name)}'s CI">${ICON_SCOPE}</button>`;
-  const r = lane !== 'epic'
-    ? `<button class="abtn warn br-act" data-act="release" data-proj="${esc(repo.project)}" data-ref="${b.name === 'main' ? '' : esc(b.name)}" title="release from ${esc(b.name)}">${ICON_ROCKET}</button>`
-    : '';
-  const del = lane === 'hotfix'
-    ? `<button class="abtn br-act danger" data-act="delete" data-proj="${esc(repo.project)}" data-ref="${esc(b.name)}" data-ahead="${b.ahead ?? ''}" title="${b.ahead === 0 ? 'delete — fully merged, nothing is lost' : 'delete branch (confirms first)'}">${ICON_TRASH}</button>`
-    : '';
-  return t + r + del;
+// hotfixStrip: the org's fresh hotfix lines exactly ONCE — not repeated per
+// tile. Same card grammar as features: a header (who/when/artifacts) and one
+// row per repo with join / trigger / release / delete.
+function hotfixStrip(d) {
+  const rows = d.org_hotfixes || [];
+  if (!rows.length) return '';
+  const act = state.act && state.act.enabled;
+  const blocks = rows.map(row => {
+    const carriers = (row.repos || []).filter(r => r.has);
+    const stack = dedupCommitters(carriers).slice(0, 6).map(c =>
+      c.avatar ? `<img class="avi" src="${c.avatar}" alt="" loading="lazy" title="${esc(c.name)}">` : avInitials(c.name)).join('');
+    const cells = (row.repos || []).map(r => r.has ? `
+      <div class="fs-row">
+        <span class="mono fs-name"><a target="_blank" href="${r.web_url || '#'}">${esc(r.name)}</a></span>
+        ${miniAv(r.author, r.author_avatar)}
+        ${divChip(r)}
+        ${r.chart_ver ? `<span class="mono mut tf-ver" title="the umbrella chart this line produced">${esc(r.chart_ver)}</span>` : ''}
+        ${r.macro_ver ? `<a class="br-macro mono" target="_blank" href="${r.macro_url || '#'}" title="the umbrella version this line publishes">${ICON_SHIP} ${esc(r.macro_ver)}</a>` : ''}
+        <span class="mut">${r.when ? relTime(r.when) : ''}</span>
+        <span class="spacer"></span>
+        ${act ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(r.project)}" data-ref="${esc(row.branch)}" title="run ${esc(row.branch)}'s CI on ${esc(r.name)}">${ICON_SCOPE}</button>
+        <button class="abtn warn br-act" data-act="release" data-proj="${esc(r.project)}" data-ref="${esc(row.branch)}" title="release from ${esc(row.branch)}">${ICON_ROCKET}</button>
+        <button class="abtn br-act danger" data-act="delete" data-proj="${esc(r.project)}" data-ref="${esc(row.branch)}" data-ahead="${r.ahead ?? ''}" title="${r.ahead === 0 ? 'delete — fully merged, nothing is lost' : 'delete branch (confirms first)'}">${ICON_TRASH}</button>` : ''}
+      </div>` : `
+      <div class="fs-row">
+        <span class="mono fs-name tf-ghost">${esc(r.name)}</span>
+        <span class="fs-b fs-main">not joined</span>
+        <span class="spacer"></span>
+        ${act ? `<button class="abtn br-act featfix" data-action="hotfix-join" data-proj="${esc(r.project)}" data-branch="${esc(row.branch)}" title="join ${esc(row.branch)} — creates this repo's hotfix branch">${ICON_BRANCH} join</button>` : ''}
+      </div>`).join('');
+    return `<div class="feat-g">
+      <div class="feat-h">
+        <span class="tf-ic">${ICON_BRANCH}</span>
+        <span class="mono feat-name">${esc(row.branch)}</span>
+        <button class="copy" data-sha="git fetch origin ${esc(row.branch)} && git checkout ${esc(row.branch)}" title="copy the fetch+checkout commands">⧉</button>
+        <span class="mut">${row.when ? relTime(row.when) : ''}</span>
+        ${stack ? `<span class="avstack" title="wrote this line's unmerged commits">${stack}</span>` : ''}
+        <span class="fs-out mono mut"></span>
+      </div>
+      ${cells}
+    </div>`;
+  }).join('');
+  return `<div class="hero-wrap"><div class="section-h">hotfixes<span></span></div>${blocks}</div>`;
 }
 function avInitials(name) {
   const parts = (name || '?').trim().split(/\s+/);
@@ -720,27 +738,15 @@ function avInitials(name) {
   let h = 0; for (const ch of (name || '')) h = (h * 31 + ch.charCodeAt(0)) % 360;
   return `<span class="avi avi-txt" style="background:hsl(${h},45%,38%)" title="${esc(name)}">${esc(ini)}</span>`;
 }
-function laneRow(repo, list, lane) {
-  if (!list.length) return '';
-  return list.map(b => {
-    const avs = (b.committers || []).slice(0, 5).map(c =>
-      c.avatar ? `<img class="avi" src="${c.avatar}" alt="" loading="lazy" title="${esc(c.name)}">` : avInitials(c.name)).join('');
-    return `
-    <span class="br-chip">
-      ${miniAv(b.author, b.author_avatar)}
-      <a class="mono br-name" target="_blank" href="${b.web_url}" title="${esc(b.title || '')} — ${esc(b.author || '')}">${esc(b.name)}</a>
-      <span class="mut">${b.when ? relTime(b.when) : ''}</span>
-      ${b.ahead > 0 ? (b.compare_url
-        ? `<a class="br-ahead" target="_blank" href="${b.compare_url}" title="${b.ahead} commit(s) not yet merged back to main — open the compare">↑${b.ahead} not in main</a>`
-        : `<span class="br-ahead" title="${b.ahead} commit(s) not yet merged back to main">↑${b.ahead} not in main</span>`) : ''}
-      ${b.behind > 0 ? `<span class="dv dv-z mono" title="${b.behind} commit(s) on main this branch hasn't taken">↓${b.behind}</span>` : ''}
-      ${avs ? `<span class="avstack" title="wrote the commits not yet in main">${avs}</span>` : ''}
-      ${b.ahead === 0 ? `<span class="br-merged" title="everything merged back">✓ merged</span>` : ''}
-      ${b.chart_ver ? `<span class="mono mut tf-ver" title="last chart this branch produced">${esc(b.chart_ver)}</span>` : ''}
-      ${b.macro_ver ? `<a class="br-macro mono" target="_blank" href="${b.macro_url}" title="the umbrella version this branch's line publishes">${ICON_SHIP} ${esc(b.macro_ver)}</a>` : ''}
-      ${branchActs(repo, b, lane)}
-    </span>`;
-  }).join('');
+// dedupCommitters rolls the per-repo committer stacks into one, newest first.
+function dedupCommitters(cells) {
+  const seen = new Set(), out = [];
+  for (const c of cells) for (const p of (c.committers || [])) {
+    if (seen.has(p.name)) continue;
+    seen.add(p.name); out.push(p);
+  }
+  if (!out.length) for (const c of cells) if (c.author && !seen.has(c.author)) { seen.add(c.author); out.push({ name: c.author, avatar: c.author_avatar }); }
+  return out;
 }
 // featureGroup: one feature (epic branch) = one block. Every microservice is
 // listed with how it participates: updated by the feature, joined but still
@@ -766,6 +772,8 @@ function featureGroup(f) {
     <div class="fs-row">
       <span class="mono fs-name">${sv.web_url ? `<a target="_blank" href="${sv.web_url}">${esc(sv.name)}</a>` : esc(sv.name)}</span>
       ${stBadge(sv.state)}
+      ${sv.author_avatar ? miniAv(sv.author, sv.author_avatar) : ''}
+      ${divChip(sv)}
       ${sv.version ? `<span class="mono mut tf-ver" title="the feature pin this service carries">${esc(sv.version)}</span>` : ''}
       ${sv.mr_iid ? `<a class="fs-mr mono mr-${esc(sv.mr_state || 'ready')}" target="_blank" href="${sv.mr_url}" title="the carrying merge request — ${esc(sv.mr_state || 'ready')}">!${sv.mr_iid} · ${esc(sv.mr_state || 'ready')}</a>${act && (sv.mr_state === 'ready' || sv.mr_state === 'feedback') ? `<button class="abtn warn br-act" data-act="merge-mr" data-proj="${esc(sv.project)}" data-mriid="${sv.mr_iid}" data-branch="${esc(f.branch)}" title="merge !${sv.mr_iid} into main">${ICON_MR} merge</button>` : ''}`
         : epicOK && sv.state !== 'main' ? `<button class="abtn br-act featfix" data-proj="${esc(sv.project)}" data-branch="${esc(f.branch)}" title="draft the carrying merge request for ${esc(sv.name)}">${ICON_MR} draft MR</button>` : ''}
@@ -774,14 +782,21 @@ function featureGroup(f) {
       ${epicOK && sv.state !== 'main' ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(sv.project)}" data-ref="${esc(f.branch)}" title="run ${esc(f.branch)}'s CI on ${esc(sv.name)}">${ICON_SCOPE}</button>`
       : epicOK && sv.state === 'main' ? `<button class="abtn br-act featfix" data-proj="${esc(sv.project)}" data-branch="${esc(f.branch)}" title="join ${esc(sv.name)} to this feature (creates its branch + drafts the MR)">${ICON_BRANCH} join</button>` : ''}
     </div>`).join('');
+  const stack = dedupCommitters(f.services || []).slice(0, 6).map(c =>
+    c.avatar ? `<img class="avi" src="${c.avatar}" alt="" loading="lazy" title="${esc(c.name)}">` : avInitials(c.name)).join('');
+  const nowhere = (f.envs || []).every(e => e.state === 'missing');
   return `<div class="feat-g">
     <div class="feat-h">
-      <span class="tf-ic">${ICON_BRANCH}</span>
+      <button class="ef-btn${state.epicFocus === f.branch ? ' ef-on' : ''}" data-focus="${esc(f.branch)}" title="${state.epicFocus === f.branch ? 'unfocus — show every epic again' : 'focus this epic — hide the others until cleared or reload'}">◎</button>
       <span class="mono feat-name">${esc(f.branch)}</span>
       <button class="copy" data-sha="git fetch origin ${esc(f.branch)} && git checkout ${esc(f.branch)}" title="copy the fetch+checkout commands for any of these repos">⧉</button>
       ${f.epic_iid ? `<a class="pv-epic" target="_blank" href="${f.epic_url}">&${f.epic_iid}</a>` : ''}
+      ${f.merged ? '<span class="fs-b fs-merged" title="every carrying MR is merged — the content rides main">merged</span>' : ''}
+      ${(f.envs || []).map(envChip).join('')}
+      ${nowhere ? '<span class="pe pe-none">not yet in any environment</span>' : ''}
       ${f.macro_ver ? `<a class="br-macro mono" target="_blank" href="${f.macro_url}" title="the feature umbrella this branch publishes">${ICON_SHIP} ${esc(f.macro_ver)}</a>` : ''}
       <span class="mut">${f.when ? relTime(f.when) : ''}</span>
+      ${stack ? `<span class="avstack" title="who wrote this feature's commits">${stack}</span>` : ''}
       ${f.charts ? ''
         : epicOK && joined ? `<button class="abtn br-act featfix" data-proj="${esc(joined.project)}" data-branch="${esc(f.branch)}" title="late-create the same-named charts branch so the feature umbrella line exists">${ICON_BRANCH} create charts branch</button>`
         : '<span class="mut" style="font-size:10.5px">· no charts branch yet (created on first publish)</span>'}
@@ -789,108 +804,6 @@ function featureGroup(f) {
     </div>
     ${rows}
   </div>`;
-}
-function renderBranches(data) {
-  const repos = data.repos || [];
-  const lanes = [
-    { key: 'main', label: 'main', cls: 'lane-main' },
-    { key: 'hotfix', label: 'hotfix-*', cls: 'lane-hot' },
-  ];
-  const fresh = b => !b.stale, staleOf = b => b.stale;
-  const staleRows = repos.map(r => {
-    const all = [...(r.hotfix || []), ...(r.epic || [])].filter(staleOf);
-    if (!all.length) return '';
-    return `<div class="br-row"><span class="br-repo mono">${esc(r.name)}</span>${laneRow(r, all, 'stale')}</div>`;
-  }).filter(Boolean).join('');
-  const feats = (data.features || []).map(featureGroup).join('');
-  $('#view').innerHTML = lanes.map(l => {
-    const rows = repos.map(r => {
-      const list = (r[l.key] || []).filter(l.key === 'main' ? () => true : fresh);
-      if (!list.length) return '';
-      return `<div class="br-row"><span class="br-repo mono">${esc(r.name)}</span>${laneRow(r, list, l.key)}</div>`;
-    }).filter(Boolean).join('');
-    return `<div class="section-h ${l.cls}">${l.label}<span></span></div>
-      ${rows || '<div class="mut" style="padding:4px 2px 14px;font-size:12px">none right now</div>'}`;
-  }).join('') + `
-    <div class="section-h lane-epic">features · by epic<span></span></div>
-    ${feats || '<div class="mut" style="padding:4px 2px 14px;font-size:12px">no active features — start one from any microservice tile</div>'}` + `
-    <div class="section-h">macro tags<span></span></div>
-    <div class="br-tags">${(data.macro_tags || []).map(t =>
-      `<span class="vchip mono${t.includes('-epic-') ? ' tag-epic' : ' tag-main'}" title="${t.includes('-epic-') ? 'feature umbrella' : 'main-line rc'}">${esc(t)}</span>`).join('')}</div>` +
-    (staleRows ? `
-    <div class="section-h lane-stale">stale · 30d+ quiet<span></span></div>
-    <div class="mut" style="font-size:11px;margin:-4px 0 10px">branches with no commits in a month — merge back, delete, or revive with a trigger</div>
-    ${staleRows}` : '');
-}
-
-// Fleet is a dense health wall: one status-colored tile per project + a compact
-// sparkline of its recent runs (oldest→newest). No time axis to trek across —
-// the read is "what's green/red/running across the fleet" at a glance.
-const EV_ICON = { push: '⇡', merge_request: '⛙', issue: '◔', pipeline: '▷', comment: '✎' };
-function evLine(ev) {
-  if (!ev) return '<span class="mut">no recent activity</span>';
-  const icon = EV_ICON[ev.type] || '·';
-  const who = ev.author ? ` — ${esc(ev.author)}` : '';
-  return `<a class="fl-ev" target="_blank" href="${ev.web_url}" title="${esc(ev.title)}">${icon} ${esc(ev.title.slice(0, 84))}</a><span class="mut">${who} · ${relTime(ev.at)}</span>`;
-}
-function relChip(rel) {
-  if (!rel) return `<span class="rel-chip rel-none mono">no releases yet</span>`;
-  const d = rel.days_ago;
-  const when = d === 0 ? 'today' : d === 1 ? '1 day ago' : `${d} days ago`;
-  return `<a class="rel-chip mono ${d >= 30 ? 'rel-stale' : ''}" target="_blank" href="${rel.web_url || '#'}" title="last release ${esc(rel.tag)} · ${esc(rel.released_at)}">${ICON_ROCKET} ${esc(rel.tag)} · ${when}</a>`;
-}
-function renderFleet(data) {
-  if (!data.groups || !data.groups.length) {
-    $('#view').innerHTML = '<div class="empty"><h2>No projects visible to this token.</h2></div>';
-    return;
-  }
-  const mode = state.fleetMode || 'groups';
-  const toggle = `<div class="fl-toggle">
-    <button class="fl-mode ${mode === 'groups' ? 'on' : ''}" data-mode="groups">groups</button>
-    <button class="fl-mode ${mode === 'activity' ? 'on' : ''}" data-mode="activity">recent activity</button>
-  </div>`;
-  if (mode === 'activity') {
-    const all = data.groups.flatMap(g => g.projects);
-    all.sort((a, b) => new Date(b.last_activity_at || 0) - new Date(a.last_activity_at || 0));
-    $('#view').innerHTML = toggle + `<div class="fl-list">` + all.map(p => {
-      const latest = p.pipelines[0];
-      const c = latest ? statusColor(latest.status) : 'var(--mut2)';
-      return `<div class="fl-row">
-        <span class="tdot" style="background:${c}"></span>
-        <a class="tname" href="${p.web_url}" target="_blank">${esc(p.name)}</a>
-        <span class="mono mut fl-when">${p.last_activity_at ? relTime(p.last_activity_at) : ''}</span>
-        <span class="fl-evwrap">${evLine(p.latest_event)}</span>
-        <span class="spacer"></span>
-        ${relChip(p.latest_release)}
-      </div>`;
-    }).join('') + `</div>`;
-    return;
-  }
-  $('#view').innerHTML = toggle + data.groups.map(g => `
-    <div class="section-h">${esc(g.path)}<span></span></div>
-    <div class="fleet-grid">
-    ${g.projects.map(p => {
-      const latest = p.pipelines[0];
-      const c = latest ? statusColor(latest.status) : 'var(--mut2)';
-      const recent = p.pipelines.slice(0, 14).reverse(); // oldest→newest, newest on the right
-      const doneP = p.pipelines.find(pl => !isRunning(pl)); // newest finished run
-      return `<div class="tile" style="--c:${c}">
-
-        <div class="tile-head">
-          <span class="tdot" style="background:${c}"></span>
-          <a class="tname" href="${p.web_url}" target="_blank" title="${esc(p.path || p.name)}">${esc(p.name)}</a>
-          <span class="spacer"></span>
-          ${latest ? `<a class="chip" target="_blank" href="${latest.web_url}" style="--c:${c}">${latest.status}</a>`
-                   : `<span class="chip" style="--c:var(--mut2)">none</span>`}
-        </div>
-        <div class="tile-sub mono mut">${latest ? `${esc(latest.ref)} · ${latest.short_sha}` : 'no pipelines'}${doneP ? ` · ✓ ${relTime(doneP.updated_at)}` : ''}</div>
-        ${recent.length ? `<div class="spark">${recent.map(pl =>
-          `<span class="sq ${pl.status === 'running' ? 'run' : ''}" data-pid="${p.id}" data-plid="${pl.id}"
-             style="background:${statusColor(pl.status)}"
-             title="${esc(pl.ref)} · ${pl.short_sha} · ${pl.status} · ${fmtDur(pl.duration_s)} · ${relTime(pl.created_at)}"></span>`).join('')}</div>` : ''}
-      </div>`;
-    }).join('')}
-    </div>`).join('');
 }
 
 // noteServiceCompletions arms a macro watch when any service pipeline flips
@@ -918,18 +831,9 @@ function noteServiceCompletions(eco) {
 }
 async function refresh() {
   try {
-    if (state.view === 'fleet') {
-      state.overview = await fetchJSON('/api/overview');
-      renderFleet(state.overview);
-    } else if (state.view === 'branches') {
-      state.branches = await fetchJSON('/api/branches');
-      renderBranches(state.branches);
-    } else {
-      // Activity tab retired — /api/activity + renderActivity kept for revisiting.
-      state.eco = await fetchJSON('/api/ecosystem');
-      noteServiceCompletions(state.eco);
-      renderDelivery(state.eco);
-    }
+    state.eco = await fetchJSON('/api/ecosystem');
+    noteServiceCompletions(state.eco);
+    renderDelivery(state.eco);
     const live = Date.now() < (state.burstUntil || 0);
     $('#updated').innerHTML = (live ? '<span class="livedot"></span>live · ' : '') + 'updated ' + new Date().toLocaleTimeString();
   } catch (e) { showDisconnected(e); }
@@ -1050,95 +954,11 @@ function mainReleaseSection(n) {
     </div>
   </div>`;
 }
-// tileFeatures: epic branches touched in the last 2 days become first-class
-// secondary targets on the tile — their own trigger/release, aimed at the
-// branch (the block above stays main's).
 // pipeMini: a branch row's live pipeline chip — status-colored, linked.
 function pipeMini(pl) {
   if (!pl) return '';
   return `<a class="pipebtn pipe-mini" target="_blank" href="${pl.web_url}" style="--c:${statusColor(pl.status)}" title="pipeline #${pl.id} · ${pl.status} · ${relTime(pl.created_at)}">${ICON_PIPE} ${esc(pl.status)}</a>`;
 }
-// tileFeatures: EVERY active feature in the org shows on EVERY card — trigger
-// (with its live pipeline) when this repo has the branch, JOIN when it
-// doesn't. Releases never cut from epic- branches (2026-08-27 decision).
-// On the umbrella card (isMacro) presence is the feature's charts branch
-// (f.charts) and JOIN creates only that charts branch. The version pin the
-// service carries and the feature's umbrella version ride alongside.
-function tileFeatures(svc, isMacro) {
-  const all = (state.eco && state.eco.promotions) || [];
-  // epicFocus narrows every ACTIVE FEATURES section to one epic — session-only
-  // by design (cleared by the ✕ chip or any reload, never persisted).
-  const proms = state.epicFocus ? all.filter(f => f.branch === state.epicFocus) : all;
-  const act = state.act && state.act.enabled;
-  // epic starts are server-refused in a hotfix-only org — don't offer the button.
-  const canStart = act && !(state.act && state.act.branch_policy === 'hotfix-only');
-  if (!all.length && !canStart) return '';
-  const rows = proms.map(f => {
-    const mine = isMacro ? null : (f.services || []).find(x => x.project === svc.project);
-    const has = isMacro ? !!f.charts : !!(mine && mine.state !== 'main');
-    const pipe = has ? (svc.branch_pipes || {})[f.branch] : null;
-    const ver = mine && mine.version;
-    const nm = isMacro
-      ? (has && f.macro_url ? `<a class="mono tf-name" target="_blank" href="${f.macro_url}" title="${esc(f.branch)}">${esc(f.branch)}</a>` : `<span class="mono tf-name${has ? '' : ' tf-ghost'}" title="${esc(f.branch)}">${esc(f.branch)}</span>`)
-      : (has && mine.web_url ? `<a class="mono tf-name" target="_blank" href="${mine.web_url}" title="${esc(f.branch)}">${esc(f.branch)}</a>` : `<span class="mono tf-name tf-ghost" title="${esc(f.branch)}">${esc(f.branch)}</span>`);
-    const badge = isMacro
-      ? (has ? '<span class="fs-b fs-join">charts</span>' : '<span class="fs-b fs-main">not joined</span>')
-      : (has ? `<span class="fs-b ${mine.state === 'updated' ? 'fs-upd' : 'fs-join'}">${mine.state === 'updated' ? 'updated' : 'joined'}</span>` : '<span class="fs-b fs-main">not joined</span>');
-    const when = isMacro ? (has && f.when ? relTime(f.when) : '') : (has && mine.when ? relTime(mine.when) : '');
-    return `<div class="tf-row">
-      <button class="ef-btn${state.epicFocus === f.branch ? ' ef-on' : ''}" data-focus="${esc(f.branch)}" title="${state.epicFocus === f.branch ? 'unfocus — show every epic again' : 'focus this epic — hide the others until cleared or reload'}">◎</button>
-      ${nm}
-      ${badge}
-      ${mine && mine.author_avatar ? miniAv(mine.author, mine.author_avatar) : ''}
-      ${mine ? divChip(mine) : ''}
-      ${ver ? `<span class="mono mut tf-ver" title="the feature pin this service carries">${esc(ver)}</span>` : ''}
-      ${when ? `<span class="mut">${when}</span>` : ''}
-      ${f.macro_ver ? `<a class="br-macro mono" target="_blank" href="${f.macro_url || '#'}" title="the umbrella version this feature publishes">${ICON_SHIP} ${esc(f.macro_ver)}</a>` : ''}
-      ${pipeMini(pipe)}
-      <span class="spacer"></span>
-      ${canStart ? has
-        ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(svc.project)}" data-ref="${esc(f.branch)}" title="run ${esc(f.branch)}'s CI here">${ICON_SCOPE}</button>`
-        : `<button class="abtn br-act featfix" data-proj="${esc(svc.project)}" data-branch="${esc(f.branch)}" title="${isMacro ? `create the charts branch for ${esc(f.branch)}` : `join ${esc(f.branch)} — creates this repo's branch + drafts its MR`}">${ICON_BRANCH} join</button>` : ''}
-    </div>`;
-  }).join('');
-  return `<div class="tile-feats"><div class="tf-h tf-h-row">active features<span class="spacer"></span>${state.epicFocus ? `<button class="ef-clear" data-focus="${esc(state.epicFocus)}" title="showing only ${esc(state.epicFocus)} — click to show every epic again">✕ ${esc(state.epicFocus)}</button>` : ''}${canStart ? `<button class="abtn br-act" data-act="feature" data-proj="${esc(svc.project)}" title="start an epic feature branch">⑂ start</button>` : ''}</div>${!proms.length ? `<div class="mut" style="font-size:11px">${state.epicFocus ? 'focused epic not on this card' : 'none right now'}</div>` : rows}</div>`;
-}
-// tileHotfixes: the ORG's fresh hotfix- branches (state.eco.org_hotfixes) shown
-// on EVERY card — trigger + release when this repo carries the branch, JOIN
-// (hotfix-join) when it doesn't. The umbrella card resolves its own cell as the
-// charts repo. Hotfix lines DO release (unlike epic branches). chart_ver +
-// macro_ver ride along; empty org_hotfixes shows "none right now".
-function tileHotfixes(svc, isMacro) {
-  const rows = (state.eco && state.eco.org_hotfixes) || [];
-  const act = state.act && state.act.enabled;
-  const body = !rows.length
-    ? '<div class="mut" style="font-size:11px">none right now</div>'
-    : rows.map(row => {
-        const mine = (row.repos || []).find(r => r.project === svc.project);
-        const has = !!(mine && mine.has);
-        const pipe = has ? (svc.branch_pipes || {})[row.branch] : null;
-        return `<div class="tf-row">
-      <span class="tf-ic">${ICON_BRANCH}</span>
-      ${has && mine.web_url ? `<a class="mono tf-name" target="_blank" href="${mine.web_url}" title="${esc(row.branch)}">${esc(row.branch)}</a>` : `<span class="mono tf-name tf-ghost" title="${esc(row.branch)}">${esc(row.branch)}</span>`}
-      ${has ? '' : '<span class="fs-b fs-main">not joined</span>'}
-      ${has && mine.author_avatar ? miniAv(mine.author, mine.author_avatar) : ''}
-      ${has ? divChip(mine) : ''}
-      ${has && mine.when ? `<span class="mut">${relTime(mine.when)}</span>` : ''}
-      ${has && mine.chart_ver ? `<span class="mono mut tf-ver" title="the umbrella chart this hotfix line produced">${esc(mine.chart_ver)}</span>` : ''}
-      ${has && mine.macro_ver ? `<a class="br-macro mono" target="_blank" href="${mine.macro_url || '#'}" title="the umbrella version this hotfix line publishes">${ICON_SHIP} ${esc(mine.macro_ver)}</a>` : ''}
-      ${pipeMini(pipe)}
-      <span class="spacer"></span>
-      ${act ? has
-        ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(svc.project)}" data-ref="${esc(row.branch)}" title="run ${esc(row.branch)}'s CI">${ICON_SCOPE}</button>
-      <button class="abtn warn br-act" data-act="release" data-proj="${esc(svc.project)}" data-ref="${esc(row.branch)}" title="release from ${esc(row.branch)}">${ICON_ROCKET}</button>`
-        : `<button class="abtn br-act featfix" data-action="hotfix-join" data-proj="${esc(svc.project)}" data-branch="${esc(row.branch)}" title="join ${esc(row.branch)} — creates this repo's hotfix branch">${ICON_BRANCH} join</button>` : ''}
-    </div>`;
-      }).join('');
-  return `<div class="tile-feats"><div class="tf-h">hotfixes</div>${body}</div>`;
-}
-// featureSlug: the shortest meaningful word from an epic title — strip filler
-// verbs, articles, and product words; first survivor wins. Always editable.
-const SLUG_STOP = new Set(['the','a','an','to','of','for','and','or','on','in','with','from','into','turn','make','add','new','create','implement','update','fix','enable','support','redesign','improve','allow','use','build','feature','epic','metaphor','konstruct','chart','charts','theme','macro','app','repo','screen']);
 function featureSlug(title) {
   const words = (title || '').toLowerCase().replace(/[^a-z0-9\s-]/g, '').split(/[\s-]+/).filter(Boolean);
   const pick = words.find(w => !SLUG_STOP.has(w) && w.length > 2) || words[0] || '';
@@ -1173,8 +993,6 @@ document.addEventListener('click', async e => {
     } catch (err) { ff.disabled = false; if (out) out.textContent = '✗ ' + errMsg(err); }
     return;
   }
-  const m = e.target.closest('.fl-mode');
-  if (m) { state.fleetMode = m.dataset.mode; if (state.overview) renderFleet(state.overview); return; }
   const x = e.target.closest('#explain-t');
   if (x) { e.preventDefault(); const p = $('#explain'); if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none'; return; }
   const b = e.target.closest('.abtn'); if (!b || !b.dataset.act) return;
@@ -1530,13 +1348,6 @@ function poll() {
   pollTimer = setTimeout(async () => { if (!document.hidden) await refresh(); poll(); }, burst ? 5000 : 20000);
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
-document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', e => {
-  e.preventDefault();
-  document.querySelectorAll('.tab').forEach(x => x.classList.remove('on'));
-  t.classList.add('on');
-  state.view = t.dataset.view;
-  refresh();
-}));
 $('#window').addEventListener('change', e => { state.windowH = +e.target.value; refresh(); });
 document.addEventListener('click', e => {
   const seg = e.target.closest('.seg, .sq');
@@ -1593,63 +1404,6 @@ function showDrawer(html) {
 }
 function closeDrawer(){ const dr = $('#drawer'); if (dr) dr.style.display = 'none'; }
 
-const TYPE = {
-  pipeline:      { glyph: '▮', color: s => statusColor(s || 'success'), label: 'pipelines' },
-  push:          { glyph: '●', color: () => 'var(--civo)',      label: 'pushes' },
-  merge_request: { glyph: '◆', color: () => 'var(--gl-orange)', label: 'MRs' },
-  issue:         { glyph: '▲', color: () => 'var(--gl-amber)',  label: 'issues' },
-  comment:       { glyph: '○', color: () => 'var(--mut)',       label: 'comments' },
-};
-state.typeFilter = new Set(Object.keys(TYPE));
-state.groupFilter = '';
-
-function renderActivity(data) {
-  const items = data.items.filter(i =>
-    state.typeFilter.has(i.type) &&
-    (!state.groupFilter || i.project.startsWith(state.groupFilter + '/')));
-  const now = Date.now(), win = state.windowH * 3600e3, start = now - win;
-  const groups = [...new Set(data.items.map(i => i.project.split('/')[0]))].sort();
-  const lanes = Object.keys(TYPE);
-  $('#view').innerHTML = `
-    <div class="filters">
-      ${lanes.map(t => `<a href="#" class="fchip ${state.typeFilter.has(t) ? 'on' : ''}" data-type="${t}"
-        style="--c:${TYPE[t].color()}">${TYPE[t].glyph} ${TYPE[t].label}</a>`).join('')}
-      <span class="spacer"></span>
-      <select id="gfilter" class="mono">
-        <option value="">all groups</option>
-        ${groups.map(g => `<option ${g === state.groupFilter ? 'selected' : ''}>${esc(g)}</option>`).join('')}
-      </select>
-    </div>
-    <div class="strip">${lanes.map(t => `
-      <div class="strip-lane">
-        <span class="lane-name mono">${TYPE[t].label}</span>
-        <div class="lane-track">${items.filter(i => i.type === t).map(i => {
-          const l = (+new Date(i.at) - start) / win * 100;
-          if (l < 0) return '';
-          return `<a class="dot" href="${i.web_url}" target="_blank" style="left:${l}%;color:${TYPE[t].color(i.status)}"
-            title="${esc(i.project)} · ${esc(i.title)} · ${relTime(i.at)}">${TYPE[t].glyph}</a>`;
-        }).join('')}</div>
-      </div>`).join('')}
-    </div>
-    ${items.length ? `<div class="alist">${items.map(i => `
-      <a class="aitem" href="${i.web_url}" target="_blank">
-        <span class="glyph" style="color:${TYPE[i.type].color(i.status)}">${TYPE[i.type].glyph}</span>
-        <span class="mono mut proj">${esc(i.project)}</span>
-        <span class="atitle">${esc(i.title)}</span>
-        ${i.status ? `<span class="chip" style="--c:${statusColor(i.status)}">${i.status}</span>` : ''}
-        ${i.author ? `<span class="mut">@${esc(i.author)}</span>` : ''}
-        <span class="spacer"></span><span class="mono mut">${relTime(i.at)}</span>
-      </a>`).join('')}</div>` :
-      '<div class="empty"><h2>No activity in this window.</h2></div>'}`;
-
-  document.querySelectorAll('.fchip').forEach(c => c.addEventListener('click', e => {
-    e.preventDefault();
-    const t = c.dataset.type;
-    state.typeFilter.has(t) ? state.typeFilter.delete(t) : state.typeFilter.add(t);
-    renderActivity(state.activity);
-  }));
-  $('#gfilter').addEventListener('change', e => { state.groupFilter = e.target.value; renderActivity(state.activity); });
-}
 loadMeta(); loadActions().then(refresh); poll();
 </script>
 </body>
