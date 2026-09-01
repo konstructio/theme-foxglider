@@ -1867,6 +1867,8 @@ type orgHotfixRepo struct {
 	Ahead        *int   `json:"ahead,omitempty"`
 	Behind       *int   `json:"behind,omitempty"`
 	CompareURL   string `json:"compare_url,omitempty"`
+	// Committers: who wrote the branch's unmerged commits — the strip's stack.
+	Committers []committerJSON `json:"committers,omitempty"`
 }
 
 // orgHotfixJSON is one hotfix branch across the whole org: a cell per topology
@@ -1924,6 +1926,7 @@ func assembleOrgHotfixes(t topology, repos []repoBranches) []orgHotfixJSON {
 				cell.ChartVer, cell.MacroVer, cell.MacroURL = b.ChartVer, b.MacroVer, b.MacroURL
 				cell.Author, cell.AuthorAvatar = b.Author, b.AuthorAvatar
 				cell.Ahead, cell.Behind, cell.CompareURL = b.Ahead, b.Behind, b.CompareURL
+				cell.Committers = b.Committers
 			}
 			row.Repos = append(row.Repos, cell)
 		}

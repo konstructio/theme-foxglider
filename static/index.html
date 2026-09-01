@@ -1349,60 +1349,7 @@ function poll() {
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 $('#window').addEventListener('change', e => { state.windowH = +e.target.value; refresh(); });
-document.addEventListener('click', e => {
-  const seg = e.target.closest('.seg, .sq');
-  if (seg && seg.dataset.plid && !e.metaKey && !e.ctrlKey) {
-    e.preventDefault();
-    openGantt(seg.dataset.pid, seg.dataset.plid);
-  }
-});
 
-async function openGantt(pid, plid) {
-  let d;
-  try { d = await fetchJSON(`/api/pipelines/${pid}/${plid}`); }
-  catch (err) { return showDrawer(`<p class="mono mut">${esc(err.error || 'failed to load')}</p>`); }
-  const jobs = d.jobs.filter(j => j.started_at);
-  const t0 = Math.min(...jobs.map(j => +new Date(j.started_at)), +new Date(d.started_at || d.created_at));
-  const t1 = Math.max(...jobs.map(j => +new Date(j.finished_at || Date.now())), t0 + 1000);
-  const span = t1 - t0;
-  const stages = [...new Set(d.jobs.map(j => j.stage))];
-  showDrawer(`
-    <div class="d-head">
-      <span class="chip" style="--c:${statusColor(d.status)}">${d.status}</span>
-      <span class="mono">${esc(d.ref)} · ${esc((d.sha||'').slice(0,8))} · ${fmtDur(d.duration_s||0)}</span>
-      <span class="spacer"></span>
-      <a href="${d.web_url}" target="_blank">open in GitLab ↗</a>
-      <a href="#" id="d-close">✕</a>
-    </div>
-    ${stages.map(st => `
-      <div class="lane"><div class="lane-name mono">${esc(st)}</div>
-        <div class="lane-track">${d.jobs.filter(j => j.stage === st).map(j => {
-          if (!j.started_at) return `<a class="jbar hollow" href="${j.web_url}" target="_blank" title="${esc(j.name)} · ${j.status}">${esc(j.name)}</a>`;
-          const l = (+new Date(j.started_at) - t0) / span * 100;
-          const w = Math.max((j.duration_s * 1000) / span * 100, 2);
-          return `<a class="jbar ${j.status === 'failed' ? 'failed' : ''}" target="_blank" href="${j.web_url}"
-            style="left:${l}%;width:${Math.min(w, 100 - l)}%;background:${statusColor(j.status)}"
-            title="${esc(j.name)} · ${j.status} · ${fmtDur(j.duration_s)}">${esc(j.name)}</a>`;
-        }).join('')}</div>
-      </div>`).join('')}`);
-}
-
-function showDrawer(html) {
-  let dr = $('#drawer');
-  if (!dr) {
-    dr = document.createElement('div');
-    dr.id = 'drawer';
-    dr.innerHTML = '<div class="d-back"></div><div class="d-panel"></div>';
-    document.body.appendChild(dr);
-    dr.querySelector('.d-back').addEventListener('click', closeDrawer);
-    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
-  }
-  dr.querySelector('.d-panel').innerHTML = html;
-  dr.style.display = 'block';
-  const x = $('#d-close');
-  if (x) x.addEventListener('click', e => { e.preventDefault(); closeDrawer(); });
-}
-function closeDrawer(){ const dr = $('#drawer'); if (dr) dr.style.display = 'none'; }
 
 loadMeta(); loadActions().then(refresh); poll();
 </script>

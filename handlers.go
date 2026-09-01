@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -76,7 +75,6 @@ func newAPI(gl *glClient, groups []string) http.Handler {
 	mux.HandleFunc("GET /api/bundle", a.guard(a.bundleAt))
 	mux.HandleFunc("GET /api/org", a.guard(a.orgInfo))
 	mux.HandleFunc("GET /api/org-logo", a.guard(a.orgLogo))
-	mux.HandleFunc("GET /api/pipelines/{pid}/{plid}", a.guard(a.pipelineDetail))
 	mux.HandleFunc("GET /api/branches", a.guard(a.branchesView))
 	// Actions guard themselves on the separate write token, not the read token.
 	mux.HandleFunc("GET /api/actions/status", a.act.status)
@@ -184,53 +182,6 @@ type releaseJSON struct {
 	ReleasedAt time.Time `json:"released_at"`
 	WebURL     string    `json:"web_url,omitempty"`
 	DaysAgo    int       `json:"days_ago"`
-}
-
-type jobJSON struct {
-	Name       string     `json:"name"`
-	Stage      string     `json:"stage"`
-	Status     string     `json:"status"`
-	StartedAt  *time.Time `json:"started_at"`
-	FinishedAt *time.Time `json:"finished_at"`
-	DurationS  float64    `json:"duration_s"`
-	WebURL     string     `json:"web_url"`
-}
-
-func (a *api) pipelineDetail(w http.ResponseWriter, r *http.Request) {
-	pid, err1 := strconv.Atoi(r.PathValue("pid"))
-	plid, err2 := strconv.Atoi(r.PathValue("plid"))
-	if err1 != nil || err2 != nil {
-		writeErr(w, 400, "bad pipeline path")
-		return
-	}
-	key := fmt.Sprintf("detail:%d:%d", pid, plid)
-	v, err := a.c.do(key, ttlPipelines, func() (any, error) {
-		ctx := context.Background()
-		d, err := a.gl.pipeline(ctx, pid, plid)
-		if err != nil {
-			return nil, err
-		}
-		jobs, err := a.gl.jobs(ctx, pid, plid)
-		if err != nil {
-			return nil, err
-		}
-		jj := make([]jobJSON, 0, len(jobs))
-		for _, j := range jobs {
-			jj = append(jj, jobJSON{Name: j.Name, Stage: j.Stage, Status: j.Status,
-				StartedAt: j.StartedAt, FinishedAt: j.FinishedAt, DurationS: j.Duration, WebURL: j.WebURL})
-		}
-		return map[string]any{
-			"id": d.ID, "status": d.Status, "ref": d.Ref, "sha": d.SHA,
-			"web_url": d.WebURL, "created_at": d.CreatedAt,
-			"started_at": d.StartedAt, "finished_at": d.FinishedAt,
-			"duration_s": d.Duration, "jobs": jj,
-		}, nil
-	})
-	if err != nil {
-		writeErr(w, 503, "GitLab unreachable: "+err.Error())
-		return
-	}
-	writeJSON(w, v)
 }
 
 // orgGroup resolves which group represents this org: the first configured

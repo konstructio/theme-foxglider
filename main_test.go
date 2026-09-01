@@ -29,7 +29,7 @@ func TestAPIRouted(t *testing.T) {
 	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(299) })
 	srv := httptest.NewServer(newMux(api))
 	defer srv.Close()
-	res, _ := http.Get(srv.URL + "/api/overview")
+	res, _ := http.Get(srv.URL + "/api/branches")
 	if res.StatusCode != 299 {
 		t.Fatalf("api not routed, status = %d", res.StatusCode)
 	}
