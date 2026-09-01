@@ -583,6 +583,7 @@ type glBranch struct {
 		ShortID       string    `json:"short_id"`
 		Title         string    `json:"title"`
 		AuthorName    string    `json:"author_name"`
+		AuthorEmail   string    `json:"author_email"`
 		CommittedDate time.Time `json:"committed_date"`
 	} `json:"commit"`
 }

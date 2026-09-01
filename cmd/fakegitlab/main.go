@@ -216,6 +216,11 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)
 	case strings.Contains(p, "/repository/compare"):
 		w.Header().Set("Content-Type", "application/json")
+		// direction-aware: from=main → commits ahead; from=<branch> → behind
+		if r.URL.Query().Get("from") != "main" {
+			fmt.Fprint(w, `{"commits":[{"id":"m1","author_name":"John Dietz","author_email":"john.dietz@civo.com"},{"id":"m2","author_name":"Jared Edwards","author_email":"jared@civo.com"}]}`)
+			return
+		}
 		if strings.Contains(r.URL.RawQuery, "hotfix-done") {
 			fmt.Fprint(w, `{"commits":[]}`) // fully merged back
 			return
@@ -269,8 +274,9 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 			if deletedBranches[b.name] {
 				continue
 			}
-			items = append(items, fmt.Sprintf(`{"name":%q,"web_url":"https://git.civo.com/x/-/tree/%s","commit":{"short_id":%q,"title":%q,"author_name":%q,"committed_date":%q}}`,
-				b.name, strings.ReplaceAll(b.name, "/", "-"), b.sha, b.title, b.author, b.when.Format(time.RFC3339)))
+			email := strings.ToLower(strings.ReplaceAll(b.author, " ", ".")) + "@civo.com"
+			items = append(items, fmt.Sprintf(`{"name":%q,"web_url":"https://git.civo.com/x/-/tree/%s","commit":{"short_id":%q,"title":%q,"author_name":%q,"author_email":%q,"committed_date":%q}}`,
+				b.name, strings.ReplaceAll(b.name, "/", "-"), b.sha, b.title, b.author, email, b.when.Format(time.RFC3339)))
 		}
 		delMu.Unlock()
 		fmt.Fprint(w, "["+strings.Join(items, ",")+"]")
@@ -359,10 +365,16 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 			st = "running"
 		}
 		name, avatar := fakeCommitter(proj)
+		username := "dev"
+		if strings.Contains(p, "micro-frontend") {
+			// GitLab masks access-token bot display names — the demo of the
+			// friendlyAuthor un-masking
+			name, username = "****", "group_1642_bot_34005c839825"
+		}
 		now := time.Now().UTC()
 		web := "https://git.civo.com/" + proj + "/-/pipelines"
-		fmt.Fprintf(w, `{"id":900,"status":%q,"ref":"main","sha":"feedfacecafe0000","web_url":%q,"created_at":%q,"updated_at":%q,"user":{"name":%q,"username":"dev","avatar_url":%q,"web_url":"https://git.civo.com/dev"}}`,
-			st, web, now.Add(-20*time.Minute).Format(time.RFC3339), now.Add(-18*time.Minute).Format(time.RFC3339), name, avatar)
+		fmt.Fprintf(w, `{"id":900,"status":%q,"ref":"main","sha":"feedfacecafe0000","web_url":%q,"created_at":%q,"updated_at":%q,"user":{"name":%q,"username":%q,"avatar_url":%q,"web_url":"https://git.civo.com/dev"}}`,
+			st, web, now.Add(-20*time.Minute).Format(time.RFC3339), now.Add(-18*time.Minute).Format(time.RFC3339), name, username, avatar)
 	case strings.HasSuffix(p, "/pipelines"):
 		w.Header().Set("Content-Type", "application/json")
 		proj := ecoProjFromPath(p)

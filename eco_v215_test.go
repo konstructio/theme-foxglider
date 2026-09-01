@@ -229,3 +229,130 @@ func TestCommitRefsAndExists(t *testing.T) {
 		t.Fatal("a 500 must surface as an error, never as absence")
 	}
 }
+
+// TestFriendlyAuthor pins the bot un-masking: GitLab returns "****" as the
+// display name for access-token bot users.
+func TestFriendlyAuthor(t *testing.T) {
+	cases := []struct{ name, username, want string }{
+		{"John Dietz", "john.dietz", "John Dietz"},
+		{"****", "group_1642_bot_34005c8398", "token bot (group_1642)"},
+		{"****", "project_9_bot_ff", "token bot (project_9)"},
+		{"", "kbot", "kbot"},
+		{"****", "", "someone"},
+		{"", "", "someone"},
+	}
+	for _, c := range cases {
+		if got := friendlyAuthor(c.name, c.username); got != c.want {
+			t.Fatalf("friendlyAuthor(%q,%q) = %q, want %q", c.name, c.username, got, c.want)
+		}
+	}
+}
+
+// TestBranchDivergenceAndAvatars: branch rows carry ahead AND behind (both
+// compare directions, tip-sha cached) plus the last committer's avatar; the
+// org hotfix cells and feature cells inherit them.
+func TestBranchDivergenceAndAvatars(t *testing.T) {
+	fresh := agoRFC(2 * time.Hour)
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(p, "metaphor-macro%2FChart.yaml"):
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("version: 0.2.0\ndependencies:\n  - name: metaphor\n    version: \"0.11.0-rc.13\"\n"))
+		case strings.HasSuffix(p, "/repository/tags"):
+			w.Write([]byte(`[{"name":"metaphor-v0.2.0-rc.4"}]`))
+		case strings.Contains(p, "/repository/compare"):
+			if r.URL.Query().Get("from") != "main" { // branch...main = behind
+				w.Write([]byte(`{"commits":[{"id":"m1","author_name":"jd","author_email":"jd@civo.com"}]}`))
+				return
+			}
+			w.Write([]byte(`{"commits":[{"id":"a","author_name":"jd","author_email":"jd@civo.com"},{"id":"b","author_name":"jd","author_email":"jd@civo.com"}]}`))
+		case strings.HasSuffix(p, "/avatar"):
+			w.Write([]byte(`{"avatar_url":"http://gl/av-jd.png"}`))
+		case strings.HasSuffix(p, "/merge_requests"):
+			w.Write([]byte(`[]`))
+		case strings.HasSuffix(p, "/repository/branches"):
+			w.Write([]byte(`[
+				{"name":"main","web_url":"http://gl/m","commit":{"short_id":"aa","title":"x","author_name":"jd","author_email":"jd@civo.com","committed_date":"` + fresh + `"}},
+				{"name":"hotfix-hot","web_url":"http://gl/h","commit":{"short_id":"bb","title":"f","author_name":"jd","author_email":"jd@civo.com","committed_date":"` + fresh + `"}},
+				{"name":"epic-9-x","web_url":"http://gl/e","commit":{"short_id":"cc","title":"e","author_name":"jd","author_email":"jd@civo.com","committed_date":"` + fresh + `"}}]`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	res, err := http.Get(srv.URL + "/api/branches")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Repos []repoBranches `json:"repos"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Repos) == 0 {
+		t.Fatal("no repos in branches payload")
+	}
+	var hot, epic *branchJSON
+	for i := range out.Repos {
+		for j := range out.Repos[i].Hotfix {
+			if out.Repos[i].Hotfix[j].Name == "hotfix-hot" {
+				hot = &out.Repos[i].Hotfix[j]
+			}
+		}
+		for j := range out.Repos[i].Epic {
+			if out.Repos[i].Epic[j].Name == "epic-9-x" {
+				epic = &out.Repos[i].Epic[j]
+			}
+		}
+	}
+	if hot == nil || hot.Ahead == nil || *hot.Ahead != 2 || hot.Behind == nil || *hot.Behind != 1 {
+		t.Fatalf("hotfix divergence = %+v (want ahead 2, behind 1)", hot)
+	}
+	if hot.AuthorAvatar != "http://gl/av-jd.png" {
+		t.Fatalf("hotfix author avatar = %q", hot.AuthorAvatar)
+	}
+	if epic == nil || epic.Ahead == nil || *epic.Ahead != 2 || epic.Behind == nil || *epic.Behind != 1 {
+		t.Fatalf("epic divergence = %+v (epic lanes must be checked too)", epic)
+	}
+
+	// the eco payload's org hotfix cells and feature cells inherit the fields
+	res, err = http.Get(srv.URL + "/api/ecosystem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var eco struct {
+		OrgHotfixes []orgHotfixJSON `json:"org_hotfixes"`
+		Promotions  []featureJSON   `json:"promotions"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&eco); err != nil {
+		t.Fatal(err)
+	}
+	foundCell := false
+	for _, row := range eco.OrgHotfixes {
+		for _, c := range row.Repos {
+			if c.Has && c.Ahead != nil && *c.Ahead == 2 && c.AuthorAvatar != "" {
+				foundCell = true
+			}
+		}
+	}
+	if !foundCell {
+		t.Fatalf("no org hotfix cell carries divergence+avatar: %+v", eco.OrgHotfixes)
+	}
+	foundFeat := false
+	for _, f := range eco.Promotions {
+		for _, sv := range f.Services {
+			if sv.State != "main" && sv.Ahead != nil && sv.AuthorAvatar != "" {
+				foundFeat = true
+			}
+		}
+	}
+	if !foundFeat {
+		t.Fatalf("no feature cell carries divergence+avatar: %+v", eco.Promotions)
+	}
+}

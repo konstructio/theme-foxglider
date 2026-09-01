@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.15.1"
+const themeVersion = "2.16.0"
 
 const ttlEco = 45 * time.Second
 
@@ -462,10 +462,29 @@ func (a *api) latestPipe(ctx context.Context, proj string) *pipelineJSON {
 		DurationS:  pl.UpdatedAt.Sub(pl.CreatedAt).Seconds(),
 	}
 	if pl.User != nil {
-		pj.AuthorName = pl.User.Name
+		pj.AuthorName = friendlyAuthor(pl.User.Name, pl.User.Username)
 		pj.AuthorAvatar = pl.User.AvatarURL
 	}
 	return &pj
+}
+
+// reBotUser matches GitLab access-token bot usernames (group_<id>_bot_<hex>).
+var reBotUser = regexp.MustCompile(`^(group|project)_\d+_bot_`)
+
+// friendlyAuthor un-masks GitLab's redacted bot identities: access-token bot
+// users surface with display name "****", which reads terribly in a tooltip.
+// Real names pass through untouched.
+func friendlyAuthor(name, username string) string {
+	if strings.Trim(name, "* ") != "" {
+		return name
+	}
+	if m := reBotUser.FindString(username); m != "" {
+		return "token bot (" + strings.TrimSuffix(m, "_bot_") + ")"
+	}
+	if username != "" {
+		return username
+	}
+	return "someone"
 }
 
 func (a *api) cachedCommit(ctx context.Context, proj, sha string) *commitJSON {
@@ -978,6 +997,11 @@ type branchJSON struct {
 	// which must never render as "merged".
 	Stale bool `json:"stale,omitempty"`
 	Ahead *int `json:"ahead,omitempty"`
+	// Behind: commits on main this branch hasn't taken — drift the other way.
+	// Same nil-means-unchecked contract as Ahead.
+	Behind *int `json:"behind,omitempty"`
+	// AuthorAvatar: the last committer's avatar — who's changing what.
+	AuthorAvatar string `json:"author_avatar,omitempty"`
 	// Committers: who wrote the unmerged commits (hotfix lanes, newest first).
 	Committers []committerJSON `json:"committers,omitempty"`
 	// CompareURL: GitLab's main...branch compare page — the click-through for
@@ -1032,34 +1056,43 @@ func (a *api) cachedBranches(ctx context.Context, project string) ([]branchJSON,
 			return nil, err
 		}
 		out := make([]branchJSON, 0, len(brs))
-		for _, b := range brs {
+		for i, b := range brs {
 			out = append(out, toBranchJSON(b))
+			// last-committer avatar: 6h per-email cache, so every branch gets one
+			if b.Commit != nil {
+				out[i].AuthorAvatar = a.avatarFor(ctx, b.Commit.AuthorEmail)
+			}
 		}
-		// hotfix divergence: commits not yet merged back to main.
-		// Bounded to the 10 most recent — repos like konstruct-ui carry
-		// dozens of old hotfix branches and each check is an API call.
-		hix := []int{}
+		// divergence vs main: hotfix lanes (10 newest) + live epic lanes.
+		// Results are keyed by tip sha (immutable), so the 60s branch refresh
+		// re-fills from cache and only a moved tip pays the compare calls.
+		dix := []int{}
 		for i, bj := range out {
 			if strings.HasPrefix(bj.Name, "hotfix") {
-				hix = append(hix, i)
+				dix = append(dix, i)
 			}
 		}
-		sort.Slice(hix, func(x, y int) bool { return out[hix[x]].When > out[hix[y]].When })
-		if len(hix) > 10 {
-			hix = hix[:10]
+		sort.Slice(dix, func(x, y int) bool { return out[dix[x]].When > out[dix[y]].When })
+		if len(dix) > 10 {
+			dix = dix[:10]
 		}
-		for _, i := range hix {
-			n, people, err := a.gl.compareBranch(ctx, project, "main", out[i].Name)
-			if err != nil {
+		for i, bj := range out {
+			if strings.HasPrefix(bj.Name, "epic-") && !bj.Stale {
+				dix = append(dix, i)
+			}
+		}
+		if len(dix) > 16 {
+			dix = dix[:16]
+		}
+		for _, i := range dix {
+			d, ok := a.divergence(ctx, project, out[i].Name, out[i].Short)
+			if !ok {
 				continue
 			}
-			ah := n
-			out[i].Ahead = &ah
+			ah, bh := d.Ahead, d.Behind
+			out[i].Ahead, out[i].Behind = &ah, &bh
 			out[i].CompareURL = a.gl.base + "/" + project + "/-/compare/main..." + url.PathEscape(out[i].Name)
-			for _, p := range people {
-				out[i].Committers = append(out[i].Committers,
-					committerJSON{Name: p.AuthorName, Avatar: a.avatarFor(ctx, p.AuthorEmail)})
-			}
+			out[i].Committers = d.Committers
 		}
 		return out, nil
 	})
@@ -1212,6 +1245,13 @@ type featSvcJSON struct {
 	MRURL      string     `json:"mr_url,omitempty"`
 	MRState    string     `json:"mr_state,omitempty"`
 	MRMergedAt *time.Time `json:"mr_merged_at,omitempty"`
+	// Who last touched this repo's branch, and how far it has drifted from
+	// main — same contracts as branchJSON (nil = unchecked).
+	Author       string `json:"author,omitempty"`
+	AuthorAvatar string `json:"author_avatar,omitempty"`
+	Ahead        *int   `json:"ahead,omitempty"`
+	Behind       *int   `json:"behind,omitempty"`
+	CompareURL   string `json:"compare_url,omitempty"`
 }
 
 // featEnvJSON: one feature's presence in one delivery environment.
@@ -1279,6 +1319,7 @@ func bestMR(list []glMR) *glMR {
 func (a *api) assembleFeatures(ctx context.Context, t topology, repos []repoBranches, allTags []glTag) []featureJSON {
 	type presence struct {
 		when, webURL string
+		b            branchJSON
 	}
 	found := map[string]map[string]presence{} // branch → project → presence
 	chartsHas := map[string]string{}          // branch → when (macro repo)
@@ -1288,7 +1329,7 @@ func (a *api) assembleFeatures(ctx context.Context, t topology, repos []repoBran
 			if found[b.Name] == nil {
 				found[b.Name] = map[string]presence{}
 			}
-			found[b.Name][rb.Project] = presence{b.When, b.WebURL}
+			found[b.Name][rb.Project] = presence{b.When, b.WebURL, b}
 			if b.When > newest[b.Name] {
 				newest[b.Name] = b.When
 			}
@@ -1364,6 +1405,8 @@ func (a *api) assembleFeatures(ctx context.Context, t topology, repos []repoBran
 			fs := featSvcJSON{Name: svc.Name, Project: svc.Project, State: "main"}
 			if p, ok := found[name][svc.Project]; ok {
 				fs.State, fs.When, fs.WebURL = "joined", p.when, p.webURL
+				fs.Author, fs.AuthorAvatar = p.b.Author, p.b.AuthorAvatar
+				fs.Ahead, fs.Behind, fs.CompareURL = p.b.Ahead, p.b.Behind, p.b.CompareURL
 				if strings.Contains(pins[svc.Name], needle) {
 					fs.State, fs.Version = "updated", pins[svc.Name]
 				}
@@ -1647,6 +1690,39 @@ func (a *api) bundleAt(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// branchDivergence is the sha-keyed compare result for one branch tip.
+type branchDivergence struct {
+	Ahead, Behind int
+	Committers    []committerJSON
+}
+
+// divergence computes a branch's drift vs main, cached by tip sha — compare
+// results for an immutable tip never change, so only a moved tip pays the two
+// API calls (ahead with committers, then behind).
+func (a *api) divergence(ctx context.Context, project, branch, tip string) (branchDivergence, bool) {
+	v, err := a.c.do("div:"+project+":"+branch+"@"+tip, 6*time.Hour, func() (any, error) {
+		ahead, people, err := a.gl.compareBranch(ctx, project, "main", branch)
+		if err != nil {
+			return nil, err
+		}
+		behind, _, err := a.gl.compareBranch(ctx, project, branch, "main")
+		if err != nil {
+			return nil, err
+		}
+		d := branchDivergence{Ahead: ahead, Behind: behind}
+		for _, p := range people {
+			d.Committers = append(d.Committers,
+				committerJSON{Name: p.AuthorName, Avatar: a.avatarFor(ctx, p.AuthorEmail)})
+		}
+		return d, nil
+	})
+	if err != nil {
+		return branchDivergence{}, false
+	}
+	d, _ := v.(branchDivergence)
+	return d, true
+}
+
 // avatarFor resolves (and long-caches) the avatar for a commit email; "" when
 // unknown so the frontend falls back to an initials circle.
 func (a *api) avatarFor(ctx context.Context, email string) string {
@@ -1763,6 +1839,12 @@ type orgHotfixRepo struct {
 	ChartVer string `json:"chart_ver,omitempty"`
 	MacroVer string `json:"macro_ver,omitempty"`
 	MacroURL string `json:"macro_url,omitempty"`
+	// Who last touched this repo's branch, and its drift from main.
+	Author       string `json:"author,omitempty"`
+	AuthorAvatar string `json:"author_avatar,omitempty"`
+	Ahead        *int   `json:"ahead,omitempty"`
+	Behind       *int   `json:"behind,omitempty"`
+	CompareURL   string `json:"compare_url,omitempty"`
 }
 
 // orgHotfixJSON is one hotfix branch across the whole org: a cell per topology
@@ -1818,6 +1900,8 @@ func assembleOrgHotfixes(t topology, repos []repoBranches) []orgHotfixJSON {
 				cell.Has = true
 				cell.When, cell.WebURL = b.When, b.WebURL
 				cell.ChartVer, cell.MacroVer, cell.MacroURL = b.ChartVer, b.MacroVer, b.MacroURL
+				cell.Author, cell.AuthorAvatar = b.Author, b.AuthorAvatar
+				cell.Ahead, cell.Behind, cell.CompareURL = b.Ahead, b.Behind, b.CompareURL
 			}
 			row.Repos = append(row.Repos, cell)
 		}
