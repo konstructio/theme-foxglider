@@ -89,6 +89,14 @@
   .vchip{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:11px;color:var(--ink2)}
   .vchip.mut{color:var(--mut)}
   .avatar{width:22px;height:22px;border-radius:50%;border:1px solid var(--line2);vertical-align:middle;flex:none;background:var(--panel2)}
+  .av-s{width:15px;height:15px}
+  .dv{font-size:10px;border:1px solid var(--line2);border-radius:3px;padding:0 5px;text-decoration:none;white-space:nowrap}
+  .dv-a{color:#fbbf24;border-color:#78560f}
+  .dv-z{color:var(--mut2)}
+  .ef-btn{background:none;border:none;color:var(--mut2);cursor:pointer;padding:0 2px;font-size:12px;line-height:1}
+  .ef-btn:hover{color:var(--civo)}
+  .ef-on{color:var(--civo)}
+  .ef-clear{font-family:var(--mono);font-size:10px;color:var(--civo);background:none;border:1px solid var(--civo);border-radius:3px;padding:1px 7px;cursor:pointer;text-transform:none;letter-spacing:0}
   .stages{margin-top:9px}
   .pbar{height:8px;position:relative;border:1px solid var(--line);border-radius:5px;overflow:hidden;background:var(--panel2)}
   .pbar-fill{position:absolute;top:0;bottom:0;left:0;width:0;border-radius:4px;
@@ -304,7 +312,9 @@
   </footer>
 </div>
 <script>
-const state = { view: 'delivery', windowH: 24, overview: null, activity: null, eco: null, act: null };
+// epicFocus is deliberately session-only (never persisted): a reload always
+// shows every epic — a forgotten filter must not cost visibility.
+const state = { view: 'delivery', windowH: 24, overview: null, activity: null, eco: null, act: null, epicFocus: null };
 const METAMARK = '<svg viewBox="0 0 64 48" width="20" height="15" aria-hidden="true" style="flex:none"><defs><linearGradient id="gm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#05df72"/><stop offset=".55" stop-color="#00c950"/><stop offset="1" stop-color="#00a884"/></linearGradient></defs><path fill="url(#gm)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/><circle cx="26" cy="28" r="2.2" fill="#0b1220"/></svg>';
 const $ = (s, el=document) => el.querySelector(s);
 
@@ -356,7 +366,22 @@ function statusChip(pl) {
 // avatarImg shows who pushed the change behind the latest pipeline.
 function avatarImg(pl) {
   if (!pl || !pl.author_avatar) return '';
-  return `<img class="avatar" src="${pl.author_avatar}" alt="" title="${esc(pl.author_name || '')} — pushed the latest change">`;
+  return `<img class="avatar" src="${pl.author_avatar}" alt="" title="${esc(pl.author_name || 'someone')} — pushed the latest change">`;
+}
+// miniAv: a small last-committer avatar for branch rows — who's changing what.
+function miniAv(name, url) {
+  if (!url) return '';
+  return `<img class="avatar av-s" src="${url}" alt="" loading="lazy" title="${esc(name || 'someone')} — last commit">`;
+}
+// divChip: ↑ahead ↓behind vs main, linked to the GitLab compare when known.
+function divChip(x) {
+  if (!x || (x.ahead == null && x.behind == null)) return '';
+  const t = `↑${x.ahead ?? '?'} ↓${x.behind ?? '?'}`;
+  const cls = (x.ahead | 0) > 0 ? 'dv-a' : 'dv-z';
+  const title = `${x.ahead ?? '?'} commit(s) ahead of main · ${x.behind ?? '?'} behind`;
+  return x.compare_url
+    ? `<a class="dv ${cls} mono" target="_blank" href="${x.compare_url}" title="${title} — open the compare">${t}</a>`
+    : `<span class="dv ${cls} mono" title="${title}">${t}</span>`;
 }
 
 // Live stage-progress: only running pipelines are polled, and only while they run.
@@ -388,6 +413,14 @@ function fallbackCopy(text) {
   let ok = false; try { ok = document.execCommand('copy'); } catch {}
   ta.remove(); return ok;
 }
+// epic focus: click ◎ on any feature row (or the ✕ chip) to toggle a
+// session-only filter — reloads always show everything.
+document.addEventListener('click', e => {
+  const f = e.target.closest('[data-focus]'); if (!f) return;
+  const br = f.dataset.focus;
+  state.epicFocus = state.epicFocus === br ? null : br;
+  if (state.eco) renderDelivery(state.eco);
+});
 document.addEventListener('click', e => {
   const b = e.target.closest('.copy'); if (!b) return;
   const done = ok => { b.textContent = ok ? '✓' : '✗'; setTimeout(() => { b.textContent = '⧉'; }, 1200); };
@@ -694,11 +727,13 @@ function laneRow(repo, list, lane) {
       c.avatar ? `<img class="avi" src="${c.avatar}" alt="" loading="lazy" title="${esc(c.name)}">` : avInitials(c.name)).join('');
     return `
     <span class="br-chip">
+      ${miniAv(b.author, b.author_avatar)}
       <a class="mono br-name" target="_blank" href="${b.web_url}" title="${esc(b.title || '')} — ${esc(b.author || '')}">${esc(b.name)}</a>
       <span class="mut">${b.when ? relTime(b.when) : ''}</span>
       ${b.ahead > 0 ? (b.compare_url
         ? `<a class="br-ahead" target="_blank" href="${b.compare_url}" title="${b.ahead} commit(s) not yet merged back to main — open the compare">↑${b.ahead} not in main</a>`
         : `<span class="br-ahead" title="${b.ahead} commit(s) not yet merged back to main">↑${b.ahead} not in main</span>`) : ''}
+      ${b.behind > 0 ? `<span class="dv dv-z mono" title="${b.behind} commit(s) on main this branch hasn't taken">↓${b.behind}</span>` : ''}
       ${avs ? `<span class="avstack" title="wrote the commits not yet in main">${avs}</span>` : ''}
       ${b.ahead === 0 ? `<span class="br-merged" title="everything merged back">✓ merged</span>` : ''}
       ${b.chart_ver ? `<span class="mono mut tf-ver" title="last chart this branch produced">${esc(b.chart_ver)}</span>` : ''}
@@ -1030,11 +1065,14 @@ function pipeMini(pl) {
 // (f.charts) and JOIN creates only that charts branch. The version pin the
 // service carries and the feature's umbrella version ride alongside.
 function tileFeatures(svc, isMacro) {
-  const proms = (state.eco && state.eco.promotions) || [];
+  const all = (state.eco && state.eco.promotions) || [];
+  // epicFocus narrows every ACTIVE FEATURES section to one epic — session-only
+  // by design (cleared by the ✕ chip or any reload, never persisted).
+  const proms = state.epicFocus ? all.filter(f => f.branch === state.epicFocus) : all;
   const act = state.act && state.act.enabled;
   // epic starts are server-refused in a hotfix-only org — don't offer the button.
   const canStart = act && !(state.act && state.act.branch_policy === 'hotfix-only');
-  if (!proms.length && !canStart) return '';
+  if (!all.length && !canStart) return '';
   const rows = proms.map(f => {
     const mine = isMacro ? null : (f.services || []).find(x => x.project === svc.project);
     const has = isMacro ? !!f.charts : !!(mine && mine.state !== 'main');
@@ -1048,9 +1086,11 @@ function tileFeatures(svc, isMacro) {
       : (has ? `<span class="fs-b ${mine.state === 'updated' ? 'fs-upd' : 'fs-join'}">${mine.state === 'updated' ? 'updated' : 'joined'}</span>` : '<span class="fs-b fs-main">not joined</span>');
     const when = isMacro ? (has && f.when ? relTime(f.when) : '') : (has && mine.when ? relTime(mine.when) : '');
     return `<div class="tf-row">
-      <span class="tf-ic">${ICON_BRANCH}</span>
+      <button class="ef-btn${state.epicFocus === f.branch ? ' ef-on' : ''}" data-focus="${esc(f.branch)}" title="${state.epicFocus === f.branch ? 'unfocus — show every epic again' : 'focus this epic — hide the others until cleared or reload'}">◎</button>
       ${nm}
       ${badge}
+      ${mine && mine.author_avatar ? miniAv(mine.author, mine.author_avatar) : ''}
+      ${mine ? divChip(mine) : ''}
       ${ver ? `<span class="mono mut tf-ver" title="the feature pin this service carries">${esc(ver)}</span>` : ''}
       ${when ? `<span class="mut">${when}</span>` : ''}
       ${f.macro_ver ? `<a class="br-macro mono" target="_blank" href="${f.macro_url || '#'}" title="the umbrella version this feature publishes">${ICON_SHIP} ${esc(f.macro_ver)}</a>` : ''}
@@ -1061,7 +1101,7 @@ function tileFeatures(svc, isMacro) {
         : `<button class="abtn br-act featfix" data-proj="${esc(svc.project)}" data-branch="${esc(f.branch)}" title="${isMacro ? `create the charts branch for ${esc(f.branch)}` : `join ${esc(f.branch)} — creates this repo's branch + drafts its MR`}">${ICON_BRANCH} join</button>` : ''}
     </div>`;
   }).join('');
-  return `<div class="tile-feats"><div class="tf-h tf-h-row">active features<span class="spacer"></span>${canStart ? `<button class="abtn br-act" data-act="feature" data-proj="${esc(svc.project)}" title="start an epic feature branch">⑂ start</button>` : ''}</div>${!proms.length ? '<div class="mut" style="font-size:11px">none right now</div>' : rows}</div>`;
+  return `<div class="tile-feats"><div class="tf-h tf-h-row">active features<span class="spacer"></span>${state.epicFocus ? `<button class="ef-clear" data-focus="${esc(state.epicFocus)}" title="showing only ${esc(state.epicFocus)} — click to show every epic again">✕ ${esc(state.epicFocus)}</button>` : ''}${canStart ? `<button class="abtn br-act" data-act="feature" data-proj="${esc(svc.project)}" title="start an epic feature branch">⑂ start</button>` : ''}</div>${!proms.length ? `<div class="mut" style="font-size:11px">${state.epicFocus ? 'focused epic not on this card' : 'none right now'}</div>` : rows}</div>`;
 }
 // tileHotfixes: the ORG's fresh hotfix- branches (state.eco.org_hotfixes) shown
 // on EVERY card — trigger + release when this repo carries the branch, JOIN
@@ -1081,6 +1121,8 @@ function tileHotfixes(svc, isMacro) {
       <span class="tf-ic">${ICON_BRANCH}</span>
       ${has && mine.web_url ? `<a class="mono tf-name" target="_blank" href="${mine.web_url}" title="${esc(row.branch)}">${esc(row.branch)}</a>` : `<span class="mono tf-name tf-ghost" title="${esc(row.branch)}">${esc(row.branch)}</span>`}
       ${has ? '' : '<span class="fs-b fs-main">not joined</span>'}
+      ${has && mine.author_avatar ? miniAv(mine.author, mine.author_avatar) : ''}
+      ${has ? divChip(mine) : ''}
       ${has && mine.when ? `<span class="mut">${relTime(mine.when)}</span>` : ''}
       ${has && mine.chart_ver ? `<span class="mono mut tf-ver" title="the umbrella chart this hotfix line produced">${esc(mine.chart_ver)}</span>` : ''}
       ${has && mine.macro_ver ? `<a class="br-macro mono" target="_blank" href="${mine.macro_url || '#'}" title="the umbrella version this hotfix line publishes">${ICON_SHIP} ${esc(mine.macro_ver)}</a>` : ''}
