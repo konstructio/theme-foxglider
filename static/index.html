@@ -591,18 +591,34 @@ setInterval(() => {
 // Picking one previews it — the tree fluctuates to that tag's pins, the
 // selection and every environment's upgrade box turn green with it. Picking
 // the newest again clears the preview.
+function featOf(t) { return /-((?:epic|hotfix)-[a-z0-9.-]+)\.[0-9]+$/.exec(t)?.[1]; }
 function verPicker(m) {
   const cur = m.published_tag || '';
   const tags = m.tags || [];
   const sel = state.picked ? state.picked.tag : cur;
   if (!tags.length) return `<div class="ec-big mono">${esc(m.published_rc || m.base_version || '—')}</div>`;
+  const opt = t => {
+    const v = t.replace(/^.*?-v/, 'v').replace(/^v/, '');
+    const bf = featOf(t);
+    return `<option value="${esc(t)}" ${t === sel ? 'selected' : ''}>${esc(t === cur ? v + ' · newest' : v)}${bf ? ` (${esc(bf)})` : ''}</option>`;
+  };
+  const mains = tags.filter(t => !featOf(t)), feats = tags.filter(t => featOf(t));
   return `<select id="verpick" class="ec-big mono verpick${state.picked ? ' picked' : ''}" title="preview any published umbrella — the tree and the environment boxes follow">
-    ${tags.map(t => {
-      const v = t.replace(/^.*?-v/, 'v').replace(/^v/, '');
-      const bf = /-((?:epic|hotfix)-[a-z0-9.-]+)\.[0-9]+$/.exec(t)?.[1];
-      return `<option value="${esc(t)}" ${t === sel ? 'selected' : ''}>${esc(t === cur ? v + ' · newest' : v)}${bf ? ` (${esc(bf)})` : ''}</option>`;
-    }).join('')}
+    ${mains.length ? `<optgroup label="main releases">${mains.map(opt).join('')}</optgroup>` : ''}
+    ${feats.length ? `<optgroup label="feature builds">${feats.map(opt).join('')}</optgroup>` : ''}
   </select>`;
+}
+// macroSource: the selected umbrella version's provenance — the branch it was
+// built from and THAT branch's pipeline on the charts repo. Follows the
+// picker: main rc → "main" + main's pipeline; a feature build → its branch +
+// that branch's pipeline. (Replaces the old multi-branch live line, which
+// showed every charts branch regardless of what you had selected.)
+function macroSource(m) {
+  const bf = state.picked ? state.picked.built_from : (m.built_from || 'main');
+  const pipes = m.branch_pipes || {};
+  const srcPipe = pipes[bf] || (bf === 'main' ? (pipes['main'] || m.pipeline) : null);
+  const chip = `<span class="mono bf-chip${bf !== 'main' ? ' bf-feat' : ''}">${esc(bf)}</span>`;
+  return `<div class="mut macro-src">bundles ${(state.eco?.services || []).length} microcharts · base <span class="mono">${esc(m.base_version || '—')}</span> · built from ${chip}${srcPipe ? ' ' + pipeMini(srcPipe) : ''}</div>`;
 }
 // pinSource: the provenance chip on a bundle-tree row — which branch the pin
 // was built from. main is muted, epic-/hotfix- get the feature/hotfix accent,
@@ -711,8 +727,7 @@ function renderDelivery(d) {
         <div class="ecard macro${state.picked ? ' macro-picked' : ''}">
           <div class="ec-top">${METAMARK}<a class="pname" target="_blank" href="${m.web_url}" title="${esc(m.name)}">${esc(m.name)}</a>${statusChip(m.pipeline)}${avatarImg(m.pipeline)}</div>
           ${verPicker(m)}
-          ${liveLine(m, d)}
-          <div class="mut">bundles ${svcs.length} microcharts · base <span class="mono">${esc(m.base_version || '—')}</span> · built from <span class="mono bf-chip${(state.picked ? state.picked.built_from : m.built_from) !== 'main' ? ' bf-feat' : ''}">${esc(state.picked ? state.picked.built_from : (m.built_from || 'main'))}</span></div>
+          ${macroSource(m)}
           ${bundleTree(m)}
           ${mainPipelineSection(m)}
           ${mainReleaseSection(m)}
