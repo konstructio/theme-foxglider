@@ -232,12 +232,12 @@
   .tile-feats .tf-name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .tf-ver{font-size:10px;flex:none}
   .btree{margin:7px 0 2px;padding:7px 9px;background:var(--panel2);border:1px solid var(--line);border-radius:5px}
-  .bt-row{display:flex;align-items:baseline;gap:7px;font-size:11.5px;line-height:1.85;border-radius:3px;padding:0 4px}
+  .bt-row{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 7px;font-size:11.5px;line-height:1.7;border-radius:3px;padding:1px 4px}
   .bt-branch{color:var(--mut2);flex:none}
   .bt-name{color:var(--ink2);text-decoration:none;flex:none}
   a.bt-name:hover{color:var(--ink)}
   .bt-dots{flex:1;border-bottom:1px dotted var(--line2);transform:translateY(-3px)}
-  .bt-ver{color:var(--mut)}
+  .bt-ver{color:var(--mut);white-space:nowrap}
   .bt-row.bump{animation:btbump 2.4s ease-out}
   @keyframes btbump{0%{background:rgba(52,211,153,.28)}100%{background:transparent}}
   .fl-toggle{display:flex;gap:6px;margin:2px 0 14px}
@@ -600,7 +600,7 @@ function verPicker(m) {
   const opt = t => {
     const v = t.replace(/^.*?-v/, 'v').replace(/^v/, '');
     const bf = featOf(t);
-    return `<option value="${esc(t)}" ${t === sel ? 'selected' : ''}>${esc(t === cur ? v + ' · newest' : v)}${bf ? ` (${esc(bf)})` : ''}</option>`;
+    return `<option value="${esc(t)}" ${t === sel ? 'selected' : ''}>${esc(t === cur ? v + ' · newest main' : v)}${bf ? ` (${esc(bf)})` : ''}</option>`;
   };
   const mains = tags.filter(t => !featOf(t)), feats = tags.filter(t => featOf(t));
   return `<select id="verpick" class="ec-big mono verpick${state.picked ? ' picked' : ''}" title="preview any published umbrella — the tree and the environment boxes follow">
@@ -647,7 +647,7 @@ function bundleTree(m) {
     const last = i === deps.length - 1;
     const svc = svcByName[d.name];
     const nm = svc ? `<a class="bt-name" target="_blank" href="${svc.web_url}">${esc(d.name)}</a>` : `<span class="bt-name">${esc(d.name)}</span>`;
-    return `<div class="bt-row${changed ? ' bump' : ''}"><span class="bt-branch mono">${last ? '└─' : '├─'}</span>${nm}<span class="bt-dots"></span><span class="mono bt-ver">${esc(d.version)}</span>${pinSource(d.source)}</div>`;
+    return `<div class="bt-row${changed ? ' bump' : ''}"><span class="bt-branch mono">${last ? '└─' : '├─'}</span>${nm}<span class="bt-dots"></span><span class="mono bt-ver">${esc(d.version)}</span>${(d.source && !d.version.includes(d.source)) ? pinSource(d.source) : ''}</div>`;
   }).join('');
   state.prevBundle = next;
   const refNote = m.bundle_ref && m.bundle_ref !== m.published_tag ? `<span class="mut" title="the published tag couldn't be read — showing main's tip">@${esc(m.bundle_ref)}</span>` : '';
