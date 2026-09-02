@@ -309,12 +309,22 @@ func TestHotfixFromVersion(t *testing.T) {
 func TestRetireFeature(t *testing.T) {
 	var mu sync.Mutex
 	mrsOpen := true
+	building := true // start with a pipeline in flight → retire must refuse
 	deleted := map[string]bool{}
 	epicClosed := false
 	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.EscapedPath()
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case strings.HasSuffix(p, "/pipelines"):
+			mu.Lock()
+			b := building
+			mu.Unlock()
+			if b {
+				w.Write([]byte(`[{"id":9,"status":"running","ref":"epic-9-x","web_url":"http://gl/9"}]`))
+			} else {
+				w.Write([]byte(`[]`))
+			}
 		case strings.Contains(p, "/merge_requests") && r.Method == "GET":
 			mu.Lock()
 			openNow := mrsOpen
@@ -365,12 +375,27 @@ func TestRetireFeature(t *testing.T) {
 	if res, _ := post(`{"action":"retire","project":"civo/metaphor/charts","branch":"hotfix-nope","confirm":"hotfix-nope"}`); res.StatusCode != 400 {
 		t.Fatalf("non-epic retire = %d, want 400", res.StatusCode)
 	}
+	// in-flight pipeline BLOCKS retire — and deletes nothing
+	res, out := post(`{"action":"retire","project":"civo/metaphor/charts","branch":"epic-9-x","confirm":"epic-9-x"}`)
+	if res.StatusCode != 409 {
+		t.Fatalf("retire with pipeline in flight = %d %+v, want 409", res.StatusCode, out)
+	}
+	if msg, _ := out["error"].(string); !strings.Contains(msg, "still running") {
+		t.Fatalf("409 must explain the in-flight pipeline: %+v", out)
+	}
+	mu.Lock()
+	if len(deleted) != 0 {
+		mu.Unlock()
+		t.Fatalf("in-flight retire still deleted branches: %+v", deleted)
+	}
+	building = false // pipelines finished — retire may proceed
+	mu.Unlock()
 	// confirm handshake
 	if res, _ := post(`{"action":"retire","project":"civo/metaphor/charts","branch":"epic-9-x","confirm":"nope"}`); res.StatusCode != 400 {
 		t.Fatalf("confirm mismatch = %d, want 400", res.StatusCode)
 	}
 	// open carrying MR blocks the whole retire — and deletes nothing
-	res, out := post(`{"action":"retire","project":"civo/metaphor/charts","branch":"epic-9-x","confirm":"epic-9-x"}`)
+	res, out = post(`{"action":"retire","project":"civo/metaphor/charts","branch":"epic-9-x","confirm":"epic-9-x"}`)
 	if res.StatusCode != 409 {
 		t.Fatalf("open-MR retire = %d %+v, want 409", res.StatusCode, out)
 	}

@@ -183,6 +183,25 @@ func clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+// branchBuilding reports whether a pipeline is still in flight on a branch.
+// Destroying a branch mid-build orphans the pipeline: its later-stage jobs
+// fail at get_sources ("couldn't find remote ref"). A lookup error fails OPEN
+// (returns false) — a convenience guard must not wedge the action when GitLab
+// is briefly unreachable; the confirm handshake is still the real gate.
+func (x *actions) branchBuilding(ctx context.Context, project, branch string) bool {
+	pls, err := x.gl.recentPipelines(ctx, project, branch, "", 5)
+	if err != nil {
+		return false
+	}
+	for _, p := range pls {
+		switch p.Status {
+		case "running", "pending", "created", "waiting_for_resource":
+			return true
+		}
+	}
+	return false
+}
+
 func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 	if !x.enabled() {
 		writeErr(w, 503, "actions not configured (GITLAB_ACTION_TOKEN unset)")
@@ -377,6 +396,10 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 409, "MR is "+m.State+", not open")
 			return
 		}
+		if x.branchBuilding(ctx, req.Project, m.SourceBranch) {
+			writeErr(w, 409, "a pipeline is still running on "+m.SourceBranch+" — merging deletes the branch and would strand it; let CI finish first")
+			return
+		}
 		merged, err := x.gl.mergeMR(ctx, req.Project, req.MRIID)
 		if err != nil {
 			writeErr(w, 502, "merge failed: "+err.Error())
@@ -422,6 +445,10 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		if x.branchBuilding(ctx, req.Project, br) {
+			writeErr(w, 409, "a pipeline is still running on "+br+" — let it finish before deleting")
+			return
+		}
 		if err := x.gl.deleteBranch(ctx, req.Project, br); err != nil {
 			writeErr(w, 502, "delete failed: "+err.Error())
 			return
@@ -460,6 +487,19 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 		}
 		if x.topo.hasMacro() {
 			projects = append(projects, x.topo.MacroProj)
+		}
+		// an in-flight pipeline must PREVENT the retire — deleting a branch
+		// mid-build strands its jobs (they fail at get_sources). Refuse and
+		// name the repos still building; let them finish, then retire.
+		var building []string
+		for _, proj := range projects {
+			if x.branchBuilding(ctx, proj, br) {
+				building = append(building, proj[strings.LastIndex(proj, "/")+1:])
+			}
+		}
+		if len(building) > 0 {
+			writeErr(w, 409, "pipelines are still running on "+br+" — let them finish before retiring: "+strings.Join(building, ", "))
+			return
 		}
 		var open []string
 		for _, proj := range projects {
