@@ -916,7 +916,7 @@ function featureGroup(f, d) {
       ${f.macro_ver ? `<a class="br-macro mono" target="_blank" href="${f.macro_url}" title="the feature umbrella this branch publishes">${ICON_SHIP} ${esc(f.macro_ver)}</a>` : ''}
       <span class="mut">${f.when ? relTime(f.when) : ''}</span>
       ${stack ? `<span class="avstack" title="who wrote this feature's commits">${stack}</span>` : ''}
-      ${epicOK ? `<button class="abtn br-act danger" data-act="retire" data-proj="${esc((d && d.macro && d.macro.project) || '')}" data-branch="${esc(f.branch)}" title="retire ${esc(f.branch)} — deletes its branch on every repo + the charts twin and closes the epic; refused while carrying MRs are open">${ICON_TRASH} retire</button>` : ''}
+      ${act ? `<button class="abtn br-act danger" data-act="retire" data-proj="${esc((d && d.macro && d.macro.project) || '')}" data-branch="${esc(f.branch)}" title="retire ${esc(f.branch)} — deletes its branch on every repo + the charts twin and closes the epic; refused while carrying MRs are open">${ICON_TRASH} retire</button>` : ''}
       ${f.charts ? ''
         : epicOK && joined ? `<button class="abtn br-act featfix" data-proj="${esc(joined.project)}" data-branch="${esc(f.branch)}" title="late-create the same-named charts branch so the feature umbrella line exists">${ICON_BRANCH} create charts branch</button>`
         : '<span class="mut" style="font-size:10.5px">· no charts branch yet (created on first publish)</span>'}
