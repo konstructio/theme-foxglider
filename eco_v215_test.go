@@ -359,3 +359,21 @@ func TestBranchDivergenceAndAvatars(t *testing.T) {
 		t.Fatalf("no feature cell carries divergence+avatar: %+v", eco.Promotions)
 	}
 }
+
+// TestClientIP pins the audit-source resolution: first X-Forwarded-For hop
+// wins (the true client behind the gateway), RemoteAddr is the fallback.
+func TestClientIP(t *testing.T) {
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "10.42.8.124:33184"
+	if got := clientIP(r); got != "10.42.8.124:33184" {
+		t.Fatalf("no XFF = %q", got)
+	}
+	r.Header.Set("X-Forwarded-For", "203.0.113.9, 10.42.8.124")
+	if got := clientIP(r); got != "203.0.113.9" {
+		t.Fatalf("XFF chain = %q, want first hop", got)
+	}
+	r.Header.Set("X-Forwarded-For", "198.51.100.7")
+	if got := clientIP(r); got != "198.51.100.7" {
+		t.Fatalf("single XFF = %q", got)
+	}
+}

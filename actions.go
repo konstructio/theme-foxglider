@@ -171,6 +171,18 @@ type runReq struct {
 // reVersionArg keeps typed version overrides to sane semver-ish shapes.
 var reVersionArg = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$`)
 
+// clientIP prefers the first X-Forwarded-For hop (the true client, appended
+// by the gateway) over RemoteAddr, which behind Envoy is only the last hop.
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i > 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
+	return r.RemoteAddr
+}
+
 func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 	if !x.enabled() {
 		writeErr(w, 503, "actions not configured (GITLAB_ACTION_TOKEN unset)")
@@ -236,7 +248,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			x.markHot(req.Project)
 		}
 		log.Printf("ACTION hotfix-join project=%s branch=%s joined=%v actor=%s remote=%s",
-			req.Project, branch, joined, actor, r.RemoteAddr)
+			req.Project, branch, joined, actor, clientIP(r))
 		writeJSON(w, map[string]any{
 			"ok": true, "action": "hotfix-join", "actor": actor, "branch": branch,
 			"joined": joined, "web_url": webURL,
@@ -282,7 +294,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 				x.markHot(x.topo.MacroProj)
 			}
 			log.Printf("ACTION feature project=%s branch=%s epic=%d charts_created=%v actor=%s remote=%s",
-				x.topo.MacroProj, branch, req.EpicIID, created[x.topo.MacroProj], actor, r.RemoteAddr)
+				x.topo.MacroProj, branch, req.EpicIID, created[x.topo.MacroProj], actor, clientIP(r))
 			writeJSON(w, map[string]any{
 				"ok": true, "action": "feature", "actor": actor, "branch": branch,
 				"charts_created": created[x.topo.MacroProj], "urls": urls,
@@ -327,7 +339,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		log.Printf("ACTION feature project=%s branch=%s epic=%d micro_created=%v charts_created=%v mr=%v actor=%s remote=%s",
-			req.Project, branch, req.EpicIID, created[req.Project], created[x.topo.MacroProj], mr != nil, actor, r.RemoteAddr)
+			req.Project, branch, req.EpicIID, created[req.Project], created[x.topo.MacroProj], mr != nil, actor, clientIP(r))
 		resp := map[string]any{
 			"ok": true, "action": "feature", "actor": actor, "branch": branch,
 			"micro_created": created[req.Project], "charts_created": created[x.topo.MacroProj],
@@ -378,7 +390,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			x.markHot(x.topo.MacroProj)
 		}
 		log.Printf("ACTION merge-mr project=%s mr=%d branch=%s actor=%s state=%s remote=%s",
-			req.Project, req.MRIID, m.SourceBranch, actor, merged.State, r.RemoteAddr)
+			req.Project, req.MRIID, m.SourceBranch, actor, merged.State, clientIP(r))
 		writeJSON(w, map[string]any{"ok": true, "action": "merge-mr", "actor": actor,
 			"mr": req.MRIID, "state": merged.State, "web_url": m.WebURL})
 		return
@@ -421,7 +433,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			x.dropBranches(req.Project)
 		}
 		log.Printf("ACTION delete project=%s branch=%s ahead=%d actor=%s remote=%s",
-			req.Project, br, ahead, actor, r.RemoteAddr)
+			req.Project, br, ahead, actor, clientIP(r))
 		writeJSON(w, map[string]any{"ok": true, "action": "delete", "actor": actor,
 			"branch": br, "ahead": ahead})
 		return
@@ -523,10 +535,10 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 				resp["mr"] = m.IID
 				resp["mr_url"] = m.WebURL
 				log.Printf("ACTION deliver mode=mr env=%s version=%s mr=%d actor=%s remote=%s",
-					target.Env, ver, m.IID, actor, r.RemoteAddr)
+					target.Env, ver, m.IID, actor, clientIP(r))
 			} else {
 				log.Printf("ACTION deliver mode=commit env=%s version=%s actor=%s remote=%s",
-					target.Env, ver, actor, r.RemoteAddr)
+					target.Env, ver, actor, clientIP(r))
 			}
 			if x.markHot != nil {
 				x.markHot(target.Project)
@@ -586,7 +598,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 		}
 		go x.mergeDevBump(version, actor)
 		log.Printf("ACTION deliver project=%s tag=%s pipeline=%d actor=%s remote=%s",
-			req.Project, tag, pl.ID, actor, r.RemoteAddr)
+			req.Project, tag, pl.ID, actor, clientIP(r))
 		writeJSON(w, map[string]any{
 			"ok": true, "action": "deliver", "actor": actor,
 			"version": version, "tag": tag,
@@ -620,7 +632,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			x.markHot(req.Project)
 		}
 		log.Printf("ACTION trigger project=%s ref=%s pipeline=%d actor=%s remote=%s",
-			req.Project, req.Ref, pl.ID, actor, r.RemoteAddr)
+			req.Project, req.Ref, pl.ID, actor, clientIP(r))
 		writeJSON(w, map[string]any{
 			"ok": true, "action": "trigger", "actor": actor, "ref": req.Ref,
 			"job_url": pl.WebURL, "pipeline_url": pl.WebURL,
@@ -680,7 +692,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 				x.markHot(req.Project)
 			}
 			log.Printf("ACTION %s project=%s mode=fresh-pipeline pipeline=%d actor=%s remote=%s",
-				req.Action, req.Project, pl.ID, actor, r.RemoteAddr)
+				req.Action, req.Project, pl.ID, actor, clientIP(r))
 			writeJSON(w, map[string]any{
 				"ok": true, "action": req.Action, "actor": actor,
 				"job_url": pl.WebURL, "pipeline_url": pl.WebURL,
@@ -707,7 +719,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 	}
 	// One greppable audit line per action, in the platform runtime logs.
 	log.Printf("ACTION %s project=%s job=%s(%d) pipeline=%d actor=%s remote=%s",
-		req.Action, req.Project, jobName, target.ID, lp.ID, actor, r.RemoteAddr)
+		req.Action, req.Project, jobName, target.ID, lp.ID, actor, clientIP(r))
 	writeJSON(w, map[string]any{
 		"ok": true, "action": req.Action, "actor": actor,
 		"job_url": played.WebURL, "pipeline_url": lp.WebURL,
@@ -1038,7 +1050,7 @@ func (x *actions) runHotfix(w http.ResponseWriter, r *http.Request, req runReq, 
 		}
 	}
 	log.Printf("ACTION hotfix tag=%s branch=%s created=%d joined=%d skipped=%d actor=%s remote=%s",
-		tag, branch, created, joined, skipped, actor, r.RemoteAddr)
+		tag, branch, created, joined, skipped, actor, clientIP(r))
 	writeJSON(w, map[string]any{
 		"ok": true, "action": "hotfix", "actor": actor, "branch": branch, "tag": tag,
 		"results":  results,
