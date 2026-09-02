@@ -499,7 +499,7 @@ func TestMergedBranchDeleted(t *testing.T) {
 		case strings.HasSuffix(p, "/repository/tags"):
 			w.Write([]byte(`[]`))
 		case strings.HasSuffix(p, "/merge_requests") && r.URL.Query().Get("source_branch") == "epic-9-gone":
-			w.Write([]byte(`[{"iid":21,"state":"merged","merged_at":"2026-08-27T08:00:00Z","source_branch":"epic-9-gone","web_url":"http://gl/x/-/merge_requests/21"}]`))
+			w.Write([]byte(`[{"iid":21,"state":"merged","merged_at":"2026-08-27T08:00:00Z","source_branch":"epic-9-gone","web_url":"http://gl/x/-/merge_requests/21","author":{"name":"Cristhian Fernandez","username":"cris","avatar_url":"http://gl/av/cris.png"}}]`))
 		case strings.HasSuffix(p, "/merge_requests"):
 			w.Write([]byte(`[]`))
 		case strings.HasSuffix(p, "/repository/branches") && strings.Contains(p, "%2Fcharts"):
@@ -539,6 +539,9 @@ func TestMergedBranchDeleted(t *testing.T) {
 	for _, sv := range f.Services {
 		if sv.State == "merged" && sv.MRIID == 21 {
 			found = true
+			if sv.Author != "Cristhian Fernandez" || sv.AuthorAvatar != "http://gl/av/cris.png" {
+				t.Fatalf("merged cell must surface the MR author (branch is gone): %+v", sv)
+			}
 		}
 	}
 	if !found {

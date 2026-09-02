@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.26.0"
+const themeVersion = "2.26.1"
 
 const ttlEco = 45 * time.Second
 
@@ -1357,6 +1357,15 @@ func bestMR(list []glMR) *glMR {
 // assembleFeatures groups epic-* branches into features: one entry per branch
 // name, every topology service listed with its derivation state (from the
 // charts feature-branch pins), plus the carrying MR per joined service.
+// mrPerson picks the human to attribute a merged feature to: the MR author
+// (who wrote it), else whoever merged it.
+func mrPerson(m *glMR) *glUser {
+	if m.Author != nil && m.Author.AvatarURL != "" {
+		return m.Author
+	}
+	return m.MergedBy
+}
+
 func (a *api) assembleFeatures(ctx context.Context, t topology, repos []repoBranches, allTags []glTag) []featureJSON {
 	type presence struct {
 		when, webURL string
@@ -1464,6 +1473,11 @@ func (a *api) assembleFeatures(ctx context.Context, t topology, repos []repoBran
 				fs.State = "merged"
 				fs.MRIID, fs.MRURL, fs.MRState = m.IID, m.WebURL, "merged"
 				fs.MRMergedAt = m.MergedAt
+				// the branch (and its committer avatar) is gone — surface the
+				// person who did the PR so a merged feature still shows a face
+				if u := mrPerson(m); u != nil {
+					fs.Author, fs.AuthorAvatar = u.Name, u.AvatarURL
+				}
 			}
 			f.Services = append(f.Services, fs)
 		}

@@ -429,6 +429,16 @@ type glMR struct {
 	UserNotesCount int        `json:"user_notes_count"`
 	MergedAt       *time.Time `json:"merged_at"`
 	SourceBranch   string     `json:"source_branch"`
+	// Author/MergedBy: who did the PR — surfaced on merged feature cells whose
+	// branch (and its committer avatar) is gone after the merge.
+	Author   *glUser `json:"author"`
+	MergedBy *glUser `json:"merged_by"`
+}
+
+type glUser struct {
+	Name      string `json:"name"`
+	Username  string `json:"username"`
+	AvatarURL string `json:"avatar_url"`
 }
 
 // openMRs lists a project's open merge requests, newest first.
