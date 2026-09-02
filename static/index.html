@@ -696,7 +696,7 @@ function renderDelivery(d) {
         ${svcs.map(s => `<div class="ecard">
           <div class="ec-top"><a class="pname" target="_blank" href="${s.web_url}" title="${esc(s.name)}">${esc(s.name)}</a>${statusChip(s.pipeline)}${avatarImg(s.pipeline)}</div>
           <div class="ec-ver mono"><span class="vlbl">in macro</span>${verChip(s.bundled_version)}${pinSource(((m.bundle || []).find(x => x.name === s.name) || {}).source)}<span class="vlbl">dev</span>${verChip(s.base_version)}${s.base_version ? '<span class="lane-tag pin-src" title="the next dev-cycle version as declared in main\'s Chart.yaml">main</span>' : ''}</div>
-          ${liveLine(s)}
+          ${liveLine(s, d)}
           ${mainPipelineSection(s)}
           ${mainReleaseSection(s)}${watchChip(s)}
         </div>`).join('')}
@@ -707,7 +707,7 @@ function renderDelivery(d) {
         <div class="ecard macro${state.picked ? ' macro-picked' : ''}">
           <div class="ec-top">${METAMARK}<a class="pname" target="_blank" href="${m.web_url}" title="${esc(m.name)}">${esc(m.name)}</a>${statusChip(m.pipeline)}${avatarImg(m.pipeline)}</div>
           ${verPicker(m)}
-          ${liveLine(m)}
+          ${liveLine(m, d)}
           <div class="mut">bundles ${svcs.length} microcharts · base <span class="mono">${esc(m.base_version || '—')}</span> · built from <span class="mono bf-chip${(state.picked ? state.picked.built_from : m.built_from) !== 'main' ? ' bf-feat' : ''}">${esc(state.picked ? state.picked.built_from : (m.built_from || 'main'))}</span></div>
           ${bundleTree(m)}
           ${mainPipelineSection(m)}
@@ -740,12 +740,25 @@ function branchPipe(d, project, branch) {
   const pl = n && n.branch_pipes && n.branch_pipes[branch];
   return pipeIsLive(pl) ? pl : null;
 }
-// liveLine: any non-main ref with a live (or just-finished) pipeline — shown
-// on the tile even before the branch model knows the branch exists.
-function liveLine(node) {
+// knownRefs: the branches this page actually shows — features, org hotfixes,
+// main. Finished pipelines only render for these: a retired feature's last
+// red run must leave with its branch, not haunt the cards.
+function knownRefs(d) {
+  const set = new Set(['main']);
+  for (const f of (d.promotions || [])) set.add(f.branch);
+  for (const r of (d.org_hotfixes || [])) set.add(r.branch);
+  return set;
+}
+// liveLine: any non-main ref with a live pipeline. RUNNING shows for any ref
+// (the brand-new-branch immediacy v2.22 exists for — a retired branch can't
+// start new runs, so ghosts can't resurrect); finished/failed runs show only
+// for known branches.
+function liveLine(node, d) {
   const pipes = node.branch_pipes || {};
+  const known = knownRefs(d);
   const rows = Object.entries(pipes)
-    .filter(([ref, pl]) => ref !== 'main' && !ref.startsWith('refs/') && pipeIsLive(pl))
+    .filter(([ref, pl]) => ref !== 'main' && !ref.startsWith('refs/') &&
+      (isRunning(pl) || (known.has(ref) && pipeIsLive(pl))))
     .sort((a, b) => new Date(b[1].updated_at || 0) - new Date(a[1].updated_at || 0))
     .slice(0, 3);
   if (!rows.length) return '';
