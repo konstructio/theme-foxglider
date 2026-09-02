@@ -344,9 +344,9 @@
   </footer>
 </div>
 <script>
-// epicFocus is deliberately session-only (never persisted): a reload always
+// focus (a feature OR hotfix branch) is deliberately session-only (never persisted): a reload always
 // shows every epic — a forgotten filter must not cost visibility.
-const state = { eco: null, act: null, epicFocus: null };
+const state = { eco: null, act: null, focus: null };
 const METAMARK = '<svg viewBox="0 0 64 48" width="20" height="15" aria-hidden="true" style="flex:none"><defs><linearGradient id="gm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#05df72"/><stop offset=".55" stop-color="#00c950"/><stop offset="1" stop-color="#00a884"/></linearGradient></defs><path fill="url(#gm)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/><circle cx="26" cy="28" r="2.2" fill="#0b1220"/></svg>';
 const $ = (s, el=document) => el.querySelector(s);
 
@@ -477,7 +477,7 @@ function fallbackCopy(text) {
 document.addEventListener('click', e => {
   const f = e.target.closest('[data-focus]'); if (!f) return;
   const br = f.dataset.focus;
-  state.epicFocus = state.epicFocus === br ? null : br;
+  state.focus = state.focus === br ? null : br;
   if (state.eco) renderDelivery(state.eco);
 });
 document.addEventListener('click', e => {
@@ -790,27 +790,33 @@ function envChip(e) {
     ? `<span class="pe pe-rc" title="merged — carried by ${esc(e.version)}">✓ ${esc(e.env)} · via rc</span>`
     : `<span class="pe pe-miss" title="this environment does not contain the feature">— ${esc(e.env)}</span>`;
 }
+// focusClear: the ✕ chip that clears the solo-view focus — rendered in both
+// the features and hotfixes headers so it's always one click away.
+function focusClear() {
+  return `<button class="ef-clear" data-focus="${esc(state.focus)}" title="showing only ${esc(state.focus)} — click to show every feature and hotfix again">✕ ${esc(state.focus)}</button>`;
+}
 function featuresHero(d) {
   const all = d.promotions || [];
   const act = state.act && state.act.enabled;
   const canStart = act && !(state.act && state.act.branch_policy === 'hotfix-only');
   if (!all.length && !canStart) return '';
-  const proms = state.epicFocus ? all.filter(f => f.branch === state.epicFocus) : all;
+  const proms = state.focus ? all.filter(f => f.branch === state.focus) : all;
   return `<div class="hero-wrap">
     <div class="section-h">features<span></span>
-      ${state.epicFocus ? `<button class="ef-clear" data-focus="${esc(state.epicFocus)}" title="showing only ${esc(state.epicFocus)} — click to show every epic again">✕ ${esc(state.epicFocus)}</button>` : ''}
+      ${state.focus ? focusClear() : ''}
       ${canStart ? `<button class="abtn br-act" data-act="feature" data-proj="${esc(d.macro.project)}" title="start a feature — creates the charts line; services join from the rows">⑂ start</button>` : ''}
     </div>
     ${proms.length ? proms.map(f => featureGroup(f, d)).join('')
-      : `<div class="mut" style="font-size:11px;margin-bottom:8px">${state.epicFocus ? 'the focused epic has no live rows' : 'no active features'}</div>`}
+      : `<div class="mut" style="font-size:11px;margin-bottom:8px">${state.focus ? 'focus is on ' + esc(state.focus) + ' — not a feature' : 'no active features'}</div>`}
   </div>`;
 }
 // hotfixStrip: the org's fresh hotfix lines exactly ONCE — not repeated per
 // tile. Same card grammar as features: a header (who/when/artifacts) and one
 // row per repo with join / trigger / release / delete.
 function hotfixStrip(d) {
-  const rows = d.org_hotfixes || [];
-  if (!rows.length) return '';
+  const allRows = d.org_hotfixes || [];
+  if (!allRows.length) return '';
+  const rows = state.focus ? allRows.filter(r => r.branch === state.focus) : allRows;
   const act = state.act && state.act.enabled;
   const blocks = rows.map(row => {
     const carriers = (row.repos || []).filter(r => r.has);
@@ -838,7 +844,7 @@ function hotfixStrip(d) {
       </div>`).join('');
     return `<div class="feat-g">
       <div class="feat-h">
-        <span class="tf-ic">${ICON_BRANCH}</span>
+        <button class="ef-btn${state.focus === row.branch ? ' ef-on' : ''}" data-focus="${esc(row.branch)}" title="${state.focus === row.branch ? 'unfocus — show every feature and hotfix again' : 'focus — solo view; hides other features and hotfixes'}">◎</button>
         <span class="mono feat-name">${esc(row.branch)}</span>
         <button class="copy" data-sha="git fetch origin ${esc(row.branch)} && git checkout ${esc(row.branch)}" title="copy the fetch+checkout commands">⧉</button>
         <span class="mut">${row.when ? relTime(row.when) : ''}</span>
@@ -848,7 +854,7 @@ function hotfixStrip(d) {
       ${cells}
     </div>`;
   }).join('');
-  return `<div class="hero-wrap"><div class="section-h">hotfixes<span></span></div>${blocks}</div>`;
+  return `<div class="hero-wrap"><div class="section-h">hotfixes<span></span>${state.focus ? focusClear() : ''}</div>${rows.length ? blocks : `<div class="mut" style="font-size:11px;margin-bottom:8px">focus is on ${esc(state.focus)} — not a hotfix</div>`}</div>`;
 }
 function avInitials(name) {
   const parts = (name || '?').trim().split(/\s+/);
@@ -906,7 +912,7 @@ function featureGroup(f, d) {
   const nowhere = (f.envs || []).every(e => e.state === 'missing');
   return `<div class="feat-g">
     <div class="feat-h">
-      <button class="ef-btn${state.epicFocus === f.branch ? ' ef-on' : ''}" data-focus="${esc(f.branch)}" title="${state.epicFocus === f.branch ? 'unfocus — show every epic again' : 'focus this epic — hide the others until cleared or reload'}">◎</button>
+      <button class="ef-btn${state.focus === f.branch ? ' ef-on' : ''}" data-focus="${esc(f.branch)}" title="${state.focus === f.branch ? 'unfocus — show every feature and hotfix again' : 'focus — solo view; hides other features and hotfixes'}">◎</button>
       <span class="mono feat-name">${esc(f.branch)}</span>
       <button class="copy" data-sha="git fetch origin ${esc(f.branch)} && git checkout ${esc(f.branch)}" title="copy the fetch+checkout commands for any of these repos">⧉</button>
       ${f.epic_iid ? `<a class="pv-epic" target="_blank" href="${f.epic_url}">&${f.epic_iid}</a>` : ''}
