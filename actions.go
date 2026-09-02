@@ -140,7 +140,7 @@ func (x *actions) status(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{
 		"enabled":       true,
-		"actions":       []string{"trigger", "release", "deliver", "feature", "delete", "merge-mr", "hotfix", "hotfix-join"},
+		"actions":       []string{"trigger", "release", "deliver", "feature", "delete", "merge-mr", "hotfix", "hotfix-join", "retire"},
 		"actor":         x.actorFor(r),
 		"branch_policy": x.topo.BranchPolicy,
 	})
@@ -195,7 +195,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 	}
 	jobName, isJob := actionJobs[req.Action]
 	if !isJob && req.Action != "deliver" && req.Action != "feature" && req.Action != "delete" &&
-		req.Action != "merge-mr" && req.Action != "hotfix" && req.Action != "hotfix-join" {
+		req.Action != "merge-mr" && req.Action != "hotfix" && req.Action != "hotfix-join" && req.Action != "retire" {
 		writeErr(w, 400, "unknown action")
 		return
 	}
@@ -436,6 +436,81 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			req.Project, br, ahead, actor, clientIP(r))
 		writeJSON(w, map[string]any{"ok": true, "action": "delete", "actor": actor,
 			"branch": br, "ahead": ahead})
+		return
+	}
+
+	// retire: remove a feature from the org in one motion — delete its epic-*
+	// branch on every repo that has it (services + the charts twin) and close
+	// the epic. Refused while any carrying MR is still open: retiring must
+	// never orphan unmerged work. Countdown-armed; confirm = the branch name.
+	if req.Action == "retire" {
+		br := strings.TrimSpace(req.Branch)
+		if !strings.HasPrefix(br, "epic-") || !reBranch.MatchString(br) {
+			writeErr(w, 400, "only epic- feature branches retire from here")
+			return
+		}
+		if req.Confirm != br {
+			writeErr(w, 400, fmt.Sprintf("confirmation mismatch: %q required", br))
+			return
+		}
+		ctx := context.Background()
+		projects := make([]string, 0, len(x.topo.Services)+1)
+		for _, s := range x.topo.Services {
+			projects = append(projects, s.Project)
+		}
+		if x.topo.hasMacro() {
+			projects = append(projects, x.topo.MacroProj)
+		}
+		var open []string
+		for _, proj := range projects {
+			if list, err := x.gl.mrsBySource(ctx, proj, br); err == nil {
+				for _, m := range list {
+					if m.State == "opened" {
+						open = append(open, fmt.Sprintf("%s!%d", proj[strings.LastIndex(proj, "/")+1:], m.IID))
+					}
+				}
+			}
+		}
+		if len(open) > 0 {
+			writeErr(w, 409, "carrying MRs are still open — merge or close them first: "+strings.Join(open, ", "))
+			return
+		}
+		type retireResult struct {
+			Project string `json:"project"`
+			Status  string `json:"status"` // deleted | absent | error
+		}
+		results := make([]retireResult, 0, len(projects))
+		deleted := 0
+		for _, proj := range projects {
+			err := x.gl.deleteBranch(ctx, proj, br)
+			switch {
+			case err == nil:
+				deleted++
+				results = append(results, retireResult{proj, "deleted"})
+				if x.noteDeleted != nil {
+					x.noteDeleted(proj, br)
+				}
+				if x.dropBranches != nil {
+					x.dropBranches(proj)
+				}
+			case strings.Contains(err.Error(), "404"):
+				results = append(results, retireResult{proj, "absent"})
+			default:
+				results = append(results, retireResult{proj, "error"})
+			}
+		}
+		epicClosed := false
+		if m := reEpicBranch.FindStringSubmatch(br); m != nil {
+			if iid, err := strconv.Atoi(m[1]); err == nil {
+				if x.gl.epicUpdate(ctx, x.group(), iid, "", "", "close") == nil {
+					epicClosed = true
+				}
+			}
+		}
+		log.Printf("ACTION retire branch=%s deleted=%d epic_closed=%v actor=%s remote=%s",
+			br, deleted, epicClosed, actor, clientIP(r))
+		writeJSON(w, map[string]any{"ok": true, "action": "retire", "actor": actor,
+			"branch": br, "deleted": deleted, "results": results, "epic_closed": epicClosed})
 		return
 	}
 

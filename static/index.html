@@ -866,6 +866,7 @@ function featureGroup(f, d) {
       ${f.macro_ver ? `<a class="br-macro mono" target="_blank" href="${f.macro_url}" title="the feature umbrella this branch publishes">${ICON_SHIP} ${esc(f.macro_ver)}</a>` : ''}
       <span class="mut">${f.when ? relTime(f.when) : ''}</span>
       ${stack ? `<span class="avstack" title="who wrote this feature's commits">${stack}</span>` : ''}
+      ${epicOK ? `<button class="abtn br-act danger" data-act="retire" data-proj="${esc((d && d.macro && d.macro.project) || '')}" data-branch="${esc(f.branch)}" title="retire ${esc(f.branch)} — deletes its branch on every repo + the charts twin and closes the epic; refused while carrying MRs are open">${ICON_TRASH} retire</button>` : ''}
       ${f.charts ? ''
         : epicOK && joined ? `<button class="abtn br-act featfix" data-proj="${esc(joined.project)}" data-branch="${esc(f.branch)}" title="late-create the same-named charts branch so the feature umbrella line exists">${ICON_BRANCH} create charts branch</button>`
         : '<span class="mut" style="font-size:10.5px">· no charts branch yet (created on first publish)</span>'}
@@ -1069,7 +1070,8 @@ document.addEventListener('click', async e => {
   if (b.classList.contains('upbtn')) { opts.version = (b.closest('.up-row')?.querySelector('.upin')?.value || '').trim(); opts.env = b.dataset.env; }
   if (b.dataset.ref) opts.ref = b.dataset.ref;
   if (b.dataset.ahead !== undefined && b.dataset.ahead !== '') opts.ahead = parseInt(b.dataset.ahead, 10);
-  if (b.dataset.mriid) { opts.mriid = parseInt(b.dataset.mriid, 10); opts.branch = b.dataset.branch; }
+  if (b.dataset.mriid) { opts.mriid = parseInt(b.dataset.mriid, 10); }
+  if (b.dataset.branch) opts.branch = b.dataset.branch;
   openActionModal(b.dataset.act, b.dataset.proj, opts);
 });
 function openActionModal(action, project, opts) {
@@ -1081,8 +1083,8 @@ function openActionModal(action, project, opts) {
   const short = project.split('/').pop();
   // delete: a fully-merged branch (ahead === 0) is loss-free — no countdown.
   const mergedDelete = action === 'delete' && opts.ahead === 0;
-  const needsConfirm = action === 'release' || action === 'deliver' || action === 'merge-mr' || (action === 'delete' && !mergedDelete);
-  const verb = action === 'deliver' ? 'delivering' : action === 'delete' ? 'deleting' : action === 'merge-mr' ? 'merging' : 'releasing';
+  const needsConfirm = action === 'release' || action === 'deliver' || action === 'merge-mr' || action === 'retire' || (action === 'delete' && !mergedDelete);
+  const verb = action === 'deliver' ? 'delivering' : action === 'delete' ? 'deleting' : action === 'merge-mr' ? 'merging' : action === 'retire' ? 'retiring' : 'releasing';
   const rc = version || (state.eco && state.eco.macro && (state.eco.macro.published_rc || '')) || '';
   // Attribution is communicated by the konstruct shell — nothing to pick,
   // nothing to impersonate. The modal just states who it runs as.
@@ -1090,10 +1092,12 @@ function openActionModal(action, project, opts) {
   $('#actmodal').innerHTML = `
     <div class="d-back"></div>
     <div class="d-panel" role="dialog" aria-modal="true">
-      <div class="d-head">${METAMARK}<b>${action === 'release' ? 'Release' : action === 'deliver' ? `Deliver to ${esc(opts.env || (state.eco?.delivery?.[0]?.environment ?? 'the environment'))}` : action === 'delete' ? 'Delete branch' : action === 'merge-mr' ? 'Merge to main' : 'Trigger pipeline'}</b>
+      <div class="d-head">${METAMARK}<b>${action === 'release' ? 'Release' : action === 'deliver' ? `Deliver to ${esc(opts.env || (state.eco?.delivery?.[0]?.environment ?? 'the environment'))}` : action === 'delete' ? 'Delete branch' : action === 'merge-mr' ? 'Merge to main' : action === 'retire' ? 'Retire feature' : 'Trigger pipeline'}</b>
         <span class="mono mut">${esc(project)}</span><span class="spacer"></span>
         <a href="#" id="act-x" aria-label="close">✕</a></div>
-      <p class="mut">${action === 'merge-mr'
+      <p class="mut">${action === 'retire'
+        ? `Retires <b class="mono">${esc(opts.branch || '')}</b>: deletes its branch on every joined repo and the charts twin, then closes the epic. The card disappears on the next refresh. Refused while any carrying MR is still open — nothing unmerged can be orphaned from here.`
+        : action === 'merge-mr'
         ? `Merges <b class="mono">!${opts.mriid}</b> — <b class="mono">${esc(opts.branch || '')}</b>'s work joins main and rides the next RC. Once every carrying MR of this feature is merged, its epic closes as <b>Done</b>.`
         : action === 'delete'
         ? mergedDelete
@@ -1114,7 +1118,7 @@ function openActionModal(action, project, opts) {
         : 'Plays the manual <b>trigger:manual</b> job: pushes an empty commit to main so the delivery pipeline runs end-to-end on a fresh SHA.'}</p>
       ${action === 'deliver' ? `<div id="act-preview" class="mut" style="font-size:12px;margin:2px 0 12px">checking what this introduces…</div>` : ''}
       <div class="act-row">
-        <button id="act-go" class="abtn ${needsConfirm ? 'warn' : ''}">${action === 'release' ? ICON_ROCKET + ' <span class="cd-txt">release</span><span class="cd"></span>' : action === 'deliver' ? ICON_SHIP + ' <span class="cd-txt">deliver</span><span class="cd"></span>' : action === 'delete' ? ICON_TRASH + ' <span class="cd-txt">delete</span><span class="cd"></span>' : action === 'merge-mr' ? ICON_MR + ' <span class="cd-txt">merge</span><span class="cd"></span>' : ICON_SCOPE + ' trigger'}</button>
+        <button id="act-go" class="abtn ${needsConfirm ? 'warn' : ''}">${action === 'release' ? ICON_ROCKET + ' <span class="cd-txt">release</span><span class="cd"></span>' : action === 'deliver' ? ICON_SHIP + ' <span class="cd-txt">deliver</span><span class="cd"></span>' : action === 'delete' ? ICON_TRASH + ' <span class="cd-txt">delete</span><span class="cd"></span>' : action === 'merge-mr' ? ICON_MR + ' <span class="cd-txt">merge</span><span class="cd"></span>' : action === 'retire' ? ICON_TRASH + ' <span class="cd-txt">retire</span><span class="cd"></span>' : ICON_SCOPE + ' trigger'}</button>
         <span class="act-id mono mut" title="attribution is set by the server — the signed-in konstruct session">as @${esc(actor)}</span>
         <span id="act-out" class="mono mut"></span>
       </div>
@@ -1143,7 +1147,7 @@ function openActionModal(action, project, opts) {
       const hdrs = { 'Content-Type': 'application/json' };
       if (state.konstructUser) hdrs['X-Konstruct-Actor'] = state.konstructUser;
       const res = await fetch('/api/actions/run', { method: 'POST', headers: hdrs,
-        body: JSON.stringify({ project, action, confirm, ref: ref || undefined, mr_iid: opts.mriid || undefined, env: opts.env || undefined, version: action === 'deliver' ? (version || '') : undefined }) });
+        body: JSON.stringify({ project, action, confirm, ref: ref || undefined, branch: action === 'retire' ? (opts.branch || undefined) : undefined, mr_iid: opts.mriid || undefined, env: opts.env || undefined, version: action === 'deliver' ? (version || '') : undefined }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         // stale "merged" view: the server re-checked and found unmerged work —
@@ -1165,6 +1169,12 @@ function openActionModal(action, project, opts) {
         $('#act-out').innerHTML = `✓ bump MR opened — <a target="_blank" href="${body.mr_url}">!${body.mr}</a> (was ${esc(body.was || '?')})`;
         refresh();
         setTimeout(() => { closeActModal(); }, 3500);
+        return;
+      }
+      if (action === 'retire') {
+        $('#act-out').textContent = `✓ retired — ${body.deleted} branch${body.deleted === 1 ? '' : 'es'} deleted${body.epic_closed ? ' · epic closed' : ''}`;
+        refresh();
+        setTimeout(() => { closeActModal(); }, 2200);
         return;
       }
       if (action === 'delete') {
@@ -1196,13 +1206,13 @@ function openActionModal(action, project, opts) {
     // the cursor is still on the button — read neutral NOW, not on mouseout
     btn.classList.add('calm');
     btn.addEventListener('mouseleave', () => btn.classList.remove('calm'), { once: true });
-    const t = btn.querySelector('.cd-txt'); if (t) t.textContent = action === 'deliver' ? 'deliver' : action === 'delete' ? 'delete' : action === 'merge-mr' ? 'merge' : 'release';
+    const t = btn.querySelector('.cd-txt'); if (t) t.textContent = action === 'deliver' ? 'deliver' : action === 'delete' ? 'delete' : action === 'merge-mr' ? 'merge' : action === 'retire' ? 'retire' : 'release';
     const b = btn.querySelector('.cd'); if (b) b.style.width = '0%';
     if (msg) $('#act-out').textContent = msg;
   };
   btn.onclick = () => {
     if (!needsConfirm) { fire(''); return; }
-    if (actCountdown) { disarm(action === 'deliver' ? 'no worries — nothing delivered.' : action === 'delete' ? 'no worries — branch kept.' : 'no worries — nothing released.'); return; }
+    if (actCountdown) { disarm(action === 'deliver' ? 'no worries — nothing delivered.' : action === 'delete' || action === 'retire' ? 'no worries — everything kept.' : 'no worries — nothing released.'); return; }
     // arm: five seconds to change your mind, then it flies
     let left = 5;
     btn.classList.add('arming');
@@ -1213,7 +1223,7 @@ function openActionModal(action, project, opts) {
     $('#act-out').textContent = '';
     actCountdown = setInterval(() => {
       left--;
-      if (left <= 0) { disarm(); fire(action === 'delete' ? ref : short); return; }
+      if (left <= 0) { disarm(); fire(action === 'delete' ? ref : action === 'retire' ? (opts.branch || '') : short); return; }
       txt.textContent = `${verb} in ${left} — click to cancel`;
       bar.style.width = `${(left - 1) / 5 * 100}%`;
     }, 1000);

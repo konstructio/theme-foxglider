@@ -302,3 +302,111 @@ func TestHotfixFromVersion(t *testing.T) {
 		}
 	}
 }
+
+// TestRetireFeature: retiring deletes the epic branch on every repo that has
+// it + the charts twin, closes the epic, refuses while carrying MRs are open,
+// and reruns idempotently (absent everywhere).
+func TestRetireFeature(t *testing.T) {
+	var mu sync.Mutex
+	mrsOpen := true
+	deleted := map[string]bool{}
+	epicClosed := false
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(p, "/merge_requests") && r.Method == "GET":
+			mu.Lock()
+			openNow := mrsOpen
+			mu.Unlock()
+			if openNow && strings.Contains(p, "dashboard-manager") {
+				w.Write([]byte(`[{"iid":31,"state":"opened","source_branch":"epic-9-x","web_url":"http://gl/x/-/merge_requests/31"}]`))
+				return
+			}
+			w.Write([]byte(`[{"iid":30,"state":"merged","source_branch":"epic-9-x","web_url":"http://gl/x/-/merge_requests/30"}]`))
+		case strings.Contains(p, "/repository/branches/") && r.Method == "DELETE":
+			proj := p[:strings.Index(p, "/repository/branches/")]
+			proj = proj[strings.LastIndex(proj, "%2F")+3:]
+			mu.Lock()
+			dup := deleted[proj]
+			deleted[proj] = true
+			mu.Unlock()
+			// only metaphor + charts carry the branch; others (and reruns) 404
+			if dup || (proj != "metaphor" && proj != "charts") {
+				w.WriteHeader(404)
+				return
+			}
+			w.WriteHeader(204)
+		case strings.Contains(p, "/epics/9") && r.Method == "PUT":
+			mu.Lock()
+			epicClosed = true
+			mu.Unlock()
+			w.Write([]byte(`{"iid":9,"state":"closed"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	t.Setenv("GITLAB_ACTION_TOKEN", "act-tok")
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	post := func(body string) (*http.Response, map[string]any) {
+		res, err := http.Post(srv.URL+"/api/actions/run", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out map[string]any
+		json.NewDecoder(res.Body).Decode(&out)
+		return res, out
+	}
+
+	// non-epic branch refused
+	if res, _ := post(`{"action":"retire","project":"civo/metaphor/charts","branch":"hotfix-nope","confirm":"hotfix-nope"}`); res.StatusCode != 400 {
+		t.Fatalf("non-epic retire = %d, want 400", res.StatusCode)
+	}
+	// confirm handshake
+	if res, _ := post(`{"action":"retire","project":"civo/metaphor/charts","branch":"epic-9-x","confirm":"nope"}`); res.StatusCode != 400 {
+		t.Fatalf("confirm mismatch = %d, want 400", res.StatusCode)
+	}
+	// open carrying MR blocks the whole retire — and deletes nothing
+	res, out := post(`{"action":"retire","project":"civo/metaphor/charts","branch":"epic-9-x","confirm":"epic-9-x"}`)
+	if res.StatusCode != 409 {
+		t.Fatalf("open-MR retire = %d %+v, want 409", res.StatusCode, out)
+	}
+	if msg, _ := out["error"].(string); !strings.Contains(msg, "!31") {
+		t.Fatalf("409 must name the open MR: %+v", out)
+	}
+	mu.Lock()
+	if len(deleted) != 0 {
+		mu.Unlock()
+		t.Fatalf("409 path still deleted branches: %+v", deleted)
+	}
+	mrsOpen = false
+	mu.Unlock()
+
+	// the real retire: deletes where present, absent elsewhere, closes the epic
+	res, out = post(`{"action":"retire","project":"civo/metaphor/charts","branch":"epic-9-x","confirm":"epic-9-x"}`)
+	if res.StatusCode != 200 || out["ok"] != true {
+		t.Fatalf("retire = %d %+v", res.StatusCode, out)
+	}
+	if n, _ := out["deleted"].(float64); n != 2 {
+		t.Fatalf("deleted = %v, want 2 (metaphor + charts)", out["deleted"])
+	}
+	if out["epic_closed"] != true {
+		t.Fatalf("epic not closed: %+v", out)
+	}
+	mu.Lock()
+	ec := epicClosed
+	mu.Unlock()
+	if !ec {
+		t.Fatal("epic close PUT never reached GitLab")
+	}
+	// rerun: everything already gone — absent across the board, still ok
+	if _, out = post(`{"action":"retire","project":"civo/metaphor/charts","branch":"epic-9-x","confirm":"epic-9-x"}`); out["ok"] != true {
+		t.Fatalf("retire rerun = %+v", out)
+	}
+	if n, _ := out["deleted"].(float64); n != 0 {
+		t.Fatalf("rerun deleted = %v, want 0", out["deleted"])
+	}
+}
