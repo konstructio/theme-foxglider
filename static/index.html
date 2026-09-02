@@ -88,6 +88,26 @@
   .vlbl{font-family:var(--sans);font-size:10px;color:var(--mut);letter-spacing:.04em}
   .vchip{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:11px;color:var(--ink2)}
   .vchip.mut{color:var(--mut)}
+  /* first-load: the fox glides while the org is assembled (cold cache ~15s) */
+  .boot{min-height:62vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0;text-align:center}
+  .boot-sky{position:relative;width:340px;height:150px}
+  .boot-fox{position:absolute;left:50%;top:52%;width:96px;height:72px;margin:-36px 0 0 -48px;animation:boot-glide 5.2s ease-in-out infinite;filter:drop-shadow(0 10px 22px rgba(0,201,80,.22))}
+  .boot-trail{position:absolute;left:8%;right:8%;top:78%;height:2px;overflow:visible}
+  .boot-trail i{position:absolute;top:0;width:26px;height:2px;border-radius:2px;background:linear-gradient(90deg,transparent,#00c95055);animation:boot-trail 2.6s linear infinite}
+  .boot-trail i:nth-child(2){animation-delay:.9s;top:-10px;opacity:.6}
+  .boot-trail i:nth-child(3){animation-delay:1.7s;top:9px;opacity:.4}
+  .boot-word{font-weight:800;letter-spacing:.14em;font-size:15px;color:var(--ink);margin-top:2px}
+  .boot-cap{font-family:var(--mono);font-size:12px;color:var(--mut);min-height:18px;margin-top:10px;transition:opacity .35s}
+  .boot-cap.swap{opacity:0}
+  .boot-bar{width:230px;height:3px;border-radius:3px;margin-top:14px;background:var(--line);overflow:hidden;position:relative}
+  .boot-bar i{position:absolute;inset:0;width:38%;border-radius:3px;background:linear-gradient(90deg,transparent,#00c950,#05df72,transparent);animation:boot-shimmer 1.5s ease-in-out infinite}
+  .boot-sub{font-size:10.5px;color:var(--mut2);margin-top:10px;font-family:var(--mono)}
+  @keyframes boot-glide{0%,100%{transform:translate(-26px,6px) rotate(-7deg)}25%{transform:translate(0,-10px) rotate(2deg)}50%{transform:translate(26px,2px) rotate(7deg)}75%{transform:translate(2px,10px) rotate(-2deg)}}
+  @keyframes boot-trail{0%{right:-6%;opacity:0}12%{opacity:1}100%{right:104%;opacity:0}}
+  @keyframes boot-shimmer{0%{left:-40%}100%{left:102%}}
+  @keyframes boot-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  #view.booted > *{animation:boot-in .4s ease-out}
+  @media (prefers-reduced-motion: reduce){.boot-fox,.boot-trail i,.boot-bar i{animation:none}.boot-trail{display:none}}
   .avatar{width:22px;height:22px;border-radius:50%;border:1px solid var(--line2);vertical-align:middle;flex:none;background:var(--panel2)}
   .av-s{width:15px;height:15px}
   .dv{font-size:10px;border:1px solid var(--line2);border-radius:3px;padding:0 5px;text-decoration:none;white-space:nowrap}
@@ -295,7 +315,18 @@
     
     <span id="updated" class="mono mut"></span>
   </header>
-  <main id="view"></main>
+  <main id="view">
+    <div class="boot" id="boot">
+      <div class="boot-sky">
+        <div class="boot-trail"><i></i><i></i><i></i></div>
+        <svg class="boot-fox" viewBox="0 0 64 48" aria-hidden="true"><defs><linearGradient id="gmb" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#05df72"/><stop offset=".55" stop-color="#00c950"/><stop offset="1" stop-color="#00a884"/></linearGradient></defs><path fill="url(#gmb)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/><circle cx="26" cy="28" r="2.2" fill="#0b1220"/></svg>
+      </div>
+      <div class="boot-word">FOXGLIDER</div>
+      <div class="boot-cap" id="boot-cap">waking the fox…</div>
+      <div class="boot-bar"><i></i></div>
+      <div class="boot-sub" id="boot-sub"></div>
+    </div>
+  </main>
   <div id="actmodal" style="display:none"></div>
   <footer class="sig">
     <svg class="sig-mark" viewBox="0 0 64 48" width="16" height="12" aria-hidden="true"><path fill="var(--civo)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/></svg>
@@ -345,6 +376,33 @@ function errMsg(e) {
   return e.message || JSON.stringify(e);
 }
 
+// First-load captions: staged to what the backend is really doing — the cold
+// assembly walks every repo (branches, compares, pins, pipelines) and can take
+// ~15s on a fresh pod. Cleared the moment the first payload renders.
+(function bootCaptions() {
+  const stages = [
+    [0,  'waking the fox…'],
+    [2,  'reading branches across the org…'],
+    [5,  'computing drift vs main…'],
+    [8,  'walking the umbrella pins…'],
+    [11, 'checking the control planes…'],
+    [15, 'first load on a cold pod — hang tight…'],
+    [24, 'still assembling — GitLab is being thorough…'],
+  ];
+  const t0 = Date.now();
+  const cap = document.getElementById('boot-cap'), sub = document.getElementById('boot-sub');
+  const tick = setInterval(() => {
+    if (!document.getElementById('boot')) { clearInterval(tick); return; }
+    const el = (Date.now() - t0) / 1000;
+    let msg = stages[0][1];
+    for (const [at, m] of stages) if (el >= at) msg = m;
+    if (cap && cap.textContent !== msg) {
+      cap.classList.add('swap');
+      setTimeout(() => { cap.textContent = msg; cap.classList.remove('swap'); }, 350);
+    }
+    if (sub && el >= 6) sub.textContent = Math.floor(el) + 's';
+  }, 1000);
+})();
 function showDisconnected(err) {
   $('#view').innerHTML = `<div class="empty">
     <img src="metaphor.svg" alt="" width="120" style="opacity:.5;margin-bottom:14px" />
@@ -615,6 +673,7 @@ function driftChip(d) {
 // delivered, with per-stage pipeline status and delivery drift.
 function renderDelivery(d) {
   if (!d || !d.macro) { $('#view').innerHTML = '<div class="empty"><h2>No ecosystem data.</h2></div>'; return; }
+  const firstPaint = !!document.getElementById('boot');
   const m = d.macro, svcs = d.services || [], del = d.delivery || [], primary = del[0];
   $('#view').innerHTML = `
     <div class="eco-summary">
@@ -659,6 +718,7 @@ function renderDelivery(d) {
         ${del.length ? del.map(e => envCard(e, m)).join('') : '<div class="ecard mut">no delivery targets</div>'}
       </div>
     </div>`;
+  if (firstPaint) { $('#view').classList.add('booted'); setTimeout(() => $('#view').classList.remove('booted'), 600); }
   startProgressPollers();
 }
 // branchPipe: the newest pipeline for (project, branch) from the eco payload —
