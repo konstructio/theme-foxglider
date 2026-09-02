@@ -727,18 +727,12 @@ function renderDelivery(d) {
 }
 // branchPipe: the newest pipeline for (project, branch) from the eco payload —
 // shown on the cards while it runs (or just failed and needs eyes).
-function pipeIsLive(pl) {
-  if (!pl) return false;
-  if (isRunning(pl) || pl.status === 'failed') return true;
-  // linger: a just-finished run stays visible ~3 minutes — a 49-second
-  // pipeline must leave a trace, not vanish with its own success
-  return pl.updated_at && (Date.now() - new Date(pl.updated_at)) < 180000;
-}
 function branchPipe(d, project, branch) {
+  // rows exist only for known branches — always show their newest pipeline,
+  // whatever its state or age: that IS the branch's detail
   const nodes = [...(d.services || []), d.macro].filter(Boolean);
   const n = nodes.find(x => x.project === project);
-  const pl = n && n.branch_pipes && n.branch_pipes[branch];
-  return pipeIsLive(pl) ? pl : null;
+  return (n && n.branch_pipes && n.branch_pipes[branch]) || null;
 }
 // knownRefs: the branches this page actually shows — features, org hotfixes,
 // main. Finished pipelines only render for these: a retired feature's last
@@ -749,16 +743,16 @@ function knownRefs(d) {
   for (const r of (d.org_hotfixes || [])) set.add(r.branch);
   return set;
 }
-// liveLine: any non-main ref with a live pipeline. RUNNING shows for any ref
-// (the brand-new-branch immediacy v2.22 exists for — a retired branch can't
-// start new runs, so ghosts can't resurrect); finished/failed runs show only
-// for known branches.
+// liveLine: known branches (features ∪ hotfixes) always show their newest
+// pipeline — that's the branch's detail, however old. Unknown refs show only
+// WHILE RUNNING (the brand-new-branch immediacy; a retired branch can't
+// start new runs, so its ghosts stay gone).
 function liveLine(node, d) {
   const pipes = node.branch_pipes || {};
   const known = knownRefs(d);
   const rows = Object.entries(pipes)
     .filter(([ref, pl]) => ref !== 'main' && !ref.startsWith('refs/') &&
-      (isRunning(pl) || (known.has(ref) && pipeIsLive(pl))))
+      (known.has(ref) || isRunning(pl)))
     .sort((a, b) => new Date(b[1].updated_at || 0) - new Date(a[1].updated_at || 0))
     .slice(0, 3);
   if (!rows.length) return '';
