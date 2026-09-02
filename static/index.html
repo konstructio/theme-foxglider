@@ -693,7 +693,7 @@ function renderDelivery(d) {
         <div class="eco-h">Microcharts</div>
         ${svcs.map(s => `<div class="ecard">
           <div class="ec-top"><a class="pname" target="_blank" href="${s.web_url}" title="${esc(s.name)}">${esc(s.name)}</a>${statusChip(s.pipeline)}${avatarImg(s.pipeline)}</div>
-          <div class="ec-ver mono"><span class="vlbl">in macro</span>${verChip(s.bundled_version)}<span class="vlbl">dev</span>${verChip(s.base_version)}</div>
+          <div class="ec-ver mono"><span class="vlbl">in macro</span>${verChip(s.bundled_version)}${pinSource(((m.bundle || []).find(x => x.name === s.name) || {}).source)}<span class="vlbl">dev</span>${verChip(s.base_version)}${s.base_version ? '<span class="lane-tag pin-src" title="the next dev-cycle version as declared in main\'s Chart.yaml">main</span>' : ''}</div>
           ${mainPipelineSection(s)}
           ${mainReleaseSection(s)}${watchChip(s)}
         </div>`).join('')}
