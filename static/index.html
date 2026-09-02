@@ -285,6 +285,8 @@
   .wspin{width:9px;height:9px;border:1.5px solid var(--gl-amber);border-top-color:transparent;border-radius:50%;
     animation:wspin .8s linear infinite;flex:none}
   @keyframes wspin{to{transform:rotate(360deg)}}
+  .recon-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--gl-amber);margin-right:5px;vertical-align:middle;animation:reconpulse 1.1s ease-in-out infinite}
+  @keyframes reconpulse{0%,100%{opacity:1}50%{opacity:.3}}
   .livedot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--civo);margin-right:5px;
     animation:pulse 1.4s ease-in-out infinite;vertical-align:middle}
   .act-id{font-size:11px;border:1px solid var(--line);border-radius:4px;padding:2px 8px}
@@ -950,11 +952,26 @@ function noteServiceCompletions(eco) {
 async function refresh() {
   try {
     state.eco = await fetchJSON('/api/ecosystem');
+    state.lastOk = new Date();
+    state.reconnecting = false;
     noteServiceCompletions(state.eco);
     renderDelivery(state.eco);
     const live = Date.now() < (state.burstUntil || 0);
-    $('#updated').innerHTML = (live ? '<span class="livedot"></span>live · ' : '') + 'updated ' + new Date().toLocaleTimeString();
-  } catch (e) { showDisconnected(e); }
+    $('#updated').innerHTML = (live ? '<span class="livedot"></span>live · ' : '') + 'updated ' + state.lastOk.toLocaleTimeString();
+  } catch (e) {
+    // A transient poll failure must NOT blank a good dashboard — konstruct's
+    // /api/ecosystem is heavy (9 repos) and git.civo.com is slow, so the odd
+    // 502/504 is expected. Keep the last render and show a quiet reconnecting
+    // hint; the next poll clears it. Only a COLD failure (nothing ever
+    // rendered) shows the full "not connected" state.
+    if (state.eco) {
+      state.reconnecting = true;
+      const since = state.lastOk ? state.lastOk.toLocaleTimeString() : '';
+      $('#updated').innerHTML = `<span class="recon-dot"></span>reconnecting…${since ? ` · last ${esc(since)}` : ''}`;
+    } else {
+      showDisconnected(e);
+    }
+  }
 }
 
 async function loadMeta() {
@@ -1472,7 +1489,8 @@ let pollTimer;
 function poll() {
   clearTimeout(pollTimer);
   const burst = Date.now() < (state.burstUntil || 0);
-  pollTimer = setTimeout(async () => { if (!document.hidden) await refresh(); poll(); }, burst ? 5000 : 20000);
+  const gap = burst ? 5000 : (state.reconnecting ? 8000 : 20000);
+  pollTimer = setTimeout(async () => { if (!document.hidden) await refresh(); poll(); }, gap);
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 
