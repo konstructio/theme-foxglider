@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.21.0"
+const themeVersion = "2.22.0"
 
 const ttlEco = 45 * time.Second
 
@@ -1185,30 +1185,38 @@ func (a *api) freshHotfixes(ctx context.Context, project string) []branchJSON {
 
 // branchPipe: the newest pipeline on a specific branch — 30s cache, 5s on the
 // hot lane so a fresh push shows up while you're watching.
-func (a *api) branchPipe(ctx context.Context, project, ref string) *pipelineJSON {
-	ttl := 30 * time.Second
+// livePipes: the repo's newest pipelines across EVERY ref in ONE call, keyed
+// by ref (newest wins). Replaces per-branch lookups: cheaper (one call per
+// repo instead of one per branch), and it sees what the branch model can't —
+// a pipeline on a branch created seconds ago, or an MR ref. Short TTL on
+// purpose: this is the "as they run" signal (a 49-second pipeline must not
+// slip between polls).
+func (a *api) livePipes(ctx context.Context, project string) map[string]*pipelineJSON {
+	ttl := 15 * time.Second
 	if a.isHot(project) {
 		ttl = 5 * time.Second
 	}
-	v, err := a.c.do("bp:"+project+"@"+ref, ttl, func() (any, error) {
-		pls, err := a.gl.recentPipelines(ctx, project, ref, "", 1)
+	v, err := a.c.do("lps:"+project, ttl, func() (any, error) {
+		pls, err := a.gl.recentPipelines(ctx, project, "", "", 8)
 		if err != nil {
 			return nil, err
 		}
-		if len(pls) == 0 {
-			return (*pipelineJSON)(nil), nil
+		out := map[string]*pipelineJSON{}
+		for _, p := range pls {
+			if _, seen := out[p.Ref]; seen {
+				continue // list is newest-first; first per ref wins
+			}
+			out[p.Ref] = &pipelineJSON{ID: p.ID, Status: p.Status, Ref: p.Ref,
+				WebURL: p.WebURL, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+				DurationS: p.UpdatedAt.Sub(p.CreatedAt).Seconds()}
 		}
-		p := pls[0]
-		pj := pipelineJSON{ID: p.ID, Status: p.Status, Ref: p.Ref,
-			WebURL: p.WebURL, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
-			DurationS: p.UpdatedAt.Sub(p.CreatedAt).Seconds()}
-		return &pj, nil
+		return out, nil
 	})
 	if err != nil {
 		return nil
 	}
-	p, _ := v.(*pipelineJSON)
-	return p
+	m, _ := v.(map[string]*pipelineJSON)
+	return m
 }
 
 // tileBranchData bundles a repo's tile-facing branch intel: fresh hotfixes,
@@ -1216,13 +1224,10 @@ func (a *api) branchPipe(ctx context.Context, project, ref string) *pipelineJSON
 func (a *api) tileBranchData(ctx context.Context, project string) ([]branchJSON, []branchJSON, map[string]*pipelineJSON) {
 	feats := a.activeFeatures(ctx, project)
 	hots := a.freshHotfixes(ctx, project)
-	pipes := map[string]*pipelineJSON{}
-	for _, b := range append(append([]branchJSON{}, feats...), hots...) {
-		if p := a.branchPipe(ctx, project, b.Name); p != nil {
-			pipes[b.Name] = p
-		}
-	}
-	return feats, hots, pipes
+	// the full ref→newest-pipeline map rides to the frontend: feature and
+	// hotfix rows look their branch up, and the tile's live line surfaces any
+	// non-main ref the branch model hasn't even seen yet
+	return feats, hots, a.livePipes(ctx, project)
 }
 
 // activeFeatures filters a repo's epic-* branches to those touched within the

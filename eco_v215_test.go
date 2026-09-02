@@ -377,3 +377,59 @@ func TestClientIP(t *testing.T) {
 		t.Fatalf("single XFF = %q", got)
 	}
 }
+
+// TestLivePipes: the ecosystem payload carries the repo's newest pipelines
+// keyed by ref from ONE unfiltered sweep — including a running pipeline on a
+// branch so new the branch list has never seen it (the 49-second-pipeline
+// regression: pipeline visible within one poll of starting).
+func TestLivePipes(t *testing.T) {
+	fresh := agoRFC(2 * time.Hour)
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(p, "metaphor-macro%2FChart.yaml"):
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("version: 0.2.0\ndependencies:\n  - name: metaphor\n    version: \"0.11.0-rc.13\"\n"))
+		case strings.HasSuffix(p, "/repository/tags"):
+			w.Write([]byte(`[{"name":"metaphor-v0.2.0-rc.4"}]`))
+		case strings.HasSuffix(p, "/merge_requests"):
+			w.Write([]byte(`[]`))
+		case strings.HasSuffix(p, "/repository/branches"):
+			// NOTE: no epic-20-navy here — the branch list hasn't caught up
+			w.Write([]byte(`[{"name":"main","web_url":"http://gl/m","commit":{"short_id":"aa","title":"x","author_name":"jd","author_email":"jd@civo.com","committed_date":"` + fresh + `"}}]`))
+		case strings.HasSuffix(p, "/pipelines") && r.URL.Query().Get("ref") == "" && r.URL.Query().Get("status") == "":
+			w.Write([]byte(`[
+				{"id":961,"status":"running","ref":"epic-20-navy","web_url":"http://gl/961","created_at":"2026-09-02T12:19:46Z","updated_at":"2026-09-02T12:19:50Z"},
+				{"id":900,"status":"success","ref":"main","web_url":"http://gl/900","created_at":"2026-09-02T11:00:00Z","updated_at":"2026-09-02T11:02:00Z"}]`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	res, err := http.Get(srv.URL + "/api/ecosystem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Services []struct {
+			Name  string                     `json:"name"`
+			Pipes map[string]json.RawMessage `json:"branch_pipes"`
+		} `json:"services"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range out.Services {
+		if raw, ok := s.Pipes["epic-20-navy"]; ok && strings.Contains(string(raw), `"running"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("running pipeline on a brand-new branch missing from branch_pipes: %+v", out.Services)
+	}
+}

@@ -394,6 +394,17 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 				st2, rf, web+"/950", when.Format(time.RFC3339), when.Add(90*time.Second).Format(time.RFC3339))
 			return
 		}
+		if r.URL.Query().Get("ref") == "" && r.URL.Query().Get("status") == "" {
+			// unfiltered newest-first list (the live-pipes sweep): a running
+			// epic pipeline on a BRAND-NEW branch the branch list hasn't seen,
+			// the epic-101 run, a fresh hotfix red, then main
+			fmt.Fprintf(w, `[{"id":961,"status":"running","ref":"epic-20-navy","web_url":%q,"created_at":%q,"updated_at":%q},{"id":950,"status":"running","ref":"epic-101-aurora","web_url":%q,"created_at":%q,"updated_at":%q},{"id":949,"status":"failed","ref":"hotfix/0.2","web_url":%q,"created_at":%q,"updated_at":%q},{"id":900,"status":%q,"ref":"main","web_url":%q,"created_at":%q,"updated_at":%q}]`,
+				web+"/961", now.Add(-40*time.Second).Format(time.RFC3339), now.Add(-10*time.Second).Format(time.RFC3339),
+				web+"/950", now.Add(-3*time.Minute).Format(time.RFC3339), now.Add(-90*time.Second).Format(time.RFC3339),
+				web+"/949", now.Add(-2*time.Hour).Format(time.RFC3339), now.Add(-2*time.Hour).Add(90*time.Second).Format(time.RFC3339),
+				st, web+"/900", now.Add(-20*time.Minute).Format(time.RFC3339), now.Add(-18*time.Minute).Format(time.RFC3339))
+			return
+		}
 		if r.URL.Query().Get("status") == "success" {
 			fmt.Fprintf(w, `[{"id":899,"status":"success","ref":"main","sha":"0ldfacecafe","web_url":%q,"created_at":%q,"updated_at":%q}]`,
 				web, now.Add(-3*time.Hour).Format(time.RFC3339), now.Add(-3*time.Hour+2*time.Minute).Format(time.RFC3339))

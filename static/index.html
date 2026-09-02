@@ -109,6 +109,8 @@
   #view.booted > *{animation:boot-in .4s ease-out}
   @media (prefers-reduced-motion: reduce){.boot-fox,.boot-trail i,.boot-bar i{animation:none}.boot-trail{display:none}}
   .avatar{width:22px;height:22px;border-radius:50%;border:1px solid var(--line2);vertical-align:middle;flex:none;background:var(--panel2)}
+  .live-line{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:6px;font-size:11px}
+  .ll-ref{color:var(--gl-amber);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .av-s{width:15px;height:15px}
   .dv{font-size:10px;border:1px solid var(--line2);border-radius:3px;padding:0 5px;text-decoration:none;white-space:nowrap}
   .dv-a{color:#fbbf24;border-color:#78560f}
@@ -694,6 +696,7 @@ function renderDelivery(d) {
         ${svcs.map(s => `<div class="ecard">
           <div class="ec-top"><a class="pname" target="_blank" href="${s.web_url}" title="${esc(s.name)}">${esc(s.name)}</a>${statusChip(s.pipeline)}${avatarImg(s.pipeline)}</div>
           <div class="ec-ver mono"><span class="vlbl">in macro</span>${verChip(s.bundled_version)}${pinSource(((m.bundle || []).find(x => x.name === s.name) || {}).source)}<span class="vlbl">dev</span>${verChip(s.base_version)}${s.base_version ? '<span class="lane-tag pin-src" title="the next dev-cycle version as declared in main\'s Chart.yaml">main</span>' : ''}</div>
+          ${liveLine(s)}
           ${mainPipelineSection(s)}
           ${mainReleaseSection(s)}${watchChip(s)}
         </div>`).join('')}
@@ -704,6 +707,7 @@ function renderDelivery(d) {
         <div class="ecard macro${state.picked ? ' macro-picked' : ''}">
           <div class="ec-top">${METAMARK}<a class="pname" target="_blank" href="${m.web_url}" title="${esc(m.name)}">${esc(m.name)}</a>${statusChip(m.pipeline)}${avatarImg(m.pipeline)}</div>
           ${verPicker(m)}
+          ${liveLine(m)}
           <div class="mut">bundles ${svcs.length} microcharts · base <span class="mono">${esc(m.base_version || '—')}</span> · built from <span class="mono bf-chip${(state.picked ? state.picked.built_from : m.built_from) !== 'main' ? ' bf-feat' : ''}">${esc(state.picked ? state.picked.built_from : (m.built_from || 'main'))}</span></div>
           ${bundleTree(m)}
           ${mainPipelineSection(m)}
@@ -723,12 +727,30 @@ function renderDelivery(d) {
 }
 // branchPipe: the newest pipeline for (project, branch) from the eco payload —
 // shown on the cards while it runs (or just failed and needs eyes).
+function pipeIsLive(pl) {
+  if (!pl) return false;
+  if (isRunning(pl) || pl.status === 'failed') return true;
+  // linger: a just-finished run stays visible ~3 minutes — a 49-second
+  // pipeline must leave a trace, not vanish with its own success
+  return pl.updated_at && (Date.now() - new Date(pl.updated_at)) < 180000;
+}
 function branchPipe(d, project, branch) {
   const nodes = [...(d.services || []), d.macro].filter(Boolean);
   const n = nodes.find(x => x.project === project);
   const pl = n && n.branch_pipes && n.branch_pipes[branch];
-  if (!pl) return null;
-  return (isRunning(pl) || pl.status === 'failed') ? pl : null;
+  return pipeIsLive(pl) ? pl : null;
+}
+// liveLine: any non-main ref with a live (or just-finished) pipeline — shown
+// on the tile even before the branch model knows the branch exists.
+function liveLine(node) {
+  const pipes = node.branch_pipes || {};
+  const rows = Object.entries(pipes)
+    .filter(([ref, pl]) => ref !== 'main' && !ref.startsWith('refs/') && pipeIsLive(pl))
+    .sort((a, b) => new Date(b[1].updated_at || 0) - new Date(a[1].updated_at || 0))
+    .slice(0, 3);
+  if (!rows.length) return '';
+  return `<div class="live-line">${rows.map(([ref, pl]) =>
+    `<span class="ll-ref mono" title="${esc(ref)}">▶ ${esc(ref)}</span>${pipeMini(pl)}`).join('')}</div>`;
 }
 // featuresHero: the headline surface — every active feature as a full card:
 // per-service rows (state, MR, pin, drift, who), environment presence, and the
