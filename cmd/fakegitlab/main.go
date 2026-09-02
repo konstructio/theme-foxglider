@@ -286,6 +286,11 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 	case strings.Contains(p, "/merge_requests") && strings.Contains(p, "/repository/commits/"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `[{"iid":7,"title":"feat: aurora background","source_branch":"epic-101-aurora","web_url":"https://git.civo.com/x/-/merge_requests/7"}]`)
+	case strings.HasSuffix(p, "/repository/commits") && r.URL.Query().Get("path") != "":
+		// last change to a delivery file — feeds the env card's updated line
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `[{"id":"dd1","short_id":"dd1short","title":"chore: bump metaphor-macro to 0.2.0-rc.2 (release_preview)","author_name":"metaphor ci","web_url":"https://git.civo.com/x/-/commit/dd1","authored_date":%q}]`,
+			time.Now().UTC().Add(-4*time.Hour).Format(time.RFC3339))
 	case strings.HasSuffix(p, "/repository/commits") && strings.Contains(p, "%2Fcharts"):
 		// charts main history: dep-bump titles feed the per-branch
 		// "chart it produced" resolver

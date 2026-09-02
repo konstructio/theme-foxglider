@@ -635,6 +635,16 @@ func (c *glClient) epicByIID(ctx context.Context, groupPath string, iid int) (gl
 }
 
 // commitsRange lists commits on a ref within a time window (newest first).
+// commitsForPath lists the newest commits touching one path on a ref — the
+// "when did this file last change" lookup.
+func (c *glClient) commitsForPath(ctx context.Context, projectPath, ref, path string, limit int) ([]glCommit, error) {
+	var out []glCommit
+	q := url.Values{"ref_name": {ref}, "path": {path}, "per_page": {fmt.Sprint(limit)}}
+	p := fmt.Sprintf("/projects/%s/repository/commits", url.QueryEscape(projectPath))
+	_, err := c.get(ctx, p, q, &out)
+	return out, err
+}
+
 func (c *glClient) commitsRange(ctx context.Context, projectPath, ref string, since, until time.Time, limit int) ([]glCommit, error) {
 	var out []glCommit
 	q := url.Values{"ref_name": {ref}, "per_page": {fmt.Sprint(limit)}}

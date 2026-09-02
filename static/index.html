@@ -109,6 +109,9 @@
   #view.booted > *{animation:boot-in .4s ease-out}
   @media (prefers-reduced-motion: reduce){.boot-fox,.boot-trail i,.boot-bar i{animation:none}.boot-trail{display:none}}
   .avatar{width:22px;height:22px;border-radius:50%;border:1px solid var(--line2);vertical-align:middle;flex:none;background:var(--panel2)}
+  .env-app{font-size:10.5px;color:var(--civo);border:1px solid #14532d;border-radius:3px;padding:1px 7px;text-decoration:none;white-space:nowrap}
+  .env-app:hover{filter:brightness(1.25)}
+  .env-upd{font-size:10.5px;margin-top:7px}
   .live-line{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:6px;font-size:11px}
   .ll-ref{color:var(--gl-amber);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .av-s{width:15px;height:15px}
@@ -650,7 +653,7 @@ function envCard(e, m) {
   const canAct = state.act && state.act.enabled && latest;
   const upgradable = latest && e.delivered_version !== latest;
   return `<div class="ecard env${delivering ? ' delivering' : ''}">
-    <div class="ec-top"><a class="pname" target="_blank" href="${e.web_url}" title="${esc(e.environment)}">${esc(e.environment)}</a><span class="mut mono">${esc(e.cluster)}</span></div>
+    <div class="ec-top"><a class="pname" target="_blank" href="${e.web_url}" title="${esc(e.environment)} — the gitops file that controls it">${esc(e.environment)}</a>${e.app_url ? `<a class="env-app" target="_blank" href="${e.app_url}" title="open the deployed app — ${esc(e.app_url.replace('https://',''))}">↗ app</a>` : ''}<span class="mut mono">${esc(e.cluster)}</span></div>
     ${isApp ? `<div class="mut" style="font-size:11px">app · <span class="mono">${esc(e.for)}</span></div>` : ''}
     <div class="mut" style="font-size:11px">current version</div>
     <div class="ec-big mono">${verChip(e.delivered_version)}</div>
@@ -659,6 +662,7 @@ function envCard(e, m) {
         <input class="upin${state.picked ? ' picked' : ''}" value="${esc(state.picked ? state.picked.version : latest)}" spellcheck="false" title="any published version — type an older one to roll back">
         <button class="abtn warn upbtn" data-act="deliver" data-proj="${esc(isApp ? (appNode ? appNode.project : '') : m.project)}" data-env="${esc(e.environment)}">${ICON_SHIP} ${e.write === 'mr' ? 'open bump MR' : 'upgrade'}</button>
       </div>` : ''}
+    ${e.updated_at ? `<div class="mut env-upd" title="last change to the delivery file${e.updated_by ? ` — by ${esc(e.updated_by)}` : ''}">updated ${relTime(e.updated_at)}${e.updated_by ? ` · ${esc(e.updated_by)}` : ''}</div>` : ''}
     ${watchChip({ project: '__delivery__' })}
   </div>`;
 }

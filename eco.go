@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.22.2"
+const themeVersion = "2.23.0"
 
 const ttlEco = 45 * time.Second
 
@@ -52,6 +52,7 @@ type deliverySpec struct {
 	TokenEnv string // env var holding this target's token; "" = primary creds
 	Write    string // "tag-pipeline" (default, metaphor CI) | "mr" | "commit"
 	Branch   string // target branch of the gitops repo; "" = main
+	URL      string // the deployed app's own hostname URL, when known
 }
 
 type topology struct {
@@ -85,7 +86,8 @@ func defaultTopology() topology {
 		MacroTag:  "metaphor-v",
 		Delivery: []deliverySpec{
 			{Env: "development-33", Cluster: "dev-33", Project: "civo/metaphor/metaphor-gitops",
-				App: "registry/environments/development-33/dev-33/metaphor-macro.yaml", Write: "tag-pipeline"},
+				App: "registry/environments/development-33/dev-33/metaphor-macro.yaml", Write: "tag-pipeline",
+				URL: "https://metaphor-dashboard.development-33.civo-platform.com"},
 		},
 	}
 }
@@ -357,6 +359,13 @@ type deliveryNode struct {
 	Write string `json:"write,omitempty"` // tag-pipeline | mr | commit
 	Kind  string `json:"kind,omitempty"`
 	Host  string `json:"host,omitempty"`
+	// AppURL: the deployed app's own hostname (topology metadata) — the card
+	// links straight to what this environment is running.
+	AppURL string `json:"app_url,omitempty"`
+	// UpdatedAt/UpdatedBy: the last commit that touched the delivery file —
+	// when this environment last changed, and who changed it.
+	UpdatedAt string `json:"updated_at,omitempty"`
+	UpdatedBy string `json:"updated_by,omitempty"`
 }
 
 // deliveryTargets flattens the umbrella-level and per-service targets.
@@ -779,6 +788,13 @@ collect:
 			Env: d.Env, Cluster: d.Cluster, For: dt.app,
 			WebURL: host + "/" + d.Project + "/-/blob/" + br + "/" + d.App,
 			Ready:  a.clientFor(d) != nil, Write: d.Write, Kind: d.Kind, Host: d.Host,
+			AppURL: d.URL,
+		}
+		if node.Ready {
+			if c := a.deliveryLastChange(ctx, d, br); c != nil {
+				node.UpdatedAt = c.AuthoredDate.UTC().Format(time.RFC3339)
+				node.UpdatedBy = c.AuthorName
+			}
 		}
 		if node.Ready {
 			node.Delivered = targetRevision(delRaw[i])
@@ -1716,6 +1732,32 @@ func (a *api) bundleAt(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// deliveryLastChange: the newest commit touching a target's delivery file —
+// when the environment last changed and who changed it. Cached briefly; the
+// lookup rides the target's own credential client.
+func (a *api) deliveryLastChange(ctx context.Context, d deliverySpec, branch string) *glCommit {
+	cl := a.clientFor(d)
+	if cl == nil {
+		return nil
+	}
+	v, err := a.c.do("dlc:"+d.Project+":"+d.App, 3*time.Minute, func() (any, error) {
+		cs, err := cl.commitsForPath(ctx, d.Project, branch, d.App, 1)
+		if err != nil {
+			return nil, err
+		}
+		if len(cs) == 0 {
+			return (*glCommit)(nil), nil
+		}
+		c := cs[0]
+		return &c, nil
+	})
+	if err != nil {
+		return nil
+	}
+	c, _ := v.(*glCommit)
+	return c
+}
+
 // branchDivergence is the sha-keyed compare result for one branch tip.
 type branchDivergence struct {
 	Ahead, Behind int
@@ -2000,11 +2042,12 @@ type deliveryJSON struct {
 	TokenEnv string `json:"token_env"`
 	Write    string `json:"write"`
 	Branch   string `json:"branch"`
+	URL      string `json:"url"`
 }
 
 func (d deliveryJSON) spec() deliverySpec {
 	return deliverySpec{Env: d.Env, Cluster: d.Cluster, Project: d.Project, App: d.App,
-		Kind: d.Kind, Host: d.Host, TokenEnv: d.TokenEnv, Write: d.Write, Branch: d.Branch}
+		Kind: d.Kind, Host: d.Host, TokenEnv: d.TokenEnv, Write: d.Write, Branch: d.Branch, URL: d.URL}
 }
 
 type topologyJSON struct {

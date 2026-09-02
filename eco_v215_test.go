@@ -433,3 +433,61 @@ func TestLivePipes(t *testing.T) {
 		t.Fatalf("running pipeline on a brand-new branch missing from branch_pipes: %+v", out.Services)
 	}
 }
+
+// TestDeliveryMeta: the env card's app link (topology metadata) and
+// last-change stamp (newest commit touching the delivery file).
+func TestDeliveryMeta(t *testing.T) {
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(p, "metaphor-macro%2FChart.yaml"):
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("version: 0.2.0\ndependencies:\n  - name: metaphor\n    version: \"0.11.0-rc.13\"\n"))
+		case strings.Contains(p, "metaphor-macro.yaml"):
+			w.Write([]byte("spec:\n  source:\n    targetRevision: 0.2.0-rc.2\n"))
+		case strings.HasSuffix(p, "/repository/tags"):
+			w.Write([]byte(`[{"name":"metaphor-v0.2.0-rc.4"}]`))
+		case strings.HasSuffix(p, "/repository/commits") && r.URL.Query().Get("path") != "":
+			if !strings.Contains(r.URL.Query().Get("path"), "metaphor-macro.yaml") {
+				t.Errorf("path filter = %q", r.URL.Query().Get("path"))
+			}
+			w.Write([]byte(`[{"id":"dd1","short_id":"dd1s","title":"chore: bump","author_name":"metaphor ci","authored_date":"2026-09-02T10:00:00Z"}]`))
+		case strings.HasSuffix(p, "/merge_requests"):
+			w.Write([]byte(`[]`))
+		case strings.HasSuffix(p, "/repository/branches"):
+			w.Write([]byte(`[]`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	res, err := http.Get(srv.URL + "/api/ecosystem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Delivery []struct {
+			Env       string `json:"environment"`
+			AppURL    string `json:"app_url"`
+			UpdatedAt string `json:"updated_at"`
+			UpdatedBy string `json:"updated_by"`
+		} `json:"delivery"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Delivery) == 0 {
+		t.Fatal("no delivery targets")
+	}
+	d := out.Delivery[0]
+	if d.AppURL != "https://metaphor-dashboard.development-33.civo-platform.com" {
+		t.Fatalf("app_url = %q (topology metadata missing)", d.AppURL)
+	}
+	if d.UpdatedAt != "2026-09-02T10:00:00Z" || d.UpdatedBy != "metaphor ci" {
+		t.Fatalf("updated = %q by %q", d.UpdatedAt, d.UpdatedBy)
+	}
+}
