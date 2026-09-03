@@ -122,6 +122,7 @@
   .trig-armed{color:var(--gl-amber);border-color:var(--gl-amber);animation:trigpulse 1s ease-in-out infinite}
   @keyframes trigpulse{50%{filter:brightness(1.4)}}
   .trig-fb{font-size:10px;color:var(--civo);text-decoration:none;border:1px solid #14532d;border-radius:3px;padding:1px 6px;white-space:nowrap}
+  .env-app.bumpmr{color:var(--gl-amber);border-color:#7c5a1d}
   .trig-fb.trig-err{color:var(--gl-red);border-color:var(--gl-red)}
   .live-line{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:6px;font-size:11px}
   .ll-ref{color:var(--gl-amber);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -699,7 +700,7 @@ function envCard(e, m) {
   const canAct = state.act && state.act.enabled && latest;
   const upgradable = latest && e.delivered_version !== latest;
   return `<div class="ecard env${delivering ? ' delivering' : ''}">
-    <div class="ec-top"><a class="pname" target="_blank" href="${e.web_url}" title="${esc(e.environment)} — the gitops file that controls it">${esc(e.environment)}</a>${e.app_url ? `<a class="env-app" target="_blank" href="${e.app_url}" title="open the deployed app — ${esc(e.app_url.replace('https://',''))}">↗ app</a>` : ''}<span class="mut mono">${esc(e.cluster)}</span></div>
+    <div class="ec-top"><a class="pname" target="_blank" href="${e.web_url}" title="${esc(e.environment)} — the gitops file that controls it">${esc(e.environment)}</a>${e.app_url ? `<a class="env-app" target="_blank" href="${e.app_url}" title="open the deployed app — ${esc(e.app_url.replace('https://',''))}">↗ app</a>` : ''}${e.bump_mr ? `<a class="env-app bumpmr" target="_blank" href="${esc(e.bump_mr.web_url)}" title="delivery bump awaiting merge in the target repo — ${esc(e.bump_mr.title)}">⇵ !${e.bump_mr.iid} open</a>` : ''}<span class="mut mono">${esc(e.cluster)}</span></div>
     ${isApp ? `<div class="mut" style="font-size:11px">app · <span class="mono">${esc(e.for)}</span></div>` : ''}
     <div class="mut" style="font-size:11px">current version</div>
     <div class="ec-big mono">${verChip(e.delivered_version)}</div>
@@ -1345,7 +1346,10 @@ function openActionModal(action, project, opts) {
         return;
       }
       if (action === 'deliver' && body.mode === 'mr') {
-        $('#act-out').innerHTML = `✓ bump MR opened — <a target="_blank" href="${body.mr_url}">!${body.mr}</a> (was ${esc(body.was || '?')})`;
+        // best-effort launch — popup blockers or the konstruct iframe may
+        // refuse; the env card keeps a ⇵ !N chip alive while the MR is open
+        const won = window.open(body.mr_url, '_blank');
+        $('#act-out').innerHTML = `✓ bump MR opened — <a target="_blank" href="${body.mr_url}">!${body.mr}</a> (was ${esc(body.was || '?')})${won ? '' : ' · popup blocked — the env card keeps the link'}`;
         refresh();
         setTimeout(() => { closeActModal(); }, 3500);
         return;

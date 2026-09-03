@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.31.1"
+const themeVersion = "2.32.0"
 
 const ttlEco = 45 * time.Second
 
@@ -466,6 +466,52 @@ type deliveryNode struct {
 	// HostScan notes scan gaps ("2 manifests unreadable") so fewer chips
 	// reads as a credentials fact, not a discovery claim.
 	HostScan string `json:"host_scan,omitempty"`
+	// BumpMR: the newest OPEN foxglider-deliver MR for this target — the card
+	// keeps the link alive while the target repo's approvers hold it.
+	BumpMR *bumpMRNode `json:"bump_mr,omitempty"`
+}
+
+// bumpMRNode is an open delivery-bump MR surfaced on the env card.
+type bumpMRNode struct {
+	IID    int    `json:"iid"`
+	WebURL string `json:"web_url"`
+	Title  string `json:"title"`
+}
+
+// openBumpMR finds the newest open foxglider-deliver MR for an mr-mode
+// target, read with the target's own client. The deliver action names its
+// working branches foxglider-deliver-<env>-<version>, so the source-branch
+// prefix identifies ours among the target repo's other open MRs.
+func (a *api) openBumpMR(ctx context.Context, d deliverySpec) *bumpMRNode {
+	if d.Write != "mr" {
+		return nil
+	}
+	c := a.targetReadClient(d)
+	if c == nil {
+		return nil
+	}
+	ttl := ttlEco
+	if a.isHot(d.Project) {
+		ttl = 5 * time.Second
+	}
+	v, err := a.c.do("bumpmr:"+d.Host+":"+d.Project+":"+d.Env, ttl, func() (any, error) {
+		mrs, err := c.openMRs(ctx, d.Project)
+		if err != nil {
+			return nil, err
+		}
+		prefix := "foxglider-deliver-" + d.Env + "-"
+		for _, m := range mrs {
+			if strings.HasPrefix(m.SourceBranch, prefix) {
+				return &bumpMRNode{IID: m.IID, WebURL: m.WebURL, Title: m.Title}, nil
+			}
+		}
+		return (*bumpMRNode)(nil), nil
+	})
+	if err != nil {
+		return nil
+	}
+	n, _ := v.(*bumpMRNode)
+	return n
 }
 
 // deliveryTargets flattens the umbrella-level and per-service targets.
@@ -967,6 +1013,7 @@ collect:
 				}
 			}
 			node.State, node.Behind = drift(node.Delivered, ref)
+			node.BumpMR = a.openBumpMR(ctx, d)
 			// Discovered hostnames: the delivery file plus declared scan
 			// manifests, deduped (declared AppURL excluded — it's already the
 			// card's app link), DNS-checked. Unreadable manifests become a

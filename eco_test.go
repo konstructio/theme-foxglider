@@ -919,3 +919,47 @@ func TestDepSource(t *testing.T) {
 		})
 	}
 }
+
+// TestEnvBumpMRSurfaced: an mr-mode target's env node carries the newest open
+// foxglider-deliver MR for ITS env — other branches and other envs don't leak.
+func TestEnvBumpMRSurfaced(t *testing.T) {
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(p, "/merge_requests") && r.URL.Query().Get("state") == "opened":
+			w.Write([]byte(`[
+				{"iid":9,"title":"unrelated","state":"opened","source_branch":"fix-thing","web_url":"http://gl/mr/9"},
+				{"iid":11,"title":"chore: deliver konstruct 0.7.0-rc.2 to internal","state":"opened","source_branch":"foxglider-deliver-internal-0-7-0-rc-2","web_url":"http://gl/mr/11"},
+				{"iid":12,"title":"other env","state":"opened","source_branch":"foxglider-deliver-saas-0-7-0-rc-2","web_url":"http://gl/mr/12"}]`))
+		case strings.Contains(p, "%2Fapp.yaml") || strings.Contains(p, "app.yaml"):
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("spec:\n  source:\n    targetRevision: 0.7.0-rc.1\n"))
+		default:
+			w.Write([]byte(`[]`))
+		}
+	}))
+	defer gl.Close()
+	t.Setenv("TOPOLOGY", `{"services":[{"name":"svc","project":"org/svc","chart":"charts/svc/Chart.yaml"}],"macro":{"name":"mac","project":"org/charts","file":"charts/mac/Chart.yaml","tagPrefix":"mac-v"},"delivery":[{"env":"internal","cluster":"c1","project":"org/gitops","app":"app.yaml","write":"mr"}]}`)
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	res, err := http.Get(srv.URL + "/api/ecosystem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Delivery []struct {
+			Env    string      `json:"environment"`
+			BumpMR *bumpMRNode `json:"bump_mr"`
+		} `json:"delivery"`
+	}
+	json.NewDecoder(res.Body).Decode(&out)
+	if len(out.Delivery) != 1 {
+		t.Fatalf("delivery nodes = %d", len(out.Delivery))
+	}
+	got := out.Delivery[0].BumpMR
+	if got == nil || got.IID != 11 || got.WebURL != "http://gl/mr/11" {
+		t.Fatalf("bump_mr = %+v, want !11 (internal env, deliver prefix only)", got)
+	}
+}
