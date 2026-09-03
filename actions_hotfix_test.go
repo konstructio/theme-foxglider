@@ -102,9 +102,10 @@ func TestHotfixJoin(t *testing.T) {
 	}
 }
 
-// konstruct-shaped fake for the hotfix-from-version pair: three pinned
+// konstruct-shaped fake for the hotfix-from-version pair: four pinned
 // services — alpha resolves to its pinned commit, bravo's commit is gone but a
-// tag carries the pin, charlie has neither and must skip.
+// tag carries the pin, charlie's counter pin resolves via its publish
+// pipeline's stamped name, echo has none of the three and must skip.
 func fakeHotfixGitLab(t *testing.T, made map[string]string, mu *sync.Mutex, alphaCommitStatus int) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -113,7 +114,7 @@ func fakeHotfixGitLab(t *testing.T, made map[string]string, mu *sync.Mutex, alph
 		switch {
 		case strings.Contains(p, "charts%2Fkonstruct%2FChart.yaml") && strings.Contains(r.URL.RawQuery, "konstruct-v9.9.0-rc.aabbccdd"):
 			w.Header().Set("Content-Type", "text/plain")
-			w.Write([]byte("version: 9.9.0-rc.aabbccdd\ndependencies:\n  - name: alpha\n    version: \"1.1.0-rc.aabbccdd\"\n  - name: bravo\n    version: \"2.2.2-rc.beefbee1\"\n  - name: charlie\n    version: \"3.3.0-rc.7\"\n"))
+			w.Write([]byte("version: 9.9.0-rc.aabbccdd\ndependencies:\n  - name: alpha\n    version: \"1.1.0-rc.aabbccdd\"\n  - name: bravo\n    version: \"2.2.2-rc.beefbee1\"\n  - name: charlie\n    version: \"3.3.0-rc.7\"\n  - name: echo\n    version: \"4.0.0-rc.9\"\n"))
 		case strings.Contains(p, "alpha%2Frepository%2Fcommits%2Faabbccdd") || (strings.Contains(p, "alpha") && strings.Contains(p, "/repository/commits/aabbccdd")):
 			if alphaCommitStatus != 200 {
 				w.WriteHeader(alphaCommitStatus)
@@ -126,6 +127,13 @@ func fakeHotfixGitLab(t *testing.T, made map[string]string, mu *sync.Mutex, alph
 			w.Write([]byte(`[{"name":"v2.2.2-rc.beefbee1"}]`))
 		case strings.Contains(p, "charlie") && strings.HasSuffix(p, "/repository/tags"):
 			w.Write([]byte(`[{"name":"v1.0.0"}]`))
+		case strings.Contains(p, "charlie") && strings.HasSuffix(p, "/pipelines"):
+			// the publish pipeline's stamped name carries the rc.N version;
+			// a non-matching neighbor proves the prefix match is exact
+			w.Write([]byte(`[{"id":41,"name":"[3.3.0-rc.70 | main] decoy","sha":"ffff0000ffff0000","status":"success"},` +
+				`{"id":42,"name":"[3.3.0-rc.7 | main] merge thing","sha":"cafe1234feedface","status":"success"}]`))
+		case strings.Contains(p, "echo") && strings.HasSuffix(p, "/pipelines"):
+			w.Write([]byte(`[]`))
 		case strings.HasSuffix(p, "/repository/branches") && r.Method == "POST":
 			proj := p[:strings.LastIndex(p, "/repository/branches")]
 			proj = proj[strings.LastIndex(proj, "%2F")+3:]
@@ -153,7 +161,8 @@ const hotfixTopo = `{"branch_policy":"hotfix-only","services":[` +
 	`{"name":"alpha","project":"civo/konstruct/alpha","chart":"charts/alpha/Chart.yaml"},` +
 	`{"name":"bravo","project":"civo/konstruct/bravo","chart":"charts/bravo/Chart.yaml"},` +
 	`{"name":"charlie","project":"civo/konstruct/charlie","chart":"charts/charlie/Chart.yaml"},` +
-	`{"name":"delta","project":"civo/konstruct/delta","chart":"charts/delta/Chart.yaml"}],` +
+	`{"name":"delta","project":"civo/konstruct/delta","chart":"charts/delta/Chart.yaml"},` +
+	`{"name":"echo","project":"civo/konstruct/echo","chart":"charts/echo/Chart.yaml"}],` +
 	`"macro":{"name":"konstruct","project":"civo/konstruct/charts","file":"charts/konstruct/Chart.yaml","tagPrefix":"konstruct-v"}}`
 
 // TestHotfixPreview: the plan is honest per repo — commit, tag, or an explicit
@@ -179,7 +188,7 @@ func TestHotfixPreview(t *testing.T) {
 		} `json:"repos"`
 	}
 	json.NewDecoder(res.Body).Decode(&out)
-	if res.StatusCode != 200 || out.Version != "9.9.0-rc.aabbccdd" || len(out.Repos) != 5 {
+	if res.StatusCode != 200 || out.Version != "9.9.0-rc.aabbccdd" || len(out.Repos) != 6 {
 		t.Fatalf("preview = %d %+v", res.StatusCode, out)
 	}
 	byName := map[string]struct{ Name, Project, Pin, Ref, Kind, Reason string }{}
@@ -192,8 +201,11 @@ func TestHotfixPreview(t *testing.T) {
 	if b := byName["bravo"]; b.Kind != "tag" || b.Ref != "v2.2.2-rc.beefbee1" {
 		t.Fatalf("bravo = %+v (want the pin-carrying tag)", b)
 	}
-	if c := byName["charlie"]; c.Kind != "skip" || !strings.Contains(c.Reason, "3.3.0-rc.7") {
-		t.Fatalf("charlie = %+v (want an explicit skip naming the pin)", c)
+	if c := byName["charlie"]; c.Kind != "commit" || c.Ref != "cafe1234" {
+		t.Fatalf("charlie = %+v (want the publish pipeline's commit for the rc.N pin)", c)
+	}
+	if e := byName["echo"]; e.Kind != "skip" || !strings.Contains(e.Reason, "4.0.0-rc.9") {
+		t.Fatalf("echo = %+v (want an explicit skip naming the pin)", e)
 	}
 	if d := byName["delta"]; d.Kind != "skip" || !strings.Contains(d.Reason, "not declared") {
 		t.Fatalf("delta = %+v (unpinned topology service must skip visibly, not vanish)", d)
@@ -265,9 +277,13 @@ func TestHotfixFromVersion(t *testing.T) {
 		mu.Unlock()
 		t.Fatalf("branch refs = %+v (want pinned commit / pin tag / macro tag)", made)
 	}
-	if _, ok := made["charlie"]; ok {
+	if made["charlie"] != "cafe1234" {
 		mu.Unlock()
-		t.Fatal("charlie was branched despite an unresolvable pin")
+		t.Fatalf("charlie ref = %q, want the publish pipeline's commit for its rc.N pin", made["charlie"])
+	}
+	if _, ok := made["echo"]; ok {
+		mu.Unlock()
+		t.Fatal("echo was branched despite an unresolvable pin")
 	}
 	if _, ok := made["delta"]; ok {
 		mu.Unlock()
@@ -281,7 +297,7 @@ func TestHotfixFromVersion(t *testing.T) {
 	for _, r := range results {
 		byProj[r.Project] = r
 	}
-	if byProj["civo/konstruct/alpha"].Status != "created" || byProj["civo/konstruct/charlie"].Status != "skipped" {
+	if byProj["civo/konstruct/alpha"].Status != "created" || byProj["civo/konstruct/charlie"].Status != "created" || byProj["civo/konstruct/echo"].Status != "skipped" {
 		t.Fatalf("results = %+v", results)
 	}
 	if !strings.Contains(out["checkout"].(string), "hotfix-cve") {
@@ -295,7 +311,7 @@ func TestHotfixFromVersion(t *testing.T) {
 	json.Unmarshal(raw, &results)
 	for _, r := range results {
 		if r.Status == "skipped" {
-			continue // charlie + delta stay skipped on rerun too
+			continue // echo + delta stay skipped on rerun too
 		}
 		if r.Status != "joined" {
 			t.Fatalf("rerun %s = %q, want joined", r.Project, r.Status)

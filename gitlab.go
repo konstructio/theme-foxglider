@@ -318,10 +318,14 @@ type glSHAPipeline struct {
 	ID        int       `json:"id"`
 	Status    string    `json:"status"`
 	Ref       string    `json:"ref"`
+	SHA       string    `json:"sha"`
 	Source    string    `json:"source"`
 	WebURL    string    `json:"web_url"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// Name: publish pipelines stamp "[<rc-version> | <branch>]" here — the
+	// version→commit resolution path for counter (rc.N) pins.
+	Name string `json:"name"`
 }
 
 // pipelinesForSHA lists every pipeline that ran on one commit — the complete

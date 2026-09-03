@@ -1122,8 +1122,12 @@ func (x *actions) resolveHotfixRepos(ctx context.Context, tag string) ([]hotfixR
 		}
 		if tref := x.tagForPin(ctx, s.Project, pin); tref != "" {
 			plan.Kind, plan.Ref = "tag", tref
+		} else if psha := x.pipeForPin(ctx, s.Project, pin); psha != "" {
+			// counter pins (rc.N) carry no sha in the version — the publish
+			// pipeline's stamped name does
+			plan.Kind, plan.Ref = "commit", psha
 		} else {
-			plan.Kind, plan.Reason = "skip", "no commit or tag for "+pin
+			plan.Kind, plan.Reason = "skip", "no commit, tag, or publish pipeline for "+pin
 		}
 		plans = append(plans, plan)
 	}
@@ -1132,6 +1136,29 @@ func (x *actions) resolveHotfixRepos(ctx context.Context, tag string) ([]hotfixR
 		Pin: strings.TrimPrefix(tag, x.topo.MacroTag), Ref: tag, Kind: "tag",
 	})
 	return plans, nil
+}
+
+// pipeForPin resolves a counter pin (X.Y.Z-rc.N) to the commit that published
+// it via the publish pipeline's stamped name ("[<rc-version> | <branch>]" —
+// both the konstruct-gitops .publish-chart and metaphor's helm-publish write
+// it). Bounded search of recent pipelines; the durable fallback (chart
+// appVersion in the OCI registry) is deliberately not consulted — the theme
+// speaks only GitLab, and older pins age out of reach honestly.
+func (x *actions) pipeForPin(ctx context.Context, project, pin string) string {
+	pls, err := x.gl.recentPipelines(ctx, project, "", "", 100)
+	if err != nil {
+		return ""
+	}
+	needle := "[" + pin + " "
+	for _, p := range pls {
+		if strings.HasPrefix(p.Name, needle) && p.SHA != "" {
+			if len(p.SHA) > 8 {
+				return p.SHA[:8]
+			}
+			return p.SHA
+		}
+	}
+	return ""
 }
 
 // tagForPin finds a service tag matching a pin exactly or as v<pin>.
