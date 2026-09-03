@@ -118,6 +118,11 @@
   a.hchip:hover{border-color:var(--civo);color:var(--civo)}
   .hchip.hmut{color:var(--mut)}
   .hchip.hdead{color:var(--mut);border-style:dashed;text-decoration:line-through}
+  .trig-ctl{display:inline-flex;align-items:center;gap:6px}
+  .trig-armed{color:var(--gl-amber);border-color:var(--gl-amber);animation:trigpulse 1s ease-in-out infinite}
+  @keyframes trigpulse{50%{filter:brightness(1.4)}}
+  .trig-fb{font-size:10px;color:var(--civo);text-decoration:none;border:1px solid #14532d;border-radius:3px;padding:1px 6px;white-space:nowrap}
+  .trig-fb.trig-err{color:var(--gl-red);border-color:var(--gl-red)}
   .live-line{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:6px;font-size:11px}
   .ll-ref{color:var(--gl-amber);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .av-s{width:15px;height:15px}
@@ -1111,10 +1116,65 @@ function mainPipelineSection(n) {
       ${pl ? `<a class="pipebtn" target="_blank" href="${pl.web_url}" style="--c:${statusColor(pl.status)}"
         title="pipeline #${pl.id} · ${esc(pl.ref)} · ${pl.status}">${ICON_PIPE} pipeline</a>` : ''}
       <span class="spacer"></span>
-      ${act ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(n.project)}" title="trigger the delivery pipeline on main (fresh sha)">${ICON_SCOPE}</button>` : ''}
+      ${act ? mainTriggerCtl(n.project) : ''}
     </div>
     ${stagesSlot(n)}
   </div>`;
+}
+// Inline main trigger: click arms a short countdown ON the button — click
+// again to cancel, no modal. Armed/feedback state lives on `state` keyed by
+// project, so the periodic full re-render repaints an armed control honestly
+// instead of wiping it. Feedback is a transient chip: ✓ links the pipeline,
+// the tooltip names the actor — the tile's own pipeline chip takes over once
+// the poll catches up.
+const TRIG_ARM_MS = 3000;
+function mainTriggerCtl(proj) {
+  const fb = state.trigFb && state.trigFb[proj];
+  const fbHtml = fb && (Date.now() - fb.at < 30000)
+    ? (fb.err ? `<span class="trig-fb trig-err" title="${esc(fb.err)}">✕ failed</span>`
+      : fb.url ? `<a class="trig-fb" target="_blank" href="${esc(fb.url)}" title="pipeline started as @${esc(fb.actor || 'konstruct')}">✓ started</a>`
+      : `<span class="trig-fb">starting…</span>`)
+    : '';
+  const arm = state.trigArm && state.trigArm[proj];
+  if (arm) {
+    const left = Math.max(0, Math.ceil((arm.until - Date.now()) / 1000));
+    return `<span class="trig-ctl" data-tproj="${esc(proj)}">${fbHtml}<button class="abtn br-act trig-armed" data-act="trigger" data-inline="1" data-proj="${esc(proj)}" title="click again to cancel">✕ <span class="tcd">${left}</span>s · cancel</button></span>`;
+  }
+  return `<span class="trig-ctl" data-tproj="${esc(proj)}">${fbHtml}<button class="abtn br-act" data-act="trigger" data-inline="1" data-proj="${esc(proj)}" title="trigger the delivery pipeline on main (fresh sha) — arms a ${TRIG_ARM_MS / 1000}s cancel window, then plays trigger:manual (or starts a fresh pipeline) as the signed-in user">${ICON_SCOPE}</button></span>`;
+}
+function paintTrig(proj) {
+  document.querySelectorAll(`.trig-ctl[data-tproj="${CSS.escape(proj)}"]`).forEach(el => { el.outerHTML = mainTriggerCtl(proj); });
+}
+function inlineTrigger(proj) {
+  state.trigArm = state.trigArm || {}; state.trigFb = state.trigFb || {};
+  const cur = state.trigArm[proj];
+  if (cur) { clearTimeout(cur.t); clearInterval(cur.iv); delete state.trigArm[proj]; paintTrig(proj); return; }
+  const arm = { until: Date.now() + TRIG_ARM_MS };
+  arm.t = setTimeout(() => { clearInterval(arm.iv); delete state.trigArm[proj]; fireInlineTrigger(proj); }, TRIG_ARM_MS);
+  arm.iv = setInterval(() => {
+    const el = document.querySelector(`.trig-ctl[data-tproj="${CSS.escape(proj)}"] .tcd`);
+    if (el) el.textContent = Math.max(0, Math.ceil((arm.until - Date.now()) / 1000));
+  }, 200);
+  state.trigArm[proj] = arm;
+  paintTrig(proj);
+}
+async function fireInlineTrigger(proj) {
+  state.trigFb[proj] = { at: Date.now() };
+  paintTrig(proj);
+  try {
+    const hdrs = { 'Content-Type': 'application/json' };
+    if (state.konstructUser) hdrs['X-Konstruct-Actor'] = state.konstructUser;
+    const res = await fetch('/api/actions/run', { method: 'POST', headers: hdrs,
+      body: JSON.stringify({ project: proj, action: 'trigger' }) });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw body;
+    state.trigFb[proj] = { at: Date.now(), url: body.pipeline_url || body.job_url, actor: body.actor };
+    state.burstUntil = Date.now() + 120000;
+    refresh();
+  } catch (err) {
+    state.trigFb[proj] = { at: Date.now(), err: (err && err.error) || 'trigger failed' };
+  }
+  paintTrig(proj);
 }
 function mainReleaseSection(n) {
   const act = state.act && state.act.enabled;
@@ -1173,6 +1233,8 @@ document.addEventListener('click', async e => {
   const x = e.target.closest('#explain-t');
   if (x) { e.preventDefault(); const p = $('#explain'); if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none'; return; }
   const b = e.target.closest('.abtn'); if (!b || !b.dataset.act) return;
+  // main-tile triggers arm/cancel inline — no modal
+  if (b.dataset.act === 'trigger' && b.dataset.inline) { inlineTrigger(b.dataset.proj); return; }
   const opts = {};
   if (b.classList.contains('upbtn')) { opts.version = (b.closest('.up-row')?.querySelector('.upin')?.value || '').trim(); opts.env = b.dataset.env; }
   if (b.dataset.ref) opts.ref = b.dataset.ref;
