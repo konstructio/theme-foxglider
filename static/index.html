@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Foxglider</title>
-<link rel="icon" href="metaphor.svg" type="image/svg+xml" />
+<link rel="icon" href="foxglider.svg" type="image/svg+xml" />
 <style>
   :root{
     --bg:#12161d; --panel:#171c24; --panel2:#1b212b; --line:#262e3a; --line2:#394454;
@@ -422,7 +422,7 @@ function errMsg(e) {
 })();
 function showDisconnected(err) {
   $('#view').innerHTML = `<div class="empty">
-    <img src="metaphor.svg" alt="" width="120" style="opacity:.5;margin-bottom:14px" />
+    <img src="foxglider.svg" alt="" width="120" style="opacity:.5;margin-bottom:14px" />
     <h2>Not connected to GitLab</h2>
     <p class="mono mut">${esc(errMsg(err))}</p></div>`;
 }

@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 48">
   <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-    <stop offset="0" stop-color="#E24329"/><stop offset=".55" stop-color="#FC6D26"/><stop offset="1" stop-color="#FCA326"/>
+    <stop offset="0" stop-color="#05df72"/><stop offset=".55" stop-color="#00c950"/><stop offset="1" stop-color="#00a884"/>
   </linearGradient></defs>
-  <!-- swept-back glider silhouette: ears as the tanuki peaks, body as a delta wing -->
+  <!-- metaphor delta glider: civo-green, deliberately NOT GitLab's warm tanuki palette -->
   <path fill="url(#g)" d="M2 30 L14 8 L22 22 L32 20 L42 22 L50 8 L62 30 L32 44 Z"/>
-  <path fill="#12161d" opacity=".25" d="M32 20 L42 22 L32 44 Z"/>
-  <circle cx="26" cy="28" r="2.2" fill="#05df72"/>
+  <path fill="#0b1220" opacity=".30" d="M32 20 L42 22 L32 44 Z"/>
+  <circle cx="32" cy="27" r="2.6" fill="#0b1220"/>
 </svg>

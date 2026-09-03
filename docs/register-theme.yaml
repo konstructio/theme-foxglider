@@ -1,4 +1,4 @@
-# Ready-to-apply Theme CR registering theme-metaphor in the metaphor org.
+# Ready-to-apply Theme CR registering theme-foxglider in the metaphor org.
 # Requires cluster access to the `metaphor` namespace.
 #   kubectl apply -f docs/register-theme.yaml
 #   kubectl -n metaphor get themes.konstruct.civo.com metaphor -w
@@ -9,7 +9,7 @@ metadata:
   namespace: metaphor
 spec:
   display_name: Metaphor
-  repo_url: https://git.civo.com/civo/metaphor/theme-metaphor
-  repo_name: civo/metaphor/theme-metaphor
+  repo_url: https://git.civo.com/civo/metaphor/theme-foxglider
+  repo_name: civo/metaphor/theme-foxglider
   branch: main
   # zone_ref optional — the theme-controller auto-resolves the `themes` zone.

@@ -29,6 +29,8 @@ spec:
             value: http://metaphor-micro-frontend.metaphor.svc.cluster.local:8080
           - name: APP_URL
             value: https://metaphor-dashboard.development-33.civo-platform.com
+  destination:
+    server: https://kubernetes.default.svc
 `
 
 func TestScanHostsRealComponentShape(t *testing.T) {
@@ -56,6 +58,9 @@ func TestScanHostsRealComponentShape(t *testing.T) {
 	for h := range byHost {
 		if strings.Contains(h, "pkg.dev") {
 			t.Fatalf("repoURL leaked into findings: %s", h)
+		}
+		if strings.Contains(h, "kubernetes.default") {
+			t.Fatalf("ArgoCD destination server leaked into findings: %s", h)
 		}
 	}
 	if len(got) != 3 {

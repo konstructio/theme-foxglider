@@ -1,6 +1,6 @@
-# theme-metaphor
+# theme-foxglider
 
-The **delivery-view theme** for the Metaphor org — a Konstruct `Theme` that
+**Foxglider** — the delivery-view theme for the Metaphor org — a Konstruct `Theme` that
 renders a read-only dashboard of GitLab build metadata: every project in every
 group your token can see, with pipeline timelines, per-pipeline stage/job
 gantts, and a cross-project activity feed. Every element deep-links to the

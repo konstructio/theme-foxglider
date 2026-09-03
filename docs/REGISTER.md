@@ -1,11 +1,11 @@
 # Registering this theme in the Metaphor org
 
-`theme-metaphor` becomes a live, org-pinned themed app once a Konstruct
+`theme-foxglider` becomes a live, org-pinned themed app once a Konstruct
 `Theme` CR exists in the **`metaphor`** namespace pointing at this repo.
 The theme-controller then spawns a `ThemedApp`, kpack-builds it, and serves it
 in a credential-less, org-pinned iframe.
 
-> **Recommendation:** register against **`civo/metaphor/theme-metaphor`** (this
+> **Recommendation:** register against **`civo/metaphor/theme-foxglider`** (this
 > repo), not `civo/konstruct/theme-foxglider`. The metaphor org's git account
 > (`metaphor-civo-metaphor`, a group token scoped to `civo/metaphor`, id 1642)
 > can read this repo but **cannot** read the konstruct-group foxglider repo.
@@ -20,8 +20,8 @@ metadata:
   namespace: metaphor
 spec:
   display_name: Metaphor
-  repo_url: https://git.civo.com/civo/metaphor/theme-metaphor
-  repo_name: civo/metaphor/theme-metaphor
+  repo_url: https://git.civo.com/civo/metaphor/theme-foxglider
+  repo_name: civo/metaphor/theme-foxglider
   branch: main
   # zone_ref is optional — the theme-controller auto-creates/resolves the
   # `themes` zone in the namespace (as it did for the konstruct org).
@@ -42,8 +42,8 @@ curl -X POST "https://<konstruct-api-host>/theme/themes/metaphor" \
   -d '{
     "name": "metaphor",
     "display_name": "Metaphor",
-    "repo_url": "https://git.civo.com/civo/metaphor/theme-metaphor",
-    "repo_name": "civo/metaphor/theme-metaphor",
+    "repo_url": "https://git.civo.com/civo/metaphor/theme-foxglider",
+    "repo_name": "civo/metaphor/theme-foxglider",
     "branch": "main"
   }'
 ```

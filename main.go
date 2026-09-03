@@ -1,4 +1,4 @@
-// theme-metaphor — read-only dashboard for GitLab build metadata.
+// theme-foxglider — read-only dashboard for GitLab build metadata.
 // Seed forked from civo/konstruct/theme-foxglider; the delivery-view build
 // (releases/tags/package-registry + guarded pipeline triggers) lands in #37.
 // Borrows the theme-starter shape: embedded static frontend + tiny server.
@@ -51,7 +51,7 @@ func main() {
 			groups = append(groups, s)
 		}
 	}
-	log.Printf("theme-metaphor serving on :%s (gitlab=%s groups=%v)", port, gl.base, groups)
+	log.Printf("theme-foxglider serving on :%s (gitlab=%s groups=%v)", port, gl.base, groups)
 	log.Fatal(http.ListenAndServe(":"+port, newMux(newAPI(gl, groups))))
 }
 

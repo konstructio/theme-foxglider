@@ -78,8 +78,9 @@ func scanHosts(source, raw string) []hostFinding {
 			if k := reYamlKey.FindStringSubmatch(ln); k != nil {
 				key = k[1]
 			}
-			// supply-chain coordinates, not an app the environment serves
-			if key == "repoURL" || key == "repository" {
+			// not apps the environment serves: chart/repo coordinates and the
+			// ArgoCD destination API server (kubernetes.default.svc noise)
+			if key == "repoURL" || key == "repository" || key == "server" {
 				continue
 			}
 			field := key
