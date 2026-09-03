@@ -212,6 +212,17 @@ func (c *glClient) tags(ctx context.Context, projectPath string, limit int) ([]g
 	return out, err
 }
 
+// tagsSearch lists newest tags whose name matches search. GitLab honours ^term
+// (starts-with) and term$ (ends-with) anchors. Used to pull an umbrella's own
+// version line out of a charts monorepo where every subchart shares the tag
+// prefix — a server-side filter beats paging the whole tag list.
+func (c *glClient) tagsSearch(ctx context.Context, projectPath, search string, limit int) ([]glTag, error) {
+	var out []glTag
+	p := fmt.Sprintf("/projects/%s/repository/tags", url.QueryEscape(projectPath))
+	_, err := c.get(ctx, p, url.Values{"per_page": {fmt.Sprint(limit)}, "order_by": {"updated"}, "search": {search}}, &out)
+	return out, err
+}
+
 // glLatestPipeline is /pipelines/latest — a single pipeline plus the user who
 // ran it (the person who pushed the change that triggered the build).
 type glLatestPipeline struct {

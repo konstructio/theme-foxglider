@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.28.0"
+const themeVersion = "2.28.1"
 
 const ttlEco = 45 * time.Second
 
@@ -502,6 +502,27 @@ func (a *api) cachedTags(ctx context.Context, proj string) []glTag {
 	return v.([]glTag)
 }
 
+// umbrellaLineTags fetches only the macro tags on the umbrella's own base line,
+// via a server-side prefix search (^prefixX.Y.Z). In a charts monorepo the
+// umbrella's tags are sparse among constant microchart publishes, so the
+// recent-tags window can miss them entirely and silently fall back to a
+// bundled microchart's higher line; the search captures the whole umbrella line
+// regardless of churn.
+func (a *api) umbrellaLineTags(ctx context.Context, proj, prefix string, line ver) []glTag {
+	search := fmt.Sprintf("^%s%d.%d.%d", prefix, line.maj, line.min, line.pat)
+	ttl := ttlEco
+	if a.isHot(proj) {
+		ttl = 5 * time.Second
+	}
+	v, err := a.c.do("ltags:"+proj+":"+search, ttl, func() (any, error) {
+		return a.gl.tagsSearch(ctx, proj, search, 50)
+	})
+	if err != nil {
+		return nil
+	}
+	return v.([]glTag)
+}
+
 func (a *api) latestPipe(ctx context.Context, proj string) *pipelineJSON {
 	ttl := ttlEco
 	if a.isHot(proj) {
@@ -798,8 +819,10 @@ collect:
 	// umbrella. Re-pin the headline to the umbrella's own declared line so it
 	// reflects the umbrella itself (konstruct: 0.7.0, not konstruct-api's 0.7.8).
 	if line, ok := declaredLine(macroRaw); ok {
-		if tg := newestTagOnLine(a.cachedTags(ctx, t.MacroProj), t.MacroTag, line); tg != "" {
-			publishedTag = tg
+		if lt := a.umbrellaLineTags(ctx, t.MacroProj, t.MacroTag, line); len(lt) > 0 {
+			if tg := newestTagOnLine(lt, t.MacroTag, line); tg != "" {
+				publishedTag = tg
+			}
 		}
 	}
 
@@ -836,10 +859,18 @@ collect:
 		Hotfixes: macroTB.hots, BranchPipes: macroTB.pipes,
 	}
 	// Same monorepo caveat as the headline: the picker lists the umbrella's own
-	// published versions, so filter to its declared line and drop bundled
-	// microchart tags that merely share the prefix.
+	// published versions. Pull them by the umbrella's declared line (server-side
+	// search) so the menu isn't crowded out by bundled microchart tags that
+	// merely share the prefix; fall back to the recent-tags window if the line
+	// can't be determined.
 	umbLine, hasUmbLine := declaredLine(macroRaw)
-	for _, tg := range a.cachedTags(ctx, t.MacroProj) {
+	menuTags := a.cachedTags(ctx, t.MacroProj)
+	if hasUmbLine {
+		if lt := a.umbrellaLineTags(ctx, t.MacroProj, t.MacroTag, umbLine); len(lt) > 0 {
+			menuTags = lt
+		}
+	}
+	for _, tg := range menuTags {
 		if !strings.HasPrefix(tg.Name, t.MacroTag) {
 			continue
 		}

@@ -102,3 +102,30 @@ func TestClientBadToken(t *testing.T) {
 		t.Fatal("expected error on 401")
 	}
 }
+
+// TestTagsSearchAnchoredQuery: the ^prefix anchor must survive URL encoding and
+// reach GitLab intact, and results stay newest-first — this is what isolates an
+// umbrella's own line out of a shared-prefix charts monorepo.
+func TestTagsSearchAnchoredQuery(t *testing.T) {
+	var gotSearch, gotOrder string
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSearch = r.URL.Query().Get("search")
+		gotOrder = r.URL.Query().Get("order_by")
+		_, _ = w.Write([]byte(`[{"name":"konstruct-v0.7.0-rc.443f3828"},{"name":"konstruct-v0.7.0-rc.184f6054"}]`))
+	}))
+	defer gl.Close()
+	c := newGLClient(gl.URL, "tok")
+	out, err := c.tagsSearch(context.Background(), "civo/konstruct/charts", "^konstruct-v0.7.0", 50)
+	if err != nil {
+		t.Fatalf("tagsSearch: %v", err)
+	}
+	if gotSearch != "^konstruct-v0.7.0" {
+		t.Errorf("search param = %q, want the anchored umbrella line", gotSearch)
+	}
+	if gotOrder != "updated" {
+		t.Errorf("order_by = %q, want updated (newest-first)", gotOrder)
+	}
+	if len(out) != 2 || out[0].Name != "konstruct-v0.7.0-rc.443f3828" {
+		t.Errorf("decoded tags = %+v", out)
+	}
+}
