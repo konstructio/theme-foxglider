@@ -112,6 +112,12 @@
   .env-app{font-size:10.5px;color:var(--civo);border:1px solid #14532d;border-radius:3px;padding:1px 7px;text-decoration:none;white-space:nowrap}
   .env-app:hover{filter:brightness(1.25)}
   .env-upd{font-size:10.5px;margin-top:7px}
+  .env-hosts{display:flex;flex-wrap:wrap;gap:4px;margin-top:7px}
+  .hchip{font-size:10px;padding:2px 7px;border:1px solid var(--line);border-radius:9px;color:var(--ink2);
+    text-decoration:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  a.hchip:hover{border-color:var(--civo);color:var(--civo)}
+  .hchip.hmut{color:var(--mut)}
+  .hchip.hdead{color:var(--mut);border-style:dashed;text-decoration:line-through}
   .live-line{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:6px;font-size:11px}
   .ll-ref{color:var(--gl-amber);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .av-s{width:15px;height:15px}
@@ -697,9 +703,19 @@ function envCard(e, m) {
         <input class="upin${state.picked ? ' picked' : ''}" value="${esc(state.picked ? state.picked.version : latest)}" spellcheck="false" title="any published version — type an older one to roll back">
         <button class="abtn warn upbtn" data-act="deliver" data-proj="${esc(isApp ? (appNode ? appNode.project : '') : m.project)}" data-env="${esc(e.environment)}">${ICON_SHIP} ${e.write === 'mr' ? 'open bump MR' : 'upgrade'}</button>
       </div>` : ''}
+    ${(e.hosts || []).length || e.host_scan ? `<div class="env-hosts">${(e.hosts || []).map(hostChip).join('')}${e.host_scan ? `<span class="hchip hmut" title="declared scan manifests this target's credentials could not read — hostnames there stay invisible until a token can">⚠ ${esc(e.host_scan)}</span>` : ''}</div>` : ''}
     ${e.updated_at ? `<div class="mut env-upd" title="last change to the delivery file${e.updated_by ? ` — by ${esc(e.updated_by)}` : ''}">updated ${relTime(e.updated_at)}${e.updated_by ? ` · ${esc(e.updated_by)}` : ''}</div>` : ''}
     ${watchChip({ project: '__delivery__' })}
   </div>`;
+}
+// hostChip: a DISCOVERED hostname for the environment. The theme is generic —
+// it found these by scanning manifests, so the tooltip says exactly where
+// (file + field) and what DNS thinks, rather than pretending to know.
+function hostChip(h) {
+  const prov = `found: ${h.field || 'url'} in ${h.source || '?'}`;
+  if (h.dns === 'internal') return `<span class="hchip hmut mono" title="in-cluster service DNS — not reachable from a browser · ${esc(prov)}">⛓ ${esc(h.host)}</span>`;
+  if (h.dns === 'none') return `<span class="hchip hdead mono" title="DNS does not resolve — likely a dangling ingress or stale config · ${esc(prov)}">${esc(h.host)}</span>`;
+  return `<a class="hchip mono" target="_blank" href="${esc(h.url || 'https://' + h.host)}" title="${esc(prov)}${h.dns === 'ok' ? ' · DNS resolves' : ''}">↗ ${esc(h.host)}</a>`;
 }
 function driftChip(d) {
   const M = { current: ['✓ up to date', 'var(--civo)'],

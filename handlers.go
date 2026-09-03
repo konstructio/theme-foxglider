@@ -28,6 +28,9 @@ type api struct {
 	act    *actions
 	// glDelivery, when set, reads ONLY the delivery app files (cross-group).
 	glDelivery *glClient
+	// lookup overrides DNS resolution for hostname discovery (hosts.go) —
+	// tests inject it; nil means the default resolver.
+	lookup func(ctx context.Context, host string) error
 
 	// hot marks projects with a just-fired action: their pipeline reads take a
 	// 5s cache lane (instead of 45s) so the tile reflects the new commit/SHA

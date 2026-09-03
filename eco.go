@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.28.1"
+const themeVersion = "2.29.0"
 
 const ttlEco = 45 * time.Second
 
@@ -53,6 +53,11 @@ type deliverySpec struct {
 	Write    string // "tag-pipeline" (default, metaphor CI) | "mr" | "commit"
 	Branch   string // target branch of the gitops repo; "" = main
 	URL      string // the deployed app's own hostname URL, when known
+	// Manifests: extra manifests scanned for hostname discovery (hosts.go),
+	// read with this target's client. The delivery App file is always scanned;
+	// these cover the common split where the live host config lives in a
+	// different repo than the version pin.
+	Manifests []manifestRef
 }
 
 type topology struct {
@@ -87,7 +92,17 @@ func defaultTopology() topology {
 		Delivery: []deliverySpec{
 			{Env: "development-33", Cluster: "dev-33", Project: "civo/metaphor/metaphor-gitops",
 				App: "registry/environments/development-33/dev-33/metaphor-macro.yaml", Write: "tag-pipeline",
-				URL: "https://metaphor-dashboard.development-33.civo-platform.com"},
+				URL: "https://metaphor-dashboard.development-33.civo-platform.com",
+				// The dev-33 hostnames live in the dotcom autopilot components
+				// (the live serving path until the macro cutover), not in the
+				// registry file this target pins — scan them for the env card.
+				// Unreadable with this target's token renders as a scan note,
+				// never as "no hosts".
+				Manifests: []manifestRef{
+					{Project: "infrastructure/dotcom/autopilot", Path: "clusters/development-33/components/metaphor/application.yaml"},
+					{Project: "infrastructure/dotcom/autopilot", Path: "clusters/development-33/components/metaphor-dashboard-manager/application.yaml"},
+					{Project: "infrastructure/dotcom/autopilot", Path: "clusters/development-33/components/metaphor-micro-frontend/application.yaml"},
+				}},
 		},
 	}
 }
@@ -444,6 +459,13 @@ type deliveryNode struct {
 	// when this environment last changed, and who changed it.
 	UpdatedAt string `json:"updated_at,omitempty"`
 	UpdatedBy string `json:"updated_by,omitempty"`
+	// Hosts: hostnames DISCOVERED for this environment (hosts.go) — scanned
+	// from the delivery file and topology-declared manifests, each with
+	// provenance and a DNS verdict. The declared AppURL is not repeated here.
+	Hosts []hostFinding `json:"hosts,omitempty"`
+	// HostScan notes scan gaps ("2 manifests unreadable") so fewer chips
+	// reads as a credentials fact, not a discovery claim.
+	HostScan string `json:"host_scan,omitempty"`
 }
 
 // deliveryTargets flattens the umbrella-level and per-service targets.
@@ -737,6 +759,7 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 		svcPB                  = make([]pipeBundle, len(t.Services))
 		allTargets             = deliveryTargets(t)
 		delRaw                 = make([]string, len(allTargets))
+		manRaws                = make([][]manifestRaw, len(allTargets))
 	)
 
 	// Every fetch reports on a buffered channel (buffered so a late fetch never
@@ -757,7 +780,7 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 	svcRels := make([]*releaseJSON, len(t.Services))
 	var macroRel *releaseJSON
 	var macroTB tileBranches
-	total := 5 + len(t.Services)*4 + len(allTargets)
+	total := 5 + len(t.Services)*4 + len(allTargets)*2
 	ch := make(chan slot, total)
 	go func() { ch <- slot{"macroRaw", 0, a.rawFile(ctx, t.MacroProj, t.MacroFile)} }()
 	go func() { ch <- slot{"tag", 0, newestTag(a.cachedTags(ctx, t.MacroProj), t.MacroTag)} }()
@@ -780,6 +803,7 @@ func (a *api) ecosystem(w http.ResponseWriter, r *http.Request) {
 	for i, dt := range allTargets {
 		i, dt := i, dt
 		go func() { ch <- slot{"delRaw", i, a.deliveryFileFor(ctx, dt.spec)} }()
+		go func() { ch <- slot{"manRaw", i, a.manifestFiles(ctx, dt.spec)} }()
 	}
 
 	deadline := time.After(9 * time.Second)
@@ -800,6 +824,8 @@ collect:
 				svcPB[s.i] = s.v.(pipeBundle)
 			case "delRaw":
 				delRaw[s.i] = s.v.(string)
+			case "manRaw":
+				manRaws[s.i], _ = s.v.([]manifestRaw)
 			case "svcFeat":
 				svcTB[s.i], _ = s.v.(tileBranches)
 			case "svcRel":
@@ -941,10 +967,56 @@ collect:
 				}
 			}
 			node.State, node.Behind = drift(node.Delivered, ref)
+			// Discovered hostnames: the delivery file plus declared scan
+			// manifests, deduped (declared AppURL excluded — it's already the
+			// card's app link), DNS-checked. Unreadable manifests become a
+			// visible note, never a silently shorter list.
+			findings := scanHosts(d.Project+":"+d.App, delRaw[i])
+			unreadable := 0
+			for _, m := range manRaws[i] {
+				if m.raw == "" {
+					unreadable++
+					continue
+				}
+				findings = append(findings, scanHosts(m.ref.Project+":"+m.ref.Path, m.raw)...)
+			}
+			node.Hosts = dedupeHosts(findings, d.URL)
+			if len(node.Hosts) > 8 {
+				node.Hosts = node.Hosts[:8]
+			}
+			if unreadable > 0 {
+				s := ""
+				if unreadable > 1 {
+					s = "s"
+				}
+				node.HostScan = fmt.Sprintf("%d scan manifest%s unreadable", unreadable, s)
+			}
 		} else {
 			node.State = "pending"
 		}
 		delivery[i] = node
+	}
+
+	// DNS verdicts for every discovered public hostname, one bounded parallel
+	// batch across all env cards — cold verdicts land on the next poll rather
+	// than the handler stalling per-host.
+	var toCheck []string
+	for _, n := range delivery {
+		for _, f := range n.Hosts {
+			if f.DNS == "" {
+				toCheck = append(toCheck, f.Host)
+			}
+		}
+	}
+	if len(toCheck) > 0 {
+		verdicts := a.dnsFill(toCheck)
+		for ni := range delivery {
+			for j, f := range delivery[ni].Hosts {
+				if f.DNS == "" {
+					delivery[ni].Hosts[j].DNS = verdicts[f.Host]
+				}
+			}
+		}
 	}
 
 	// One org-wide branch pass feeds BOTH the promotion matrix and the org
@@ -2219,11 +2291,21 @@ type deliveryJSON struct {
 	Write    string `json:"write"`
 	Branch   string `json:"branch"`
 	URL      string `json:"url"`
+	// manifests: extra files to scan for hostname discovery — project ""
+	// means the target's own gitops repo.
+	Manifests []struct {
+		Project string `json:"project"`
+		Path    string `json:"path"`
+	} `json:"manifests"`
 }
 
 func (d deliveryJSON) spec() deliverySpec {
-	return deliverySpec{Env: d.Env, Cluster: d.Cluster, Project: d.Project, App: d.App,
+	s := deliverySpec{Env: d.Env, Cluster: d.Cluster, Project: d.Project, App: d.App,
 		Kind: d.Kind, Host: d.Host, TokenEnv: d.TokenEnv, Write: d.Write, Branch: d.Branch, URL: d.URL}
+	for _, m := range d.Manifests {
+		s.Manifests = append(s.Manifests, manifestRef{Project: m.Project, Path: m.Path})
+	}
+	return s
 }
 
 type topologyJSON struct {

@@ -36,6 +36,23 @@ func (c *cache) drop(key string) {
 	c.mu.Unlock()
 }
 
+// peek returns a completed, unexpired, error-free entry without computing
+// anything — for callers that answer from cache now and warm in background.
+func (c *cache) peek(key string) (any, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.m[key]; ok {
+		select {
+		case <-e.ready:
+			if time.Now().Before(e.exp) && e.err == nil {
+				return e.val, true
+			}
+		default:
+		}
+	}
+	return nil, false
+}
+
 func (c *cache) do(key string, ttl time.Duration, fn func() (any, error)) (any, error) {
 	c.mu.Lock()
 	if e, ok := c.m[key]; ok {
