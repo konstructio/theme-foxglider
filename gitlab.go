@@ -444,6 +444,10 @@ type glMR struct {
 	// branch (and its committer avatar) is gone after the merge.
 	Author   *glUser `json:"author"`
 	MergedBy *glUser `json:"merged_by"`
+	// DetailedMergeStatus/HasConflicts: GitLab's mergeability verdict — the
+	// catch-up action only acts when this says "mergeable".
+	DetailedMergeStatus string `json:"detailed_merge_status"`
+	HasConflicts        bool   `json:"has_conflicts"`
 }
 
 type glUser struct {
@@ -529,13 +533,17 @@ func (c *glClient) mrsBySource(ctx context.Context, projectPath, branch string) 
 }
 
 // createMR opens a merge request (used for the auto-drafted feature MR).
-func (c *glClient) createMR(ctx context.Context, projectPath, source, target, title, description string) (glMR, error) {
+// removeSource asks GitLab to delete the SOURCE branch on merge — right for
+// feature/scratch sources, catastrophic for the catch-up probe whose source
+// is main. The caller must say which it is; there is no safe default for
+// both shapes.
+func (c *glClient) createMR(ctx context.Context, projectPath, source, target, title, description string, removeSource bool) (glMR, error) {
 	var out glMR
 	p := fmt.Sprintf("/projects/%s/merge_requests", url.QueryEscape(projectPath))
 	err := c.postJSON(ctx, p, map[string]any{
 		"source_branch": source, "target_branch": target,
 		"title": title, "description": description,
-		"remove_source_branch": true,
+		"remove_source_branch": removeSource,
 	}, &out)
 	return out, err
 }
@@ -547,6 +555,14 @@ func (c *glClient) mergeMR(ctx context.Context, projectPath string, iid int) (gl
 	var out glMR
 	err := c.putJSON(ctx, base+"/merge", nil, &out)
 	return out, err
+}
+
+// closeMR closes an MR without merging — cleanup for the short-lived
+// catch-up MRs that turn out not to be safely mergeable.
+func (c *glClient) closeMR(ctx context.Context, projectPath string, iid int) error {
+	var out glMR
+	p := fmt.Sprintf("/projects/%s/merge_requests/%d", url.QueryEscape(projectPath), iid)
+	return c.putJSON(ctx, p, map[string]string{"state_event": "close"}, &out)
 }
 
 // putJSON mirrors postJSON for PUT endpoints.

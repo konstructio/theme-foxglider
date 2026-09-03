@@ -938,6 +938,7 @@ function featureGroup(f, d) {
         : epicOK && sv.state !== 'main' ? `<button class="abtn br-act featfix" data-proj="${esc(sv.project)}" data-branch="${esc(f.branch)}" title="draft the carrying merge request for ${esc(sv.name)}">${ICON_MR} draft MR</button>` : ''}
       <span class="mut">${sv.when ? relTime(sv.when) : ''}</span>
       <span class="spacer"></span>
+      ${epicOK && sv.state !== 'main' && (sv.behind | 0) > 0 ? `<button class="abtn br-act" data-act="catchup" data-proj="${esc(sv.project)}" data-branch="${esc(f.branch)}" data-behind="${sv.behind}" title="merge main into ${esc(f.branch)} — ↓${sv.behind} behind; only proceeds if it merges clean">⇣ catch up</button>` : ''}
       ${epicOK && sv.state !== 'main' ? `<button class="abtn br-act" data-act="trigger" data-proj="${esc(sv.project)}" data-ref="${esc(f.branch)}" title="run ${esc(f.branch)}'s CI on ${esc(sv.name)}">${ICON_SCOPE}</button>`
       : epicOK && sv.state === 'main' ? `<button class="abtn br-act featfix" data-proj="${esc(sv.project)}" data-branch="${esc(f.branch)}" title="join ${esc(sv.name)} to this feature (creates its branch + drafts the MR)">${ICON_BRANCH} join</button>` : ''}
     </div>`).join('');
@@ -1178,6 +1179,7 @@ document.addEventListener('click', async e => {
   if (b.dataset.ahead !== undefined && b.dataset.ahead !== '') opts.ahead = parseInt(b.dataset.ahead, 10);
   if (b.dataset.mriid) { opts.mriid = parseInt(b.dataset.mriid, 10); }
   if (b.dataset.branch) opts.branch = b.dataset.branch;
+  if (b.dataset.behind) opts.behind = parseInt(b.dataset.behind, 10);
   openActionModal(b.dataset.act, b.dataset.proj, opts);
 });
 function openActionModal(action, project, opts) {
@@ -1198,10 +1200,12 @@ function openActionModal(action, project, opts) {
   $('#actmodal').innerHTML = `
     <div class="d-back"></div>
     <div class="d-panel" role="dialog" aria-modal="true">
-      <div class="d-head">${METAMARK}<b>${action === 'release' ? 'Release' : action === 'deliver' ? `Deliver to ${esc(opts.env || (state.eco?.delivery?.[0]?.environment ?? 'the environment'))}` : action === 'delete' ? 'Delete branch' : action === 'merge-mr' ? 'Merge to main' : action === 'retire' ? 'Retire feature' : 'Trigger pipeline'}</b>
+      <div class="d-head">${METAMARK}<b>${action === 'release' ? 'Release' : action === 'deliver' ? `Deliver to ${esc(opts.env || (state.eco?.delivery?.[0]?.environment ?? 'the environment'))}` : action === 'delete' ? 'Delete branch' : action === 'merge-mr' ? 'Merge to main' : action === 'retire' ? 'Retire feature' : action === 'catchup' ? 'Catch up with main' : 'Trigger pipeline'}</b>
         <span class="mono mut">${esc(project)}</span><span class="spacer"></span>
         <a href="#" id="act-x" aria-label="close">✕</a></div>
-      <p class="mut">${action === 'retire'
+      <p class="mut">${action === 'catchup'
+        ? `Merges <b>main</b> into <b class="mono">${esc(opts.branch || '')}</b>${opts.behind ? ` — <b>↓${opts.behind} commit${opts.behind === 1 ? '' : 's'} behind</b>` : ''}. Only proceeds if GitLab says it merges clean; a conflict stops here and reports itself — nothing is rewritten either way (merge, not rebase).`
+        : action === 'retire'
         ? `Retires <b class="mono">${esc(opts.branch || '')}</b>: deletes its branch on every joined repo and the charts twin, then closes the epic. The card disappears on the next refresh. Refused while any carrying MR is still open — nothing unmerged can be orphaned from here.`
         : action === 'merge-mr'
         ? `Merges <b class="mono">!${opts.mriid}</b> — <b class="mono">${esc(opts.branch || '')}</b>'s work joins main and rides the next RC. Once every carrying MR of this feature is merged, its epic closes as <b>Done</b>.`
@@ -1224,7 +1228,7 @@ function openActionModal(action, project, opts) {
         : 'Plays the manual <b>trigger:manual</b> job: pushes an empty commit to main so the delivery pipeline runs end-to-end on a fresh SHA.'}</p>
       ${action === 'deliver' ? `<div id="act-preview" class="mut" style="font-size:12px;margin:2px 0 12px">checking what this introduces…</div>` : ''}
       <div class="act-row">
-        <button id="act-go" class="abtn ${needsConfirm ? 'warn' : ''}">${action === 'release' ? ICON_ROCKET + ' <span class="cd-txt">release</span><span class="cd"></span>' : action === 'deliver' ? ICON_SHIP + ' <span class="cd-txt">deliver</span><span class="cd"></span>' : action === 'delete' ? ICON_TRASH + ' <span class="cd-txt">delete</span><span class="cd"></span>' : action === 'merge-mr' ? ICON_MR + ' <span class="cd-txt">merge</span><span class="cd"></span>' : action === 'retire' ? ICON_TRASH + ' <span class="cd-txt">retire</span><span class="cd"></span>' : ICON_SCOPE + ' trigger'}</button>
+        <button id="act-go" class="abtn ${needsConfirm ? 'warn' : ''}">${action === 'release' ? ICON_ROCKET + ' <span class="cd-txt">release</span><span class="cd"></span>' : action === 'deliver' ? ICON_SHIP + ' <span class="cd-txt">deliver</span><span class="cd"></span>' : action === 'delete' ? ICON_TRASH + ' <span class="cd-txt">delete</span><span class="cd"></span>' : action === 'merge-mr' ? ICON_MR + ' <span class="cd-txt">merge</span><span class="cd"></span>' : action === 'retire' ? ICON_TRASH + ' <span class="cd-txt">retire</span><span class="cd"></span>' : action === 'catchup' ? '⇣ catch up' : ICON_SCOPE + ' trigger'}</button>
         <span class="act-id mono mut" title="attribution is set by the server — the signed-in konstruct session">as @${esc(actor)}</span>
         <span id="act-out" class="mono mut"></span>
       </div>
@@ -1253,7 +1257,7 @@ function openActionModal(action, project, opts) {
       const hdrs = { 'Content-Type': 'application/json' };
       if (state.konstructUser) hdrs['X-Konstruct-Actor'] = state.konstructUser;
       const res = await fetch('/api/actions/run', { method: 'POST', headers: hdrs,
-        body: JSON.stringify({ project, action, confirm, ref: ref || undefined, branch: action === 'retire' ? (opts.branch || undefined) : undefined, mr_iid: opts.mriid || undefined, env: opts.env || undefined, version: action === 'deliver' ? (version || '') : undefined }) });
+        body: JSON.stringify({ project, action, confirm, ref: ref || undefined, branch: (action === 'retire' || action === 'catchup') ? (opts.branch || undefined) : undefined, mr_iid: opts.mriid || undefined, env: opts.env || undefined, version: action === 'deliver' ? (version || '') : undefined }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         // stale "merged" view: the server re-checked and found unmerged work —
@@ -1269,6 +1273,13 @@ function openActionModal(action, project, opts) {
         state.burstUntil = Date.now() + 120000;
         refresh();
         setTimeout(() => { closeActModal(); }, 2200);
+        return;
+      }
+      if (action === 'catchup') {
+        $('#act-out').innerHTML = `✓ caught up — main merged into ${esc(body.branch)} (↓${body.behind} absorbed)`;
+        state.burstUntil = Date.now() + 120000;
+        refresh();
+        setTimeout(() => { closeActModal(); }, 2600);
         return;
       }
       if (action === 'deliver' && body.mode === 'mr') {

@@ -140,7 +140,7 @@ func (x *actions) status(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{
 		"enabled":       true,
-		"actions":       []string{"trigger", "release", "deliver", "feature", "delete", "merge-mr", "hotfix", "hotfix-join", "retire"},
+		"actions":       []string{"trigger", "release", "deliver", "feature", "delete", "merge-mr", "hotfix", "hotfix-join", "retire", "catchup"},
 		"actor":         x.actorFor(r),
 		"branch_policy": x.topo.BranchPolicy,
 	})
@@ -214,7 +214,8 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 	}
 	jobName, isJob := actionJobs[req.Action]
 	if !isJob && req.Action != "deliver" && req.Action != "feature" && req.Action != "delete" &&
-		req.Action != "merge-mr" && req.Action != "hotfix" && req.Action != "hotfix-join" && req.Action != "retire" {
+		req.Action != "merge-mr" && req.Action != "hotfix" && req.Action != "hotfix-join" && req.Action != "retire" &&
+		req.Action != "catchup" {
 		writeErr(w, 400, "unknown action")
 		return
 	}
@@ -272,6 +273,84 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			"ok": true, "action": "hotfix-join", "actor": actor, "branch": branch,
 			"joined": joined, "web_url": webURL,
 			"checkout": fmt.Sprintf("git fetch origin %s && git checkout %s", branch, branch),
+		})
+		return
+	}
+
+	// catchup: merge main INTO a feature branch that fell behind — only when
+	// GitLab's mergeability engine says it merges clean. A merge, never a
+	// rebase: nobody's local clone gets its history rewritten. Mechanics: a
+	// short-lived MR main→branch asks GitLab the safety question; "mergeable"
+	// → accept it; anything else → close it and report why. Hotfix branches
+	// are excluded on purpose — they pin old versions and SHOULD stay behind.
+	if req.Action == "catchup" {
+		branch := strings.TrimSpace(req.Branch)
+		// epic- allowlist, same as merge-mr and retire: the UI only offers
+		// catch-up on feature rows, but a direct POST must not be able to
+		// point the write-scoped bot at deploy/staging/anyone's branch.
+		if !strings.HasPrefix(branch, "epic-") || !reBranch.MatchString(branch) {
+			writeErr(w, 400, "catch-up applies to feature (epic-*) branches only")
+			return
+		}
+		ctx := context.Background()
+		// live re-check: the card's ↓behind may be a cached view
+		behind, _, err := x.gl.compareBranch(ctx, req.Project, branch, "main")
+		if err != nil {
+			writeErr(w, 502, "compare failed: "+err.Error())
+			return
+		}
+		if behind == 0 {
+			writeErr(w, 409, "branch is already current with main")
+			return
+		}
+		// removeSource=false — the SOURCE here is main; asking GitLab to
+		// delete it on merge would be an outage gated only by branch
+		// protection. The probe MR must never carry that flag.
+		mr, err := x.gl.createMR(ctx, req.Project, "main", branch,
+			fmt.Sprintf("catch up %s with main", branch),
+			fmt.Sprintf("Automated catch-up: merge main into `%s` (↓%d behind).\n\nInitiated-by: @%s", branch, behind, actor), false)
+		if err != nil {
+			writeErr(w, 502, "catch-up MR on "+req.Project+": "+err.Error())
+			return
+		}
+		// GitLab computes mergeability async — poll briefly until it settles
+		status := mr.DetailedMergeStatus
+		for i := 0; i < 10 && (status == "" || status == "checking" || status == "unchecked" || status == "preparing"); i++ {
+			time.Sleep(700 * time.Millisecond)
+			if m, err := x.gl.mr(ctx, req.Project, mr.IID); err == nil {
+				status = m.DetailedMergeStatus
+			}
+		}
+		if status != "mergeable" {
+			_ = x.gl.closeMR(ctx, req.Project, mr.IID)
+			reason := "mergeability is " + status
+			if status == "conflict" || status == "broken_status" {
+				reason = "main conflicts with this branch — resolve manually"
+			} else if status == "" || status == "checking" || status == "unchecked" || status == "preparing" {
+				reason = "GitLab did not settle mergeability in time — try again"
+			}
+			log.Printf("ACTION catchup project=%s branch=%s behind=%d status=%q refused actor=%s remote=%s",
+				req.Project, branch, behind, status, actor, clientIP(r))
+			writeErr(w, 409, "not safe to catch up: "+reason)
+			return
+		}
+		merged, err := x.gl.mergeMR(ctx, req.Project, mr.IID)
+		if err != nil {
+			_ = x.gl.closeMR(ctx, req.Project, mr.IID)
+			writeErr(w, 502, "merge failed: "+err.Error())
+			return
+		}
+		if x.dropBranches != nil {
+			x.dropBranches(req.Project)
+		}
+		if x.markHot != nil {
+			x.markHot(req.Project)
+		}
+		log.Printf("ACTION catchup project=%s branch=%s behind=%d mr=%d actor=%s remote=%s",
+			req.Project, branch, behind, mr.IID, actor, clientIP(r))
+		writeJSON(w, map[string]any{
+			"ok": true, "action": "catchup", "actor": actor, "branch": branch,
+			"behind": behind, "mr": mr.IID, "web_url": merged.WebURL,
 		})
 		return
 	}
@@ -351,7 +430,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			if req.EpicIID > 0 {
 				desc += fmt.Sprintf("\n\nRelated to &%d", req.EpicIID)
 			}
-			if m, err := x.gl.createMR(ctx, req.Project, branch, "main", "Draft: "+branch, desc); err == nil {
+			if m, err := x.gl.createMR(ctx, req.Project, branch, "main", "Draft: "+branch, desc, true); err == nil {
 				mr = &m
 			} else {
 				log.Printf("ACTION feature draft-mr failed project=%s branch=%s err=%v", req.Project, branch, err)
@@ -642,7 +721,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			if target.Write == "mr" {
 				m, err := c.createMR(ctx, target.Project, wb, br,
 					fmt.Sprintf("chore: deliver %s %s to %s", name, ver, target.Env),
-					fmt.Sprintf("Requested from foxglider.\n\nWas `%s`.\n\nInitiated-by: @%s", cur, actor))
+					fmt.Sprintf("Requested from foxglider.\n\nWas `%s`.\n\nInitiated-by: @%s", cur, actor), true)
 				if err != nil {
 					writeErr(w, 502, "bump MR: "+err.Error())
 					return

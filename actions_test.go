@@ -695,3 +695,88 @@ func TestHotfixOnlyPolicy(t *testing.T) {
 		t.Fatalf("hotfix trigger under policy = %d", res.StatusCode)
 	}
 }
+
+// TestCatchup: merging main into a behind feature branch — only when GitLab
+// calls it mergeable; conflicts close the probe MR and report honestly.
+func TestCatchup(t *testing.T) {
+	var mrBody map[string]any
+	var mergedCalls, closedCalls int
+	mergeStatus := "mergeable"
+	behindCommits := `{"commits":[{"id":"c1","author_name":"jd"},{"id":"c2","author_name":"jd"}]}`
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(p, "/repository/compare"):
+			w.Write([]byte(behindCommits))
+		case strings.HasSuffix(p, "/merge_requests") && r.Method == "POST":
+			json.NewDecoder(r.Body).Decode(&mrBody)
+			w.Write([]byte(`{"iid":88,"state":"opened","detailed_merge_status":"` + mergeStatus + `","web_url":"http://gl/mr/88"}`))
+		case strings.HasSuffix(p, "/merge_requests/88/approve"):
+			w.Write([]byte(`{}`))
+		case strings.HasSuffix(p, "/merge_requests/88/merge") && r.Method == "PUT":
+			mergedCalls++
+			w.Write([]byte(`{"iid":88,"state":"merged","web_url":"http://gl/mr/88"}`))
+		case strings.HasSuffix(p, "/merge_requests/88") && r.Method == "PUT":
+			closedCalls++
+			w.Write([]byte(`{"iid":88,"state":"closed"}`))
+		case strings.HasSuffix(p, "/merge_requests/88") && r.Method == "GET":
+			w.Write([]byte(`{"iid":88,"detailed_merge_status":"` + mergeStatus + `"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	t.Setenv("GITLAB_ACTION_TOKEN", "act-tok")
+	t.Setenv("TOPOLOGY", `{"services":[{"name":"metaphor","project":"civo/metaphor/metaphor","chart":"charts/metaphor/Chart.yaml"}],"macro":{"name":"metaphor-macro","project":"civo/metaphor/charts","file":"charts/metaphor-macro/Chart.yaml","tagPrefix":"metaphor-v"}}`)
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	post := func(body string) (*http.Response, map[string]any) {
+		res, err := http.Post(srv.URL+"/api/actions/run", "application/json", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out map[string]any
+		json.NewDecoder(res.Body).Decode(&out)
+		return res, out
+	}
+
+	// hotfix branches are excluded by design
+	res, _ := post(`{"action":"catchup","project":"civo/metaphor/metaphor","branch":"hotfix-1.2"}`)
+	if res.StatusCode != 400 {
+		t.Fatalf("hotfix catchup = %d, want 400", res.StatusCode)
+	}
+	// the safe path: behind, mergeable -> merged via a probe MR main->branch
+	res, out := post(`{"action":"catchup","project":"civo/metaphor/metaphor","branch":"epic-9-x"}`)
+	if res.StatusCode != 200 || out["behind"] != float64(2) || out["mr"] != float64(88) {
+		t.Fatalf("catchup = %d %+v", res.StatusCode, out)
+	}
+	if mrBody["source_branch"] != "main" || mrBody["target_branch"] != "epic-9-x" {
+		t.Fatalf("probe MR direction = %+v", mrBody)
+	}
+	// the probe's SOURCE is main — remove_source_branch must be false, or a
+	// successful catch-up asks GitLab to delete main (gated only by branch
+	// protection)
+	if mrBody["remove_source_branch"] != false {
+		t.Fatalf("probe MR remove_source_branch = %v, must be false", mrBody["remove_source_branch"])
+	}
+	if mergedCalls != 1 || closedCalls != 0 {
+		t.Fatalf("merged=%d closed=%d, want 1/0", mergedCalls, closedCalls)
+	}
+	// conflicts: refuse, close the probe MR, never merge
+	mergeStatus = "conflict"
+	res, out = post(`{"action":"catchup","project":"civo/metaphor/metaphor","branch":"epic-9-x"}`)
+	if res.StatusCode != 409 || !strings.Contains(out["error"].(string), "conflict") {
+		t.Fatalf("conflict catchup = %d %+v", res.StatusCode, out)
+	}
+	if mergedCalls != 1 || closedCalls != 1 {
+		t.Fatalf("after conflict: merged=%d closed=%d, want 1/1", mergedCalls, closedCalls)
+	}
+	// already current: honest 409, no MR at all
+	behindCommits = `{"commits":[]}`
+	res, out = post(`{"action":"catchup","project":"civo/metaphor/metaphor","branch":"epic-9-x"}`)
+	if res.StatusCode != 409 || !strings.Contains(out["error"].(string), "already current") {
+		t.Fatalf("current catchup = %d %+v", res.StatusCode, out)
+	}
+}
