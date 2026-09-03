@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.27.0"
+const themeVersion = "2.28.0"
 
 const ttlEco = 45 * time.Second
 
@@ -271,6 +271,57 @@ func newestTag(tags []glTag, prefix string) string {
 		}
 	}
 	return ""
+}
+
+// tagLine returns the X.Y.Z base line of an rc tag (prefix stripped, the -rc.
+// suffix dropped) and whether it parsed.
+func tagLine(name, prefix string) (ver, bool) {
+	if !strings.HasPrefix(name, prefix) {
+		return ver{}, false
+	}
+	b := strings.TrimPrefix(name, prefix)
+	if i := strings.Index(b, "-rc."); i >= 0 {
+		b = b[:i]
+	}
+	v := parseVer(b)
+	return v, v.ok
+}
+
+// declaredLine is the umbrella's OWN base line, read from its Chart.yaml
+// version field (e.g. "0.7.0-rc.860bcb1a" → 0.7.0). civo/konstruct/charts is a
+// monorepo that tags every subchart AND the umbrella under one shared prefix
+// (konstruct-v), so the tag name alone can't tell an umbrella publish from a
+// bundled microchart's — a bare "newest/highest tag" grabs whatever microchart
+// published last (konstruct-api's 0.7.8, not the umbrella's 0.7.0). The
+// declared line is the reliable discriminator.
+func declaredLine(macroRaw string) (ver, bool) {
+	b := chartVersion(macroRaw)
+	if i := strings.Index(b, "-rc."); i >= 0 {
+		b = b[:i]
+	}
+	v := parseVer(b)
+	return v, v.ok
+}
+
+// sameLine reports whether two versions share an X.Y.Z base line.
+func sameLine(a, b ver) bool {
+	return a.maj == b.maj && a.min == b.min && a.pat == b.pat
+}
+
+// newestTagOnLine returns the newest-by-time rc tag on a specific base line.
+// Tags arrive newest-first, so the first match is the newest. Falls back to
+// newestTag when the line has no tags — keeps a sane headline if the declared
+// version is malformed or unmatched.
+func newestTagOnLine(tags []glTag, prefix string, line ver) string {
+	for _, t := range tags {
+		if !reRCTag.MatchString(t.Name) {
+			continue
+		}
+		if v, ok := tagLine(t.Name, prefix); ok && sameLine(v, line) {
+			return t.Name
+		}
+	}
+	return newestTag(tags, prefix)
 }
 
 // drift classifies a delivered version against the published one.
@@ -742,6 +793,16 @@ collect:
 		}
 	}
 
+	// The fan-out's newestTag grabs the highest tag under the macro prefix, but
+	// in a charts monorepo that's whatever subchart published highest, not the
+	// umbrella. Re-pin the headline to the umbrella's own declared line so it
+	// reflects the umbrella itself (konstruct: 0.7.0, not konstruct-api's 0.7.8).
+	if line, ok := declaredLine(macroRaw); ok {
+		if tg := newestTagOnLine(a.cachedTags(ctx, t.MacroProj), t.MacroTag, line); tg != "" {
+			publishedTag = tg
+		}
+	}
+
 	deps := macroDeps(macroRaw)
 	publishedRC := strings.TrimPrefix(publishedTag, t.MacroTag)
 	// The bundle tree shows what's inside the PUBLISHED umbrella — deps read
@@ -774,10 +835,20 @@ collect:
 		Pipeline:  macroPB.Pipe, Commit: macroPB.Commit, SHAPipes: macroPB.Pipes,
 		Hotfixes: macroTB.hots, BranchPipes: macroTB.pipes,
 	}
+	// Same monorepo caveat as the headline: the picker lists the umbrella's own
+	// published versions, so filter to its declared line and drop bundled
+	// microchart tags that merely share the prefix.
+	umbLine, hasUmbLine := declaredLine(macroRaw)
 	for _, tg := range a.cachedTags(ctx, t.MacroProj) {
-		if strings.HasPrefix(tg.Name, t.MacroTag) {
-			macro.Tags = append(macro.Tags, tg.Name)
+		if !strings.HasPrefix(tg.Name, t.MacroTag) {
+			continue
 		}
+		if hasUmbLine {
+			if v, ok := tagLine(tg.Name, t.MacroTag); !ok || !sameLine(v, umbLine) {
+				continue
+			}
+		}
+		macro.Tags = append(macro.Tags, tg.Name)
 		if len(macro.Tags) >= 12 {
 			break
 		}

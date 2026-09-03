@@ -515,3 +515,38 @@ func TestNewestTagHighestBase(t *testing.T) {
 		t.Fatalf("newestTag ties = %q, want the most recent rc.33", got)
 	}
 }
+
+// TestUmbrellaLineIsolation: civo/konstruct/charts is a monorepo that tags every
+// subchart AND the umbrella under one shared prefix, so "highest base" grabs a
+// bundled microchart (konstruct-api's 0.7.8), not the umbrella (0.7.0). The
+// headline and picker must pin to the umbrella's OWN declared line.
+func TestUmbrellaLineIsolation(t *testing.T) {
+	// newest-first by time; every entry shares the konstruct-v prefix.
+	tags := []glTag{
+		{Name: "konstruct-v0.2.0-rc.aaaa1111"}, // theme-operator
+		{Name: "konstruct-v0.7.8-rc.bbbb2222"}, // konstruct-api — the highest-base trap
+		{Name: "konstruct-v0.7.0-rc.cccc3333"}, // umbrella — newest on its line
+		{Name: "konstruct-v0.4.5-rc.dddd4444"}, // an operator
+		{Name: "konstruct-v0.7.0-rc.eeee5555"}, // umbrella — older on its line
+	}
+	line, ok := declaredLine("apiVersion: v2\nname: konstruct\nversion: 0.7.0-rc.860bcb1a\n")
+	if !ok || line.maj != 0 || line.min != 7 || line.pat != 0 {
+		t.Fatalf("declaredLine = %+v ok=%v, want 0.7.0", line, ok)
+	}
+	// Headline pins to the umbrella line, not konstruct-api's higher 0.7.8.
+	if got := newestTagOnLine(tags, "konstruct-v", line); got != "konstruct-v0.7.0-rc.cccc3333" {
+		t.Errorf("headline = %q, want newest 0.7.0 umbrella tag", got)
+	}
+	// A line with no tags falls back to newestTag (highest base) — never empty.
+	orphan := ver{maj: 9, min: 9, pat: 9, ok: true}
+	if got := newestTagOnLine(tags, "konstruct-v", orphan); got != "konstruct-v0.7.8-rc.bbbb2222" {
+		t.Errorf("fallback = %q, want highest-base newestTag", got)
+	}
+	// The bundled microchart's 0.7.8 must NOT read as on the umbrella line.
+	if v, ok := tagLine("konstruct-v0.7.8-rc.bbbb2222", "konstruct-v"); !ok || sameLine(v, line) {
+		t.Errorf("konstruct-api 0.7.8 must not be on the umbrella 0.7.0 line")
+	}
+	if v, ok := tagLine("konstruct-v0.7.0-rc.cccc3333", "konstruct-v"); !ok || !sameLine(v, line) {
+		t.Errorf("umbrella 0.7.0 tag must be on the umbrella line")
+	}
+}
