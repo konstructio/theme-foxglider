@@ -491,3 +491,27 @@ func TestDeliveryMeta(t *testing.T) {
 		t.Fatalf("updated = %q by %q", d.UpdatedAt, d.UpdatedBy)
 	}
 }
+
+// TestNewestTagHighestBase: the newest tag is the HIGHEST version, not the
+// most recent by time — a stray low-version tag pushed after a higher one
+// (konstruct's unstable umbrella version) must not headline.
+func TestNewestTagHighestBase(t *testing.T) {
+	// order = newest-first by time; 0.2.0 was pushed AFTER 0.7.8
+	tags := []glTag{
+		{Name: "konstruct-v0.2.0-rc.74f3c6d6"},
+		{Name: "konstruct-v0.2.0-rc.51046d97"},
+		{Name: "konstruct-v0.7.8-rc.7270ed26"},
+		{Name: "konstruct-v0.4.5-rc.701e91af"},
+	}
+	if got := newestTag(tags, "konstruct-v"); got != "konstruct-v0.7.8-rc.7270ed26" {
+		t.Fatalf("newestTag = %q, want the highest line 0.7.8", got)
+	}
+	// same-base ties keep the most recent (first in the list)
+	metaphor := []glTag{
+		{Name: "metaphor-v0.2.0-rc.33"},
+		{Name: "metaphor-v0.2.0-rc.32"},
+	}
+	if got := newestTag(metaphor, "metaphor-v"); got != "metaphor-v0.2.0-rc.33" {
+		t.Fatalf("newestTag ties = %q, want the most recent rc.33", got)
+	}
+}

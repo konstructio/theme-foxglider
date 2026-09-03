@@ -338,6 +338,10 @@ func ecoFake(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, `[{"iid":9,"title":"feat: show rishi","state":"opened","source_branch":"epic-showrishi","web_url":"https://git.civo.com/x/-/merge_requests/9"}]`)
 			return
 		}
+		if r.URL.Query().Get("source_branch") == "hotfix/0.2" {
+			fmt.Fprint(w, `[{"iid":77,"title":"fix: patch 0.2","state":"opened","source_branch":"hotfix/0.2","web_url":"https://git.civo.com/x/-/merge_requests/77"}]`)
+			return
+		}
 		fmt.Fprint(w, `[]`)
 	case strings.HasSuffix(p, "/merge_requests") && r.Method == "GET":
 		w.Header().Set("Content-Type", "application/json")

@@ -195,6 +195,10 @@
   .pe-miss{color:var(--mut2);border-color:var(--line)}
   .pe-none{color:#fbbf24;border-color:#78560f;background:rgba(251,191,36,.06)}
   .feat-g{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 14px;margin:0 0 10px}
+  .copyname{cursor:pointer}
+  .copyname:hover{color:var(--civo);text-decoration:underline dotted}
+  .copied-toast{margin-left:6px;font-size:10px;color:var(--civo);animation:copiedfade 1.2s ease-out forwards;white-space:nowrap}
+  @keyframes copiedfade{0%{opacity:0;transform:translateY(2px)}15%{opacity:1;transform:none}80%{opacity:1}100%{opacity:0}}
   .feat-h{display:flex;align-items:center;gap:9px;margin-bottom:7px}
   .feat-name{font-size:13px;color:var(--ink)}
   .fs-row{display:flex;align-items:center;gap:9px;padding:3px 0 3px 20px;font-size:12px;flex-wrap:wrap;row-gap:2px}
@@ -479,6 +483,19 @@ document.addEventListener('click', e => {
   const br = f.dataset.focus;
   state.focus = state.focus === br ? null : br;
   if (state.eco) renderDelivery(state.eco);
+});
+// clicking a branch name copies it to the clipboard, with a brief confirmation.
+document.addEventListener('click', e => {
+  const n = e.target.closest('.copyname'); if (!n) return;
+  const txt = n.dataset.copytext || n.textContent || '';
+  const flash = () => {
+    const t = document.createElement('span');
+    t.className = 'copied-toast'; t.textContent = 'copied \u2713';
+    n.after(t); setTimeout(() => t.remove(), 1200);
+  };
+  if (navigator.clipboard && window.isSecureContext)
+    navigator.clipboard.writeText(txt).then(flash, () => { fallbackCopy(txt); flash(); });
+  else { fallbackCopy(txt); flash(); }
 });
 document.addEventListener('click', e => {
   const b = e.target.closest('.copy'); if (!b) return;
@@ -845,8 +862,9 @@ function hotfixStrip(d) {
     return `<div class="feat-g">
       <div class="feat-h">
         <button class="ef-btn${state.focus === row.branch ? ' ef-on' : ''}" data-focus="${esc(row.branch)}" title="${state.focus === row.branch ? 'unfocus — show every feature and hotfix again' : 'focus — solo view; hides other features and hotfixes'}">◎</button>
-        <span class="mono feat-name">${esc(row.branch)}</span>
+        <span class="mono feat-name copyname" data-copytext="${esc(row.branch)}" title="click to copy the branch name">${esc(row.branch)}</span>
         <button class="copy" data-sha="git fetch origin ${esc(row.branch)} && git checkout ${esc(row.branch)}" title="copy the fetch+checkout commands">⧉</button>
+        ${row.mr_iid ? `<a class="fs-mr mono mr-${esc(row.mr_state || 'ready')}" target="_blank" href="${row.mr_url}" title="open the merge request for this hotfix — ${esc(row.mr_state || 'open')}">${ICON_MR} !${row.mr_iid}</a>` : ''}
         <span class="mut">${row.when ? relTime(row.when) : ''}</span>
         ${stack ? `<span class="avstack" title="wrote this line's unmerged commits">${stack}</span>` : ''}
         <span class="fs-out mono mut"></span>
@@ -913,9 +931,10 @@ function featureGroup(f, d) {
   return `<div class="feat-g">
     <div class="feat-h">
       <button class="ef-btn${state.focus === f.branch ? ' ef-on' : ''}" data-focus="${esc(f.branch)}" title="${state.focus === f.branch ? 'unfocus — show every feature and hotfix again' : 'focus — solo view; hides other features and hotfixes'}">◎</button>
-      <span class="mono feat-name">${esc(f.branch)}</span>
+      <span class="mono feat-name copyname" data-copytext="${esc(f.branch)}" title="click to copy the branch name">${esc(f.branch)}</span>
       <button class="copy" data-sha="git fetch origin ${esc(f.branch)} && git checkout ${esc(f.branch)}" title="copy the fetch+checkout commands for any of these repos">⧉</button>
       ${f.epic_iid ? `<a class="pv-epic" target="_blank" href="${f.epic_url}">&${f.epic_iid}</a>` : ''}
+      ${(() => { const m = (f.services || []).find(sv => sv.mr_iid && sv.mr_state && sv.mr_state !== 'merged' && sv.mr_state !== 'closed'); return m ? `<a class="fs-mr mono mr-${esc(m.mr_state)}" target="_blank" href="${m.mr_url}" title="open the carrying merge request — ${esc(m.mr_state)}">${ICON_MR} !${m.mr_iid}</a>` : ''; })()}
       ${f.merged ? '<span class="fs-b fs-merged" title="every carrying MR is merged — the content rides main">merged</span>' : ''}
       ${(f.envs || []).map(envChip).join('')}
       ${nowhere ? '<span class="pe pe-none">not yet in any environment</span>' : ''}

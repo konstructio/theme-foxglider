@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.26.1"
+const themeVersion = "2.27.0"
 
 const ttlEco = 45 * time.Second
 
@@ -237,7 +237,34 @@ var reRCTag = regexp.MustCompile(`-rc\.[0-9a-f]+$`)
 // ordered by update time (newest first), which is the only ordering that
 // works for BOTH rc styles — semver-comparing sha suffixes is a trap (an
 // all-digit sha parses as a huge counter and outranks everything).
+// newestTag picks the HIGHEST-versioned rc tag, not the most-recent-by-time.
+// When an umbrella's version field is unstable (konstruct has published
+// 0.2.0-rc, 0.4.x-rc AND 0.7.8-rc tags), the latest push can be a LOWER
+// version than the real current line — so time-order would headline 0.2.0
+// over 0.7.8. Comparing the base (X.Y.Z before -rc, since the -rc suffix may
+// be a sha) keeps the current line on top; ties keep the most recent (tags
+// arrive newest-first). Falls back to newest-by-time if no base parses.
 func newestTag(tags []glTag, prefix string) string {
+	best, bestVer := "", ver{}
+	for _, t := range tags {
+		if !strings.HasPrefix(t.Name, prefix) || !reRCTag.MatchString(t.Name) {
+			continue
+		}
+		base := strings.TrimPrefix(t.Name, prefix)
+		if i := strings.Index(base, "-rc."); i >= 0 {
+			base = base[:i]
+		}
+		v := parseVer(base)
+		if !v.ok {
+			continue
+		}
+		if best == "" || cmpVer(v, bestVer) > 0 {
+			best, bestVer = t.Name, v
+		}
+	}
+	if best != "" {
+		return best
+	}
 	for _, t := range tags {
 		if strings.HasPrefix(t.Name, prefix) && reRCTag.MatchString(t.Name) {
 			return t.Name
@@ -821,6 +848,8 @@ collect:
 	// One org-wide branch pass feeds BOTH the promotion matrix and the org
 	// hotfix rollup — the same repoBranches, so the two views can't drift.
 	repos := a.repoBranchesAll(ctx, t)
+	orgHF := assembleOrgHotfixes(t, repos)
+	a.enrichHotfixMRs(ctx, orgHF)
 	writeJSON(w, map[string]any{
 		"generated_at": time.Now().UTC(),
 		"macro":        macro,
@@ -828,7 +857,7 @@ collect:
 		"delivery":     delivery,
 		"summary":      ecoSummary(t, macro, delivery, a.cachedTags(ctx, t.MacroProj)),
 		"promotions":   a.promotions(ctx, t, delivery, repos),
-		"org_hotfixes": assembleOrgHotfixes(t, repos),
+		"org_hotfixes": orgHF,
 	})
 }
 
@@ -1938,11 +1967,42 @@ type orgHotfixJSON struct {
 	Branch string          `json:"branch"`
 	When   string          `json:"when"`
 	Repos  []orgHotfixRepo `json:"repos"`
+	// the first OPEN merge request carrying this hotfix, across its repos —
+	// a quick jump to review/merge it. Empty when none is open.
+	MRIID   int    `json:"mr_iid,omitempty"`
+	MRURL   string `json:"mr_url,omitempty"`
+	MRState string `json:"mr_state,omitempty"`
 }
 
 // assembleOrgHotfixes groups non-stale hotfix branches by name across every
 // topology service and the macro repo — each row carries a cell for every
 // repo (present or not), newest-first, capped at 6.
+// enrichHotfixMRs attaches the first OPEN merge request carrying each hotfix,
+// checking its repos in order and stopping at the first hit. Each lookup is
+// cached (mrs: key, ttlBranches) — shared with the feature path.
+func (a *api) enrichHotfixMRs(ctx context.Context, rows []orgHotfixJSON) {
+	for i := range rows {
+		for _, c := range rows[i].Repos {
+			if !c.Has {
+				continue
+			}
+			v, err := a.c.do("mrs:"+c.Project+"@"+rows[i].Branch, ttlBranches, func() (any, error) {
+				bctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+				return a.gl.mrsBySource(bctx, c.Project, rows[i].Branch)
+			})
+			if err != nil {
+				continue
+			}
+			list, _ := v.([]glMR)
+			if m := bestMR(list); m != nil && m.State == "opened" {
+				rows[i].MRIID, rows[i].MRURL, rows[i].MRState = m.IID, m.WebURL, mrStateLabel(*m)
+				break
+			}
+		}
+	}
+}
+
 func assembleOrgHotfixes(t topology, repos []repoBranches) []orgHotfixJSON {
 	byBranch := map[string]map[string]branchJSON{} // branch → project → entry
 	newest := map[string]string{}
