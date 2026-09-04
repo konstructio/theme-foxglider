@@ -47,9 +47,10 @@ type api struct {
 	// gone (the DELETE returned 2xx) — renders skip it while upstream
 	// catches up.
 	recentDel map[string]time.Time
-	// epicClosed: one-shot memory for the merge observer — an epic is closed
-	// as Done exactly once per process (verified against live state first).
-	epicClosed map[int]bool
+	// epicMergeSeen: one-shot memory for the merge observer — an epic is
+	// flipped to In Review exactly once per process (verified against live
+	// state first). Closing stays human (2026-09-04).
+	epicMergeSeen map[int]bool
 	// chartsTwinned: one-shot memory for the charts-twin observer.
 	chartsTwinned map[string]bool
 	// clients: one GitLab client per (host, token_env) delivery target —
@@ -59,7 +60,7 @@ type api struct {
 }
 
 func newAPI(gl *glClient, groups []string) http.Handler {
-	a := &api{gl: gl, groups: groups, c: newCache(), topo: loadTopology(), hot: map[string]time.Time{}, lastSvc: map[string]string{}, recentDel: map[string]time.Time{}, epicClosed: map[int]bool{}, chartsTwinned: map[string]bool{}, clients: map[string]*glClient{}}
+	a := &api{gl: gl, groups: groups, c: newCache(), topo: loadTopology(), hot: map[string]time.Time{}, lastSvc: map[string]string{}, recentDel: map[string]time.Time{}, epicMergeSeen: map[int]bool{}, chartsTwinned: map[string]bool{}, clients: map[string]*glClient{}}
 	// Cross-group delivery files (e.g. konstruct's internal targetRevision in
 	// civo/platform/civo-gitops) may need their own read credential.
 	if tok := os.Getenv("GITLAB_TOKEN_DELIVERY"); tok != "" {
