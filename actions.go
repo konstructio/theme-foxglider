@@ -140,7 +140,7 @@ func (x *actions) status(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{
 		"enabled":       true,
-		"actions":       []string{"trigger", "release", "deliver", "feature", "delete", "merge-mr", "hotfix", "hotfix-join", "retire", "catchup"},
+		"actions":       []string{"trigger", "release", "deliver", "feature", "delete", "merge-mr", "hotfix", "hotfix-join", "retire", "catchup", "close-bump-mrs"},
 		"actor":         x.actorFor(r),
 		"branch_policy": x.topo.BranchPolicy,
 	})
@@ -215,7 +215,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 	jobName, isJob := actionJobs[req.Action]
 	if !isJob && req.Action != "deliver" && req.Action != "feature" && req.Action != "delete" &&
 		req.Action != "merge-mr" && req.Action != "hotfix" && req.Action != "hotfix-join" && req.Action != "retire" &&
-		req.Action != "catchup" {
+		req.Action != "catchup" && req.Action != "close-bump-mrs" {
 		writeErr(w, 400, "unknown action")
 		return
 	}
@@ -633,6 +633,41 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// close-bump-mrs: close the older foxglider-deliver MRs a fresh bump
+	// rendered obsolete — offered by the UI after a deliver, decided by the
+	// human. Scoped by construction: only open MRs whose source branch is
+	// foxglider-deliver-<env>-* in the resolved target repo, never anything
+	// else, and the MR named by mr_iid (the fresh bump) is always kept.
+	if req.Action == "close-bump-mrs" {
+		target := x.deliveryTargetFor(req.Project, req.Env)
+		if target == nil {
+			writeErr(w, 400, "no delivery target matches that project/env")
+			return
+		}
+		c := x.clientFor(*target)
+		if c == nil {
+			writeErr(w, 400, "no credential for that delivery target")
+			return
+		}
+		ctx := context.Background()
+		var closed []map[string]any
+		for _, m := range staleBumpMRs(ctx, c, *target, req.MRIID) {
+			iid := m["iid"].(int)
+			if err := c.closeMR(ctx, target.Project, iid); err != nil {
+				log.Printf("ACTION close-bump-mrs project=%s mr=%d FAILED: %v", target.Project, iid, err)
+				continue
+			}
+			// the bump branch is foxglider-authored junk once its MR closes
+			_ = c.deleteBranch(ctx, target.Project, m["branch"].(string))
+			closed = append(closed, m)
+			log.Printf("ACTION close-bump-mrs project=%s env=%s mr=%d branch=%s actor=%s remote=%s",
+				target.Project, target.Env, iid, m["branch"], actor, clientIP(r))
+		}
+		writeJSON(w, map[string]any{"ok": true, "action": "close-bump-mrs", "actor": actor,
+			"closed": closed, "kept": req.MRIID})
+		return
+	}
+
 	// deliver: run the tag pipeline for the newest published RC — GitLab's
 	// canonical "deliver this version" front door. deploy:tag-dev then writes
 	// the dev bump MR, which a background watcher auto-merges (dev
@@ -728,6 +763,12 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 				}
 				resp["mr"] = m.IID
 				resp["mr_url"] = m.WebURL
+				// The new bump often renders older open bump MRs for this env
+				// obsolete — surface them so the UI can ASK. Closing stays a
+				// human choice: keeping one open can be valid.
+				if stale := staleBumpMRs(ctx, c, *target, m.IID); len(stale) > 0 {
+					resp["stale_mrs"] = stale
+				}
 				log.Printf("ACTION deliver mode=mr env=%s version=%s mr=%d actor=%s remote=%s",
 					target.Env, ver, m.IID, actor, clientIP(r))
 			} else {
@@ -998,6 +1039,50 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 		"ok": true, "action": req.Action, "actor": actor,
 		"job_url": played.WebURL, "pipeline_url": lp.WebURL,
 	})
+}
+
+// deliveryTargetFor resolves a delivery target by project + env, mirroring
+// the deliver action's own resolution (umbrella-level targets on the macro
+// project, per-service targets otherwise).
+func (x *actions) deliveryTargetFor(project, env string) *deliverySpec {
+	if project == x.topo.MacroProj {
+		for i := range x.topo.Delivery {
+			if env == "" || x.topo.Delivery[i].Env == env {
+				return &x.topo.Delivery[i]
+			}
+		}
+		return nil
+	}
+	for si := range x.topo.Services {
+		if x.topo.Services[si].Project != project {
+			continue
+		}
+		for i := range x.topo.Services[si].Delivery {
+			if env == "" || x.topo.Services[si].Delivery[i].Env == env {
+				return &x.topo.Services[si].Delivery[i]
+			}
+		}
+	}
+	return nil
+}
+
+// staleBumpMRs lists open foxglider-deliver MRs for the target's env other
+// than keepIID — the candidates a just-opened bump renders obsolete.
+func staleBumpMRs(ctx context.Context, c *glClient, target deliverySpec, keepIID int) []map[string]any {
+	mrs, err := c.openMRs(ctx, target.Project)
+	if err != nil {
+		return nil
+	}
+	prefix := "foxglider-deliver-" + target.Env + "-"
+	var out []map[string]any
+	for _, m := range mrs {
+		if m.IID != keepIID && strings.HasPrefix(m.SourceBranch, prefix) {
+			out = append(out, map[string]any{
+				"iid": m.IID, "web_url": m.WebURL, "title": m.Title, "branch": m.SourceBranch,
+			})
+		}
+	}
+	return out
 }
 
 // chartNamesFor lists the chart identities a release job may be named after

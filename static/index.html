@@ -123,6 +123,8 @@
   @keyframes trigpulse{50%{filter:brightness(1.4)}}
   .trig-fb{font-size:10px;color:var(--civo);text-decoration:none;border:1px solid #14532d;border-radius:3px;padding:1px 6px;white-space:nowrap}
   .env-app.bumpmr{color:var(--gl-amber);border-color:#7c5a1d}
+  .stale-ask{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-size:12px}
+  .stale-ask a{color:var(--gl-amber)}
   .trig-fb.trig-err{color:var(--gl-red);border-color:var(--gl-red)}
   .live-line{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:6px;font-size:11px}
   .ll-ref{color:var(--gl-amber);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1351,7 +1353,31 @@ function openActionModal(action, project, opts) {
         const won = window.open(body.mr_url, '_blank');
         $('#act-out').innerHTML = `✓ bump MR opened — <a target="_blank" href="${body.mr_url}">!${body.mr}</a> (was ${esc(body.was || '?')})${won ? '' : ' · popup blocked — the env card keeps the link'}`;
         refresh();
-        setTimeout(() => { closeActModal(); }, 3500);
+        const stale = body.stale_mrs || [];
+        if (!stale.length) { setTimeout(() => { closeActModal(); }, 3500); return; }
+        // The fresh bump renders older ones obsolete — ASK, never assume:
+        // keeping one open can be valid (e.g. a rollback candidate).
+        const row = document.createElement('div');
+        row.className = 'stale-ask';
+        row.innerHTML = `<span class="mut">this makes ${stale.length === 1 ? 'an older bump MR' : `${stale.length} older bump MRs`} obsolete: ${stale.map(s => `<a target="_blank" href="${esc(s.web_url)}" title="${esc(s.title)}">!${s.iid}</a>`).join(' ')}</span>
+          <button id="stale-close" class="abtn warn">✂ close ${stale.length === 1 ? 'it' : 'them'}</button>
+          <button id="stale-keep" class="abtn">keep open</button>`;
+        $('#actmodal .d-panel').appendChild(row);
+        $('#stale-keep').onclick = () => closeActModal();
+        $('#stale-close').onclick = async () => {
+          $('#stale-close').disabled = true;
+          try {
+            const res2 = await fetch('/api/actions/run', { method: 'POST', headers: hdrs,
+              body: JSON.stringify({ project, action: 'close-bump-mrs', env: opts.env || undefined, mr_iid: body.mr }) });
+            const b2 = await res2.json().catch(() => ({}));
+            if (!res2.ok) throw b2;
+            row.innerHTML = `<span class="mut">✓ closed ${(b2.closed || []).map(s => '!' + s.iid).join(' ') || 'nothing'} — !${body.mr} stands alone</span>`;
+            refresh();
+            setTimeout(() => { closeActModal(); }, 2200);
+          } catch (err2) {
+            row.innerHTML = `<span class="mut">✕ ${esc((err2 && err2.error) || 'close failed')} — close them in GitLab if needed</span>`;
+          }
+        };
         return;
       }
       if (action === 'retire') {

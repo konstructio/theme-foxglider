@@ -629,6 +629,8 @@ func TestDeliverMRMode(t *testing.T) {
 		case strings.HasSuffix(p, "/merge_requests") && r.Method == "POST":
 			json.NewDecoder(r.Body).Decode(&mrBody)
 			w.Write([]byte(`{"iid":77,"state":"opened","web_url":"http://gl/g/-/merge_requests/77"}`))
+		case strings.HasSuffix(p, "/merge_requests") && r.Method == "GET":
+			w.Write([]byte(`[]`)) // no pre-existing bump MRs in this test
 		default:
 			w.WriteHeader(404)
 		}
@@ -673,6 +675,86 @@ func TestDeliverMRMode(t *testing.T) {
 	res, _ = post(`{"action":"deliver","project":"civo/metaphor/metaphor","env":"stage","version":"0.5.0","confirm":"metaphor"}`)
 	if res.StatusCode != 409 {
 		t.Fatalf("no-op deliver = %d", res.StatusCode)
+	}
+}
+
+// TestDeliverSurfacesAndClosesStaleBumps: the fresh bump names the older
+// same-env bump MRs it obsoletes (other envs and foreign MRs never appear),
+// and close-bump-mrs closes exactly those, deleting their branches, keeping
+// the fresh one.
+func TestDeliverSurfacesAndClosesStaleBumps(t *testing.T) {
+	var mrMu sync.Mutex
+	var closedMRs []int
+	var deletedBranches []string
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(p, "stage-app.yaml"):
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("spec:\n  source:\n    targetRevision: 0.5.0\n"))
+		case strings.HasSuffix(p, "/repository/commits") && r.Method == "POST":
+			w.Write([]byte(`{"id":"abc"}`))
+		case strings.HasSuffix(p, "/merge_requests") && r.Method == "POST":
+			w.Write([]byte(`{"iid":77,"state":"opened","source_branch":"foxglider-deliver-stage-0-6-0","web_url":"http://gl/g/-/merge_requests/77"}`))
+		case strings.HasSuffix(p, "/merge_requests") && r.Method == "GET":
+			// an older bump for the same env, one for another env, a foreign
+			// MR, and the fresh one itself
+			w.Write([]byte(`[
+				{"iid":70,"state":"opened","title":"chore: deliver metaphor 0.4.0 to stage","source_branch":"foxglider-deliver-stage-0-4-0","web_url":"http://gl/g/-/merge_requests/70"},
+				{"iid":71,"state":"opened","title":"other env","source_branch":"foxglider-deliver-prod-0-4-0","web_url":"http://gl/g/-/merge_requests/71"},
+				{"iid":72,"state":"opened","title":"unrelated","source_branch":"fix-thing","web_url":"http://gl/g/-/merge_requests/72"},
+				{"iid":77,"state":"opened","title":"fresh","source_branch":"foxglider-deliver-stage-0-6-0","web_url":"http://gl/g/-/merge_requests/77"}]`))
+		case strings.HasSuffix(p, "/merge_requests/70") && r.Method == "PUT":
+			mrMu.Lock()
+			closedMRs = append(closedMRs, 70)
+			mrMu.Unlock()
+			w.Write([]byte(`{"iid":70,"state":"closed"}`))
+		case strings.Contains(p, "/repository/branches/") && r.Method == "DELETE":
+			mrMu.Lock()
+			deletedBranches = append(deletedBranches, p[strings.LastIndex(p, "/")+1:])
+			mrMu.Unlock()
+			w.WriteHeader(204)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	t.Setenv("GITLAB_ACTION_TOKEN", "act-tok")
+	t.Setenv("TOPOLOGY", `{"services":[{"name":"metaphor","project":"civo/metaphor/metaphor","chart":"charts/metaphor/Chart.yaml","delivery":[{"env":"stage","cluster":"stage-1","project":"civo/platform/civo-gitops","app":"registry/stage-app.yaml","write":"mr"}]}],"macro":{"name":"metaphor-macro","project":"civo/metaphor/charts","file":"charts/metaphor-macro/Chart.yaml","tagPrefix":"metaphor-v"}}`)
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	post := func(body string) (*http.Response, map[string]any) {
+		res, err := http.Post(srv.URL+"/api/actions/run", "application/json", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out map[string]any
+		json.NewDecoder(res.Body).Decode(&out)
+		return res, out
+	}
+
+	res, out := post(`{"action":"deliver","project":"civo/metaphor/metaphor","env":"stage","version":"0.6.0","confirm":"metaphor"}`)
+	if res.StatusCode != 200 {
+		t.Fatalf("deliver = %d %+v", res.StatusCode, out)
+	}
+	stale, _ := out["stale_mrs"].([]any)
+	if len(stale) != 1 || stale[0].(map[string]any)["iid"] != float64(70) {
+		t.Fatalf("stale_mrs = %+v, want exactly !70 (same env, not the fresh !77, never other envs)", out["stale_mrs"])
+	}
+
+	res, out = post(`{"action":"close-bump-mrs","project":"civo/metaphor/metaphor","env":"stage","mr_iid":77}`)
+	if res.StatusCode != 200 {
+		t.Fatalf("close-bump-mrs = %d %+v", res.StatusCode, out)
+	}
+	mrMu.Lock()
+	defer mrMu.Unlock()
+	if len(closedMRs) != 1 || closedMRs[0] != 70 {
+		t.Fatalf("closed = %v, want exactly [70]", closedMRs)
+	}
+	if len(deletedBranches) != 1 || deletedBranches[0] != "foxglider-deliver-stage-0-4-0" {
+		t.Fatalf("deleted branches = %v, want the stale bump branch only", deletedBranches)
 	}
 }
 
