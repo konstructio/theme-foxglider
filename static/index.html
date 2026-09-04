@@ -1281,7 +1281,7 @@ function openActionModal(action, project, opts) {
         : action === 'release'
         ? ref
           ? `Plays the manual <b>release</b> job on <b class="mono">${esc(ref)}</b>'s newest pipeline — releasing from the branch, not main. If that branch's CI offers no release job, this reports it honestly.`
-          : 'Plays the manual <b>release</b> job on the latest main pipeline: cuts the clean tag from the current RC, retags artifacts (no rebuild), and opens the next dev cycle.'
+          : 'Plays the <b>release</b> job on the newest main pipeline that carries one — resolving monorepo per-umbrella names (&lt;chart&gt;-release) exactly, and starting a fresh main pipeline when none is lying around. Cuts the clean tag from the current RC, retags artifacts, opens the next dev cycle.'
         : action === 'deliver'
         ? (state.eco?.delivery || []).find(d => d.environment === opts.env)?.write === 'mr'
           ? `Bumps <b class="mono">${esc(opts.env || '')}</b>'s targetRevision to <b class="mono">${esc(rc || 'the typed version')}</b> and opens the merge request in its gitops repo — <b>it does not merge</b>; that repo's approvers stay in charge.`

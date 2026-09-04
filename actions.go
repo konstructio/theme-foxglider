@@ -838,6 +838,7 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 	// pipeline (hotfix releases live on hotfix branches).
 	var lp glLatestPipeline
 	var err error
+	var target *glJob
 	if req.Action == "release" && req.Ref != "" {
 		recent, rerr := x.gl.recentPipelines(ctx, req.Project, req.Ref, "", 1)
 		if rerr != nil || len(recent) == 0 {
@@ -850,6 +851,74 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		lp = full
+	} else if req.Action == "release" {
+		// A repo's NEWEST pipeline is often a [skip ci] bookkeeping run with
+		// zero jobs (dep bumps, version commit-backs) — hunt the newest main
+		// pipeline that actually carries a playable release job. Job naming
+		// is umbrella-agnostic via releaseJobIn: charts monorepos ship one
+		// release job per umbrella (konstruct-release, metaphor-macro-release)
+		// and a bare "release" can never cover them.
+		recent, rerr := x.gl.recentPipelines(ctx, req.Project, "main", "", 10)
+		if rerr != nil {
+			writeErr(w, 502, "pipelines: "+rerr.Error())
+			return
+		}
+		names := x.chartNamesFor(req.Project)
+		var ambiguous []string
+		for _, p := range recent {
+			jobs, jerr := x.gl.jobsByPath(ctx, req.Project, p.ID)
+			if jerr != nil || len(jobs) == 0 {
+				continue
+			}
+			job, cands := releaseJobIn(jobs, names)
+			if job != nil && job.Status == "manual" {
+				full, ferr := x.gl.pipelineByPath(ctx, req.Project, p.ID)
+				if ferr != nil {
+					writeErr(w, 502, "pipeline: "+ferr.Error())
+					return
+				}
+				lp, target = full, job
+				break
+			}
+			if len(cands) > 1 && len(ambiguous) == 0 {
+				ambiguous = cands
+			}
+		}
+		if target == nil && len(ambiguous) > 1 {
+			writeErr(w, 409, "several release jobs qualify ("+strings.Join(ambiguous, ", ")+") — none matches this chart exactly; name the job <chart>-release or release")
+			return
+		}
+		if target == nil {
+			// No qualifying pipeline exists at all — on chart repos main only
+			// sees [skip ci] bookkeeping pushes, so a playable release job may
+			// literally never be lying around. Start a fresh main pipeline
+			// (exactly what trigger-then-release always did, RC mint included)
+			// and play its release job once it appears.
+			pl, cerr := x.gl.createPipeline(ctx, req.Project, "main", map[string]string{
+				"INITIATED_BY": actor,
+			})
+			if cerr != nil {
+				writeErr(w, 502, "no recent main pipeline offers a release job, and starting one failed: "+cerr.Error())
+				return
+			}
+			for i := 0; i < 10 && target == nil; i++ {
+				time.Sleep(2 * time.Second)
+				jobs, jerr := x.gl.jobsByPath(ctx, req.Project, pl.ID)
+				if jerr != nil {
+					continue
+				}
+				if job, _ := releaseJobIn(jobs, names); job != nil && job.Status == "manual" {
+					full, ferr := x.gl.pipelineByPath(ctx, req.Project, pl.ID)
+					if ferr == nil {
+						lp, target = full, job
+					}
+				}
+			}
+			if target == nil {
+				writeErr(w, 409, fmt.Sprintf("started fresh main pipeline #%d — its release job hasn't appeared yet; retry in a moment (%s)", pl.ID, pl.WebURL))
+				return
+			}
+		}
 	} else {
 		lp, err = x.gl.latestPipeline(ctx, req.Project)
 		if err != nil {
@@ -857,16 +926,27 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	jobs, err := x.gl.jobsByPath(ctx, req.Project, lp.ID)
-	if err != nil {
-		writeErr(w, 502, "jobs: "+err.Error())
-		return
-	}
-	var target *glJob
-	for i := range jobs {
-		if jobs[i].Name == jobName {
-			target = &jobs[i]
-			break
+	if target == nil {
+		jobs, jerr := x.gl.jobsByPath(ctx, req.Project, lp.ID)
+		if jerr != nil {
+			writeErr(w, 502, "jobs: "+jerr.Error())
+			return
+		}
+		if req.Action == "release" {
+			// ref-scoped: same umbrella-agnostic naming on the branch pipeline
+			job, cands := releaseJobIn(jobs, x.chartNamesFor(req.Project))
+			if job == nil && len(cands) > 1 {
+				writeErr(w, 409, "several release jobs qualify ("+strings.Join(cands, ", ")+") on pipeline #"+strconv.Itoa(lp.ID))
+				return
+			}
+			target = job
+		} else {
+			for i := range jobs {
+				if jobs[i].Name == jobName {
+					target = &jobs[i]
+					break
+				}
+			}
 		}
 	}
 	if target == nil || target.Status != "manual" {
@@ -918,6 +998,55 @@ func (x *actions) run(w http.ResponseWriter, r *http.Request) {
 		"ok": true, "action": req.Action, "actor": actor,
 		"job_url": played.WebURL, "pipeline_url": lp.WebURL,
 	})
+}
+
+// chartNamesFor lists the chart identities a release job may be named after
+// in a project: the umbrella's chart name on the macro repo, the service name
+// on a service repo, plus the repo's short name as a last resort.
+func (x *actions) chartNamesFor(project string) []string {
+	var names []string
+	if project == x.topo.MacroProj {
+		names = append(names, x.topo.MacroName)
+	}
+	for _, s := range x.topo.Services {
+		if s.Project == project {
+			names = append(names, s.Name)
+		}
+	}
+	return append(names, project[strings.LastIndex(project, "/")+1:])
+}
+
+// releaseJobIn resolves THE release job among a pipeline's jobs, umbrella-
+// agnostically: exact "release" first (the ci-templates convention), then
+// "<chart>-release" / "release:<chart>" for each chart identity (charts
+// monorepos ship one release job per umbrella), then a LONE manual job whose
+// name contains "release". Multiple leftovers return their names instead of
+// a guess — releasing the wrong umbrella is not a recoverable oops.
+func releaseJobIn(jobs []glJob, chartNames []string) (*glJob, []string) {
+	for i := range jobs {
+		if jobs[i].Name == "release" {
+			return &jobs[i], nil
+		}
+	}
+	for _, n := range chartNames {
+		for i := range jobs {
+			if jobs[i].Name == n+"-release" || jobs[i].Name == "release:"+n {
+				return &jobs[i], nil
+			}
+		}
+	}
+	var cands []string
+	var hit *glJob
+	for i := range jobs {
+		if jobs[i].Status == "manual" && strings.Contains(jobs[i].Name, "release") {
+			cands = append(cands, jobs[i].Name)
+			hit = &jobs[i]
+		}
+	}
+	if len(cands) == 1 {
+		return hit, nil
+	}
+	return nil, cands
 }
 
 // mergeDevBump watches the gitops repo for the dev bump MR this delivery

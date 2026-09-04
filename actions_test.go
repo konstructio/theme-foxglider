@@ -22,6 +22,10 @@ func fakeActionsGitLab(t *testing.T, played map[string]any) *httptest.Server {
 		switch {
 		case strings.HasSuffix(p, "/pipelines/latest"):
 			w.Write([]byte(`{"id":500,"status":"success","ref":"main","sha":"cafe","web_url":"http://gl/x/-/pipelines/500","created_at":"2026-08-25T00:00:00Z","updated_at":"2026-08-25T00:01:00Z"}`))
+		case strings.HasSuffix(p, "/pipelines") && r.Method == "GET":
+			w.Write([]byte(`[{"id":500,"status":"success","ref":"main","web_url":"http://gl/x/-/pipelines/500"}]`))
+		case strings.HasSuffix(p, "/pipelines/500"):
+			w.Write([]byte(`{"id":500,"status":"success","ref":"main","sha":"cafe","web_url":"http://gl/x/-/pipelines/500","created_at":"2026-08-25T00:00:00Z","updated_at":"2026-08-25T00:01:00Z"}`))
 		case strings.HasSuffix(p, "/pipelines/500/jobs"):
 			w.Write([]byte(`[{"id":1,"name":"publish:chart:rc","status":"success"},{"id":2,"name":"release","status":"manual"},{"id":3,"name":"trigger:manual","status":"manual"}]`))
 		case strings.HasSuffix(p, "/jobs/2/play"), strings.HasSuffix(p, "/jobs/3/play"):
@@ -132,11 +136,19 @@ func TestTriggerFallsBackToFreshPipeline(t *testing.T) {
 		switch {
 		case strings.HasSuffix(p, "/pipelines/latest"):
 			w.Write([]byte(`{"id":600,"status":"failed","ref":"main","sha":"dead","web_url":"http://gl/x/-/pipelines/600","created_at":"2026-08-25T00:00:00Z","updated_at":"2026-08-25T00:00:01Z"}`))
+		case strings.HasSuffix(p, "/pipelines") && r.Method == "GET":
+			w.Write([]byte(`[{"id":600,"status":"failed","ref":"main","web_url":"http://gl/x/-/pipelines/600"}]`))
 		case strings.HasSuffix(p, "/pipelines/600/jobs"):
 			w.Write([]byte(`[]`)) // zero jobs — nothing playable
 		case strings.HasSuffix(p, "/pipeline"): // create-pipeline fallback
 			json.NewDecoder(r.Body).Decode(&created)
 			w.Write([]byte(`{"id":601,"status":"created","ref":"main","sha":"dead","web_url":"http://gl/x/-/pipelines/601","created_at":"2026-08-25T00:01:00Z","updated_at":"2026-08-25T00:01:00Z"}`))
+		case strings.HasSuffix(p, "/pipelines/601/jobs"):
+			w.Write([]byte(`[{"id":31,"name":"release","status":"manual"}]`))
+		case strings.HasSuffix(p, "/pipelines/601"):
+			w.Write([]byte(`{"id":601,"status":"running","ref":"main","web_url":"http://gl/x/-/pipelines/601"}`))
+		case strings.HasSuffix(p, "/jobs/31/play"):
+			w.Write([]byte(`{"id":31,"name":"release","status":"pending","web_url":"http://gl/x/-/jobs/31"}`))
 		default:
 			w.WriteHeader(404)
 		}
@@ -158,11 +170,13 @@ func TestTriggerFallsBackToFreshPipeline(t *testing.T) {
 	if !strings.Contains(string(bb), "INITIATED_BY") || !strings.Contains(string(bb), "konstruct") {
 		t.Fatalf("fresh pipeline missing fallback INITIATED_BY: %s", bb)
 	}
-	// release must NOT silently fall back — it still refuses honestly
+	// release with no qualifying pipeline anywhere starts a fresh main
+	// pipeline and plays ITS release job — one click, same semantics as
+	// trigger-then-release always had (RC mint included).
 	res2, _ := http.Post(srv.URL+"/api/actions/run", "application/json",
 		strings.NewReader(`{"project":"civo/metaphor/charts","action":"release","confirm":"charts"}`))
-	if res2.StatusCode != 409 {
-		t.Fatalf("release on jobless pipeline = %d, want 409", res2.StatusCode)
+	if res2.StatusCode != 200 {
+		t.Fatalf("release via fresh-pipeline fallback = %d, want 200", res2.StatusCode)
 	}
 }
 
@@ -778,5 +792,79 @@ func TestCatchup(t *testing.T) {
 	res, out = post(`{"action":"catchup","project":"civo/metaphor/metaphor","branch":"epic-9-x"}`)
 	if res.StatusCode != 409 || !strings.Contains(out["error"].(string), "already current") {
 		t.Fatalf("current catchup = %d %+v", res.StatusCode, out)
+	}
+}
+
+// TestReleaseHuntsAndResolvesUmbrellaJobs: release skips jobless [skip ci]
+// pipelines to the newest one with a playable release job, and resolves
+// monorepo per-umbrella job names (<chart>-release) without guessing.
+func TestReleaseHuntsAndResolvesUmbrellaJobs(t *testing.T) {
+	var playedJob string
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(p, "/pipelines") && r.Method == "GET":
+			// newest first: a skipped bookkeeping run, then a real one
+			w.Write([]byte(`[{"id":702,"status":"skipped","ref":"main"},{"id":700,"status":"success","ref":"main"}]`))
+		case strings.HasSuffix(p, "/pipelines/702/jobs"):
+			w.Write([]byte(`[]`)) // the [skip ci] pipeline
+		case strings.HasSuffix(p, "/pipelines/700/jobs"):
+			w.Write([]byte(`[{"id":11,"name":"konstruct-release","status":"manual"},{"id":12,"name":"metaphor-macro-release","status":"manual"},{"id":13,"name":"federate-release","status":"manual"},{"id":14,"name":"konstruct-publish-rc","status":"success"}]`))
+		case strings.HasSuffix(p, "/pipelines/700"):
+			w.Write([]byte(`{"id":700,"status":"success","ref":"main","web_url":"http://gl/c/-/pipelines/700"}`))
+		case strings.HasSuffix(p, "/jobs/11/play"):
+			playedJob = "konstruct-release"
+			w.Write([]byte(`{"id":11,"name":"konstruct-release","status":"pending","web_url":"http://gl/c/-/jobs/11"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	t.Setenv("GITLAB_ACTION_TOKEN", "act-tok")
+	t.Setenv("TOPOLOGY", `{"services":[{"name":"konstruct-api","project":"civo/konstruct/konstruct-api","chart":"charts/konstruct-api/Chart.yaml"}],"macro":{"name":"konstruct","project":"civo/konstruct/charts","file":"charts/konstruct/Chart.yaml","tagPrefix":"konstruct-v"}}`)
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	res, err := http.Post(srv.URL+"/api/actions/run", "application/json",
+		strings.NewReader(`{"project":"civo/konstruct/charts","action":"release","confirm":"charts"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != 200 || playedJob != "konstruct-release" {
+		t.Fatalf("monorepo release = %d, played %q (want konstruct-release: exact chart match, never a guess among three)", res.StatusCode, playedJob)
+	}
+}
+
+// TestReleaseRefusesAmbiguousJobs: several *release* manual jobs and no
+// exact/chart match — refuse with the names, never guess an umbrella.
+func TestReleaseRefusesAmbiguousJobs(t *testing.T) {
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(p, "/pipelines") && r.Method == "GET":
+			w.Write([]byte(`[{"id":800,"status":"success","ref":"main"}]`))
+		case strings.HasSuffix(p, "/pipelines/800/jobs"):
+			w.Write([]byte(`[{"id":21,"name":"alpha-release","status":"manual"},{"id":22,"name":"beta-release","status":"manual"}]`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer gl.Close()
+	t.Setenv("GITLAB_ACTION_TOKEN", "act-tok")
+	t.Setenv("TOPOLOGY", `{"services":[{"name":"svc","project":"org/svc","chart":"charts/svc/Chart.yaml"}],"macro":{"name":"gamma","project":"org/charts","file":"charts/gamma/Chart.yaml","tagPrefix":"gamma-v"}}`)
+	srv := httptest.NewServer(newAPI(newGLClient(gl.URL, "tok"), nil))
+	defer srv.Close()
+
+	res, err := http.Post(srv.URL+"/api/actions/run", "application/json",
+		strings.NewReader(`{"project":"org/charts","action":"release","confirm":"charts"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	json.NewDecoder(res.Body).Decode(&out)
+	if res.StatusCode != 409 || !strings.Contains(out["error"].(string), "alpha-release") {
+		t.Fatalf("ambiguous release = %d %+v, want honest 409 naming candidates", res.StatusCode, out)
 	}
 }
