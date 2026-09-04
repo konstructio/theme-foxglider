@@ -26,7 +26,7 @@ import (
 // themeVersion is the human-visible build marker. Bump it with every change
 // worth seeing land — the header badge surfaces it so you can tell at a glance
 // which build of the theme is actually serving.
-const themeVersion = "2.33.0"
+const themeVersion = "2.34.0"
 
 const ttlEco = 45 * time.Second
 
@@ -1862,9 +1862,11 @@ func (a *api) branchesView(w http.ResponseWriter, r *http.Request) {
 }
 
 // promotions builds the feature→environment matrix and runs the merge
-// observer: a feature whose every carrying MR is merged closes its epic as
-// Done (John's lifecycle — merge means the content rides main; promotion is
-// tracked HERE from then on, not on the epic).
+// observer: a feature whose every carrying MR is merged flips its epic to
+// In Review (lifecycle revised 2026-09-04 — merge means the content rides
+// main, nothing more; epic &120 was auto-closed while dev-33 never received
+// the change. Verification is a human looking at the delivered thing, so
+// only a human closes a work epic).
 func (a *api) promotions(ctx context.Context, t topology, delivery []deliveryNode, repos []repoBranches) []featureJSON {
 	tags := a.cachedTags(ctx, t.MacroProj)
 	feats := a.assembleFeatures(ctx, t, repos, tags)
@@ -1905,8 +1907,12 @@ func (a *api) observeChartsTwins(ctx context.Context, t topology, feats []featur
 	}
 }
 
-// observeMerged closes fully-merged features' epics (Done) exactly once —
-// whether the merge happened through foxglider's button or raw GitLab.
+// observeMerged flips fully-merged features' epics to In Review exactly once
+// — whether the merge happened through foxglider's button or raw GitLab. It
+// deliberately does NOT close the epic: merged proves the content rides
+// main, not that anyone saw it working where it was meant to land. A human
+// closes the epic after verifying the delivered change (retire stays the
+// explicit close path — its button says so).
 func (a *api) observeMerged(ctx context.Context, feats []featureJSON) {
 	if a.act == nil || !a.act.enabled() {
 		return
@@ -1917,7 +1923,7 @@ func (a *api) observeMerged(ctx context.Context, feats []featureJSON) {
 			continue
 		}
 		a.hotMu.Lock()
-		seen := a.epicClosed[f.EpicIID]
+		seen := a.epicMergeSeen[f.EpicIID]
 		a.hotMu.Unlock()
 		if seen {
 			continue
@@ -1928,18 +1934,18 @@ func (a *api) observeMerged(ctx context.Context, feats []featureJSON) {
 		}
 		if ep.State != "opened" {
 			a.hotMu.Lock()
-			a.epicClosed[f.EpicIID] = true
+			a.epicMergeSeen[f.EpicIID] = true
 			a.hotMu.Unlock()
 			continue
 		}
 		if err := a.act.gl.epicUpdate(ctx, group, f.EpicIID,
-			"status::Done", "status::In Review,status::In Progress", "close"); err == nil {
-			log.Printf("LIFECYCLE epic=%d merged→Done+closed branch=%s", f.EpicIID, f.Branch)
+			"status::In Review", "status::In Progress,status::Ready for Queue", ""); err == nil {
+			log.Printf("LIFECYCLE epic=%d merged→In Review branch=%s (close stays human)", f.EpicIID, f.Branch)
 			a.hotMu.Lock()
-			a.epicClosed[f.EpicIID] = true
+			a.epicMergeSeen[f.EpicIID] = true
 			a.hotMu.Unlock()
 		} else {
-			log.Printf("LIFECYCLE epic=%d Done+close failed: %v", f.EpicIID, err)
+			log.Printf("LIFECYCLE epic=%d In Review flip failed: %v", f.EpicIID, err)
 		}
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -961,5 +962,56 @@ func TestEnvBumpMRSurfaced(t *testing.T) {
 	got := out.Delivery[0].BumpMR
 	if got == nil || got.IID != 11 || got.WebURL != "http://gl/mr/11" {
 		t.Fatalf("bump_mr = %+v, want !11 (internal env, deliver prefix only)", got)
+	}
+}
+
+// TestObserveMergedFlipsInReviewNeverCloses: a fully-merged feature flips its
+// epic to In Review — it must NOT close it (epic &120 was auto-closed while
+// the change never reached dev-33; verification is a human's call), and the
+// flip happens exactly once per process.
+func TestObserveMergedFlipsInReviewNeverCloses(t *testing.T) {
+	var mu sync.Mutex
+	puts := []map[string]any{}
+	gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.EscapedPath(), "/epics/120") {
+			switch r.Method {
+			case "GET":
+				w.Write([]byte(`{"iid":120,"state":"opened"}`))
+			case "PUT":
+				body := map[string]any{}
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				mu.Lock()
+				puts = append(puts, body)
+				mu.Unlock()
+				w.Write([]byte(`{"iid":120,"state":"opened"}`))
+			}
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer gl.Close()
+	t.Setenv("GITLAB_ACTION_TOKEN", "act-tok")
+	a := &api{gl: newGLClient(gl.URL, "tok"), groups: []string{"civo/metaphor"},
+		c: newCache(), epicMergeSeen: map[int]bool{}}
+	a.act = newActions(a.gl, a.topo, a.groups)
+
+	feats := []featureJSON{{Branch: "epic-120-orange", EpicIID: 120, Merged: true}}
+	a.observeMerged(context.Background(), feats)
+	a.observeMerged(context.Background(), feats) // second pass: one-shot memory holds
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(puts) != 1 {
+		t.Fatalf("epic PUTs = %d, want exactly 1 (one-shot)", len(puts))
+	}
+	if se, ok := puts[0]["state_event"]; ok {
+		t.Fatalf("merge observer sent state_event=%v — merged must never close an epic", se)
+	}
+	if add, _ := puts[0]["add_labels"].(string); add != "status::In Review" {
+		t.Fatalf("add_labels = %q, want status::In Review", add)
+	}
+	if rem, _ := puts[0]["remove_labels"].(string); !strings.Contains(rem, "status::In Progress") {
+		t.Fatalf("remove_labels = %q, want it to drop status::In Progress", rem)
 	}
 }
